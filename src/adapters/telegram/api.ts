@@ -15,7 +15,11 @@ async function callTelegram(env: Env, method: string, body: Record<string, unkno
   }
 
   if (!response.ok) {
-    const outcome = response.status === 429 || response.status >= 500 ? 'RETRYABLE' : 'FINAL';
+    const outcome = response.status === 429
+      ? 'RETRYABLE'
+      : response.status === 408 || response.status >= 500
+        ? 'AMBIGUOUS'
+        : 'FINAL';
     throw new ProviderDeliveryError(outcome, `TELEGRAM_HTTP_${response.status}`);
   }
 
@@ -23,7 +27,11 @@ async function callTelegram(env: Env, method: string, body: Record<string, unkno
     const data = await response.json() as any;
     if (data?.ok !== true) {
       const status = typeof data?.error_code === 'number' ? data.error_code : response.status;
-      const outcome = status === 429 || status >= 500 ? 'RETRYABLE' : 'FINAL';
+      const outcome = status === 429
+        ? 'RETRYABLE'
+        : status === 408 || status >= 500
+          ? 'AMBIGUOUS'
+          : 'FINAL';
       throw new ProviderDeliveryError(outcome, `TELEGRAM_API_${status}`);
     }
     return data;

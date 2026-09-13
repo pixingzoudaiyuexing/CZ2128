@@ -32,7 +32,11 @@ export async function createChatwootMessage(
   }
 
   if (!response.ok) {
-    const outcome = response.status === 429 || response.status >= 500 ? 'RETRYABLE' : 'FINAL';
+    const outcome = response.status === 429
+      ? 'RETRYABLE'
+      : response.status === 408 || response.status >= 500
+        ? 'AMBIGUOUS'
+        : 'FINAL';
     throw new ProviderDeliveryError(outcome, `CHATWOOT_HTTP_${response.status}`);
   }
 

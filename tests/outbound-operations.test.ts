@@ -160,7 +160,7 @@ describe('outbound operation safety', () => {
   it('bounds retryable provider failures and then marks them final', async () => {
     const db = new OperationDb();
     const action = vi.fn(async () => {
-      throw new ProviderDeliveryError('RETRYABLE', 'TELEGRAM_HTTP_503');
+      throw new ProviderDeliveryError('RETRYABLE', 'TELEGRAM_API_429');
     });
 
     await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4')).rejects.toBeInstanceOf(RetryableProcessingError);
