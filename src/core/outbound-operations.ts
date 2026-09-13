@@ -1,6 +1,6 @@
 import { DatabaseEnv } from './database';
 import { logger } from '../observability/logger';
-import { ProviderDeliveryError, RetryableProcessingError, safeErrorCode } from './errors';
+import { CancelledBeforeDeliveryError, ProviderDeliveryError, RetryableProcessingError, safeErrorCode } from './errors';
 
 const OUTBOUND_LEASE_SECONDS = 30;
 const MAX_OUTBOUND_ATTEMPTS = 3;
@@ -89,7 +89,11 @@ export async function executeOutboundOperation(
   try {
     result = await action(id);
   } catch (error: unknown) {
-    const outcome = error instanceof ProviderDeliveryError ? error.outcome : 'AMBIGUOUS';
+    const outcome = error instanceof CancelledBeforeDeliveryError
+      ? 'FINAL'
+      : error instanceof ProviderDeliveryError
+        ? error.outcome
+        : 'AMBIGUOUS';
     const attemptNumber = Number(op.attempt_count) + 1;
     const nextStatus = outcome === 'RETRYABLE' && attemptNumber < MAX_OUTBOUND_ATTEMPTS
       ? 'FAILED_RETRYABLE'
@@ -104,15 +108,6 @@ export async function executeOutboundOperation(
       duration_ms: Date.now() - startTime
     });
     
-    if (error instanceof Error && error.message === 'CANCELLED_BY_HANDOFF') {
-      await env.DB.prepare(
-        `UPDATE outbound_operations 
-         SET status = 'FAILED_FINAL', last_error = ?, updated_at = ?
-         WHERE id = ?`
-      ).bind('CANCELLED_BY_HANDOFF', Math.floor(Date.now() / 1000), id).run();
-      return { status: 'FAILED_FINAL' };
-    }
-
     const failureResult = await env.DB.prepare(
       `UPDATE outbound_operations
        SET status = ?, last_error = ?, lease_until = NULL, lease_token = NULL, updated_at = ?
@@ -144,4 +139,16 @@ export async function executeOutboundOperation(
   });
 
   return { status: 'SENT', providerMessageRef: result.providerMessageRef };
+}
+
+export async function markOutboundOperationFinal(
+  env: DatabaseEnv,
+  operationId: string,
+  reason: string
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE outbound_operations
+     SET status = 'FAILED_FINAL', last_error = ?, lease_until = NULL, lease_token = NULL, updated_at = ?
+     WHERE id = ? AND (status = 'PENDING' OR status = 'FAILED_RETRYABLE')`
+  ).bind(reason, Math.floor(Date.now() / 1000), operationId).run();
 }

@@ -3,7 +3,7 @@ import { handleQueueEvent } from '../src/queue/consumer';
 import { pauseOperator, pauseManual, resumeManual } from '../src/core/ai-state';
 import { SupportEvent } from '../src/core/events';
 import { executeOutboundOperation } from '../src/core/outbound-operations';
-import { RetryableProcessingError } from '../src/core/errors';
+import { CancelledBeforeDeliveryError, RetryableProcessingError } from '../src/core/errors';
 
 class MockPreparedStatement {
   constructor(private db: MockD1, private query: string) {}
@@ -11,25 +11,31 @@ class MockPreparedStatement {
   bind(...params: any[]) { this.boundParams = params; return this; }
   async first<T = any>(): Promise<T | null> {
     if (this.query.includes('FROM event_receipts')) {
-      return this.db.tables.event_receipts.find(row => row.source === this.boundParams[0] && row.source_event_ref === this.boundParams[1]) || null;
+      const row = this.db.tables.event_receipts.find(item => item.source === this.boundParams[0] && item.source_event_ref === this.boundParams[1]);
+      return row ? { ...row } : null;
     }
     if (this.query.includes('FROM outbound_operations')) {
-      return this.db.tables.outbound_operations.find(row => row.id === this.boundParams[0]) || null;
+      const row = this.db.tables.outbound_operations.find(item => item.id === this.boundParams[0]);
+      return row ? { ...row } : null;
     }
     if (this.query.includes('FROM ai_runs')) {
-      return this.db.tables.ai_runs.find(row => row.trigger_event_ref === this.boundParams[0]) || null;
+      const row = this.db.tables.ai_runs.find(item => item.trigger_event_ref === this.boundParams[0]);
+      return row ? { ...row } : null;
     }
     if (this.query.includes('FROM conversations')) {
       if (this.query.includes('helpdesk_provider = ?')) {
-        return this.db.tables.conversations.find(row =>
+        const row = this.db.tables.conversations.find(row =>
           String(row.helpdesk_account_ref) === String(this.boundParams[1]) &&
-          String(row.helpdesk_conversation_ref) === String(this.boundParams[2])) || null;
+          String(row.helpdesk_conversation_ref) === String(this.boundParams[2]));
+        return row ? { ...row } : null;
       }
       if (this.query.includes('operator_channel = ?')) {
-        return this.db.tables.conversations.find(row =>
-          row.operator_channel === this.boundParams[0] && row.operator_thread_ref === this.boundParams[1]) || null;
+        const row = this.db.tables.conversations.find(row =>
+          row.operator_channel === this.boundParams[0] && row.operator_thread_ref === this.boundParams[1]);
+        return row ? { ...row } : null;
       }
-      return this.db.tables.conversations.find(row => row.id === this.boundParams[0]) || null;
+      const row = this.db.tables.conversations.find(row => row.id === this.boundParams[0]);
+      return row ? { ...row } : null;
     }
     return null;
   }
@@ -72,10 +78,25 @@ class MockPreparedStatement {
         row.version = (row.version || 1) + 1;
         meta.changes = 1;
       }
-    } else if (this.query.includes("SET ai_mode = 'PAUSED_OPERATOR'")) {
+    } else if (this.query.includes('last_ai_command_update_id = ?')) {
+      const [updateId, updatedAt, id, expectedUpdateId] = this.boundParams;
+      const row = this.db.tables.conversations.find(item => item.id === id);
+      if (
+        row &&
+        (row.last_ai_command_update_id === undefined || row.last_ai_command_update_id === null ||
+          Number(row.last_ai_command_update_id) < Number(expectedUpdateId))
+      ) {
+        row.ai_mode = this.query.includes("SET ai_mode = 'PAUSED_MANUAL'") ? 'PAUSED_MANUAL' : 'ENABLED';
+        row.ai_generation_id = null;
+        if (row.ai_mode === 'PAUSED_MANUAL') row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
+        row.last_ai_command_update_id = updateId;
+        row.updated_at = updatedAt;
+        meta.changes = 1;
+      }
+    } else if (this.query.includes('last_operator_reply_at = ?') && this.query.includes('ai_handoff_epoch = ai_handoff_epoch + 1')) {
       const row = this.db.tables.conversations.find(item => item.id === this.boundParams[2]);
-      if (row && row.ai_mode !== 'PAUSED_MANUAL') {
-        row.ai_mode = 'PAUSED_OPERATOR';
+      if (row) {
+        if (row.ai_mode !== 'PAUSED_MANUAL') row.ai_mode = 'PAUSED_OPERATOR';
         row.last_operator_reply_at = this.boundParams[0];
         row.ai_generation_id = null;
         row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
@@ -185,14 +206,38 @@ class MockPreparedStatement {
     } else if (this.query.includes("SET status = 'AMBIGUOUS'")) {
       const row = this.db.tables.outbound_operations.find(item => item.id === this.boundParams[1]);
       if (row?.status === 'SENDING') { row.status = 'AMBIGUOUS'; meta.changes = 1; }
+    } else if (this.query.includes("UPDATE ai_runs") && this.query.includes("SET status = 'SUCCESS'")) {
+      const [providerRef, responseText, updatedAt, eventRef, generationId, convId, currentGenerationId, epoch] = this.boundParams;
+      const run = this.db.tables.ai_runs.find(row =>
+        row.trigger_event_ref === eventRef && row.generation_id === generationId && row.status === 'PENDING');
+      const conv = this.db.tables.conversations.find(row =>
+        row.id === convId && row.ai_mode === 'ENABLED' &&
+        row.ai_generation_id === currentGenerationId && Number(row.ai_handoff_epoch) === Number(epoch));
+      if (run && conv) {
+        run.status = 'SUCCESS'; run.provider_response_ref = providerRef;
+        run.response_text = responseText; run.updated_at = updatedAt; meta.changes = 1;
+      }
     } else if (this.query.includes('INSERT INTO ai_runs')) {
       const existing = this.db.tables.ai_runs.find(row => row.trigger_event_ref === this.boundParams[0]);
       if (existing) {
-        existing.status = this.boundParams[11]; existing.provider_response_ref = this.boundParams[12]; existing.response_text = this.boundParams[13]; existing.generation_id = this.boundParams[15]; existing.handoff_epoch = this.boundParams[16];
+        const updateStatus = this.boundParams[11];
+        const updateGenerationId = this.boundParams[15];
+        if (
+          !['CANCELLED_BY_HANDOFF', 'DISCARDED_STALE'].includes(existing.status) &&
+          (updateStatus === 'PENDING' || existing.generation_id === updateGenerationId)
+        ) {
+          existing.status = this.boundParams[11]; existing.provider_response_ref = this.boundParams[12]; existing.response_text = this.boundParams[13]; existing.generation_id = this.boundParams[15]; existing.handoff_epoch = this.boundParams[16];
+          meta.changes = 1;
+        }
       } else {
-        this.db.tables.ai_runs.push({ trigger_event_ref: this.boundParams[0], status: this.boundParams[7], response_text: this.boundParams[6], provider_response_ref: this.boundParams[5], handoff_epoch: this.boundParams[4], generation_id: this.boundParams[3] });
+        this.db.tables.ai_runs.push({
+          trigger_event_ref: this.boundParams[0], conversation_id: this.boundParams[1],
+          trigger_message_ref: this.boundParams[2], generation_id: this.boundParams[3],
+          handoff_epoch: this.boundParams[4], provider_response_ref: this.boundParams[5],
+          response_text: this.boundParams[6], status: this.boundParams[7]
+        });
+        meta.changes = 1;
       }
-      meta.changes = 1;
     }
     return { meta };
   }
@@ -206,6 +251,7 @@ describe('Phase 2 AI Handoff', () => {
   let counts: any = { ai: 0, chatwoot: 0, telegram: 0 };
   
   beforeEach(() => {
+    vi.restoreAllMocks();
     counts = { ai: 0, chatwoot: 0, telegram: 0 };
     fetchResolver = null;
     env = {
@@ -542,63 +588,58 @@ describe('Phase 2 AI Handoff', () => {
     const { buildAIContext } = await import('../src/core/ai-context');
     const msgs = await buildAIContext(env, 'c14', aiConfig.getAIConfig(env));
     
-    const totalChars = msgs.filter(m => m.role !== 'system').reduce((acc, m) => acc + (typeof m.content === 'string' ? m.content.length : 0), 0);
+    const totalChars = msgs.slice(1).reduce((acc, m) => acc + (typeof m.content === 'string' ? m.content.length : 0), 0);
     expect(totalChars).toBeLessThanOrEqual(10);
-    expect(msgs[1].content).toBe('123');
-    expect(msgs[2].content).toBe('6789012');
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1]).toEqual({ role: 'system', content: 'Human oper' });
   });
 
   // 15. current customer message appears exactly once in AI input
   it('current customer message appears exactly once in AI input', async () => {
-    env.DB.tables.conversations.push({ id: 'c15', ai_mode: 'ENABLED', ai_handoff_epoch: 0 });
+    env.DB.tables.conversations.push({
+      id: 'c15', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
     env.DB.tables.messages.push({ conversation_id: 'c15', actor_role: 'CUSTOMER', text_content: 'hello-current-message', created_at: 100, message_type: 'TEXT', id: 1, _rowid: 1 });
-    
+
     let aiPromptMessages: any[] = [];
-    vi.mocked(global.fetch).mockImplementation((async (url: any, init: any) => {
+    vi.mocked(global.fetch).mockImplementation(async (url: any, init: any) => {
       const s = String(url);
       if (s.includes('ai')) {
         counts.ai++;
-        try { const body = JSON.parse(init.body); aiPromptMessages = body.messages; } catch(e){}
-        return new Promise(r => { 
-          fetchResolver = (val: any) => {
-            
-            r(val);
-          };
-        });
+        const body = JSON.parse(init.body);
+        aiPromptMessages = body.messages;
+        return { ok: true, json: async () => ({ choices: [{ message: { content: 'Answer' } }], id: 'ai-15' }) } as Response;
       }
-      return Promise.resolve({ ok: true, json: async () => ({ ok: true, id: 100, result: { message_id: 100 } }) });
-    }) as any);
+      return { ok: true, json: async () => ({ id: 100 }) } as Response;
+    });
 
-    const { buildAIContext } = await import('../src/core/ai-context');
-    const aiConfig = {
-      enabled: true, baseUrl: 'x', apiKey: 'y', model: 'z', systemPrompt: 'Sys',
-      requestTimeoutMs: 10000, contextMaxMessages: 10, contextMaxChars: 10000,
-      generationLeaseSeconds: 60, operatorPauseTimeoutSeconds: 3600
-    };
-    const messages = await buildAIContext(env, 'c15', aiConfig);
-    const occurrences = messages.filter(m => m.role === 'user' && typeof m.content === 'string' && m.content.includes('hello-current-message'));
+    await handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_current_once',
+      payload: { convId: 'c15', messageId: '1' }
+    }, env);
+
+    const occurrences = aiPromptMessages.filter(message =>
+      message.role === 'user' && message.content === 'hello-current-message');
     expect(occurrences.length).toBe(1);
   });
 
   // 16. generation lease CAS rejects stale handoff epoch
   it('generation lease CAS rejects stale handoff epoch', async () => {
     env.DB.tables.conversations.push({ id: 'c16', ai_mode: 'ENABLED', ai_handoff_epoch: 0 });
-    
-    env.DB = Object.assign(new MockD1(), env.DB);
-    const origPrepare = env.DB.prepare.bind(env.DB) as any;
-    env.DB.prepare = (q: string) => {
-      if (q.includes('ai_generation_id = ?')) {
-        return {
-          bind: (...args: any[]) => ({
-             run: async () => ({ meta: { changes: 0 } })
-          })
-        };
-      }
-      return origPrepare(q);
+
+    env.hooks.beforeGenerationLeaseClaim = async () => {
+      await pauseOperator(env, 'c16');
+      await resumeManual(env, 'c16');
     };
     const { acquireGenerationLease } = await import('../src/core/ai-state');
     const result = await acquireGenerationLease(env, 'c16', 'm1');
     expect(result.success).toBe(false);
+    if (!result.success) expect(result.reason).toBe('HANDOFF');
+    expect(counts.ai).toBe(0);
   });
 
   // 17. CANCELLED_BY_HANDOFF outbound operation is terminal
@@ -609,7 +650,7 @@ describe('Phase 2 AI Handoff', () => {
     try {
       await executeOutboundOperation(env, 'c17', 'chatwoot', 'SEND_MESSAGE', async () => {
         callCount++;
-        throw new Error('CANCELLED_BY_HANDOFF');
+        throw new CancelledBeforeDeliveryError();
       }, 'op17');
     } catch (e) {}
 
@@ -625,5 +666,308 @@ describe('Phase 2 AI Handoff', () => {
     } catch (e) {}
 
     expect(callCount).toBe(1); // Not called again!
+  });
+
+  it('records stale handoff epoch claim as terminal cancellation', async () => {
+    env.DB.tables.conversations.push({ id: 'c18', ai_mode: 'ENABLED', ai_handoff_epoch: 0 });
+    env.hooks.beforeGenerationLeaseClaim = async () => {
+      await pauseOperator(env, 'c18');
+      await resumeManual(env, 'c18');
+    };
+
+    await handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_stale_epoch',
+      payload: { convId: 'c18', messageId: 'm18' }
+    }, env);
+
+    const run = env.DB.tables.ai_runs.find((row: any) => row.trigger_event_ref === 'ai_stale_epoch');
+    expect(counts.ai).toBe(0);
+    expect(run?.status).toBe('CANCELLED_BY_HANDOFF');
+  });
+
+  it('operator reply preserves manual pause while updating cancellation state', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c19', ai_mode: 'PAUSED_MANUAL', ai_handoff_epoch: 2,
+      last_operator_reply_at: null, ai_generation_id: 'old-generation'
+    });
+
+    await pauseOperator(env, 'c19');
+
+    const conv = env.DB.tables.conversations[0];
+    expect(conv.ai_mode).toBe('PAUSED_MANUAL');
+    expect(conv.last_operator_reply_at).toBeTruthy();
+    expect(conv.ai_generation_id).toBeNull();
+    expect(conv.ai_handoff_epoch).toBe(3);
+  });
+
+  it('Telegram human operator pauses AI and still relays to Chatwoot', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c20', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '20',
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+
+    await handleQueueEvent({
+      version: 1,
+      source: 'telegram',
+      type: 'message_created',
+      eventId: 'tg_20',
+      payload: { updateRef: '20', messageRef: '20', threadRef: '20', content: 'Human reply' }
+    }, env);
+
+    const conv = env.DB.tables.conversations[0];
+    expect(conv.ai_mode).toBe('PAUSED_OPERATOR');
+    expect(conv.ai_handoff_epoch).toBe(1);
+    expect(conv.last_operator_reply_at).toBeTruthy();
+    expect(counts.chatwoot).toBe(1);
+    expect(env.DB.tables.messages.some((row: any) => row.actor_role === 'OPERATOR')).toBe(true);
+  });
+
+  it('AI control acknowledgements use outbound operations', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c21', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '21'
+    });
+
+    await handleQueueEvent({
+      version: 1,
+      source: 'telegram',
+      type: 'message_created',
+      eventId: 'tg_21_off',
+      payload: { updateRef: '21', messageRef: '21', threadRef: '21', content: '/ai_off' }
+    }, env);
+    await handleQueueEvent({
+      version: 1,
+      source: 'telegram',
+      type: 'message_created',
+      eventId: 'tg_22_on',
+      payload: { updateRef: '22', messageRef: '22', threadRef: '21', content: '/ai_on' }
+    }, env);
+
+    expect(env.DB.tables.conversations[0].ai_mode).toBe('ENABLED');
+    expect(env.DB.tables.outbound_operations.find((row: any) => row.id === 'ai_off_ack:21')?.status).toBe('SENT');
+    expect(env.DB.tables.outbound_operations.find((row: any) => row.id === 'ai_on_ack:22')?.status).toBe('SENT');
+    expect(counts.telegram).toBe(2);
+  });
+
+  it('AI event receipt lease exceeds the valid generation runtime', async () => {
+    env.DB.tables.conversations.push({ id: 'c22', ai_mode: 'ENABLED', ai_handoff_epoch: 0 });
+    const before = Math.floor(Date.now() / 1000);
+    const processing = handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_long_lease',
+      payload: { convId: 'c22', messageId: 'm22' }
+    }, env);
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    const receipt = env.DB.tables.event_receipts.find((row: any) => row.source_event_ref === 'ai_long_lease');
+    expect(receipt.lease_until - before).toBeGreaterThanOrEqual(75);
+
+    resolveAi('Done');
+    await processing;
+  });
+
+  it('represents human operator context separately from AI answers', async () => {
+    env.DB.tables.messages.push({
+      conversation_id: 'c23', actor_role: 'OPERATOR', text_content: 'Use the verified answer',
+      created_at: 100, message_type: 'TEXT', id: 1, _rowid: 1
+    });
+    const { buildAIContext } = await import('../src/core/ai-context');
+    const messages = await buildAIContext(env, 'c23', {
+      enabled: true, baseUrl: 'https://ai.example/v1', apiKey: 'key', model: 'model', systemPrompt: 'Sys',
+      requestTimeoutMs: 30000, contextMaxMessages: 10, contextMaxChars: 100,
+      generationLeaseSeconds: 60, operatorPauseTimeoutSeconds: 3600
+    });
+
+    expect(messages[1]).toEqual({ role: 'system', content: 'Human operator: Use the verified answer' });
+  });
+
+  it('auto-resumes PAUSED_OPERATOR only for a new customer trigger after timeout', async () => {
+    env.AI_OPERATOR_PAUSE_TIMEOUT_SECONDS = '60';
+    env.DB.tables.conversations.push({
+      id: 'c24', ai_mode: 'PAUSED_OPERATOR', ai_handoff_epoch: 3,
+      last_operator_reply_at: Math.floor(Date.now() / 1000) - 61,
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+
+    const processing = handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_auto_resume_new_customer',
+      payload: { convId: 'c24', messageId: 'm24' }
+    }, env);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    resolveAi('Resumed answer');
+    await processing;
+
+    expect(env.DB.tables.conversations[0].ai_mode).toBe('ENABLED');
+    expect(counts.ai).toBe(1);
+  });
+
+  it('assigns a new generation id to a retry after AI provider failure', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c25', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    const event = {
+      version: 1 as const,
+      source: 'internal' as const,
+      type: 'ai_trigger' as const,
+      eventId: 'ai_attempt_identity',
+      payload: { convId: 'c25', messageId: 'm25' }
+    };
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({ ok: false, status: 503 } as Response);
+    await expect(handleQueueEvent(event, env)).rejects.toThrow('AI Provider Failed');
+    const firstGenerationId = env.DB.tables.ai_runs[0].generation_id;
+
+    vi.mocked(global.fetch).mockImplementation(async (url: any) => {
+      if (String(url).includes('ai')) {
+        return { ok: true, json: async () => ({ choices: [{ message: { content: 'Recovered' } }], id: 'ai-25' }) } as Response;
+      }
+      return { ok: true, json: async () => ({ id: 250 }) } as Response;
+    });
+    await handleQueueEvent(event, env);
+
+    expect(env.DB.tables.ai_runs[0].generation_id).not.toBe(firstGenerationId);
+    expect(env.DB.tables.ai_runs[0].status).toBe('SUCCESS');
+  });
+
+  it('terminally cancels a durable result when its trigger is handled while paused', async () => {
+    env.DB.tables.conversations.push({ id: 'c26', ai_mode: 'PAUSED_OPERATOR', ai_handoff_epoch: 4 });
+    env.DB.tables.ai_runs.push({
+      trigger_event_ref: 'ai_paused_existing', conversation_id: 'c26', trigger_message_ref: 'm26',
+      generation_id: 'generation-26', handoff_epoch: 3, response_text: 'Old answer', status: 'SUCCESS'
+    });
+    const event = {
+      version: 1 as const,
+      source: 'internal' as const,
+      type: 'ai_trigger' as const,
+      eventId: 'ai_paused_existing',
+      payload: { convId: 'c26', messageId: 'm26' }
+    };
+
+    await handleQueueEvent(event, env);
+    await resumeManual(env, 'c26');
+    await handleQueueEvent(event, env);
+
+    expect(env.DB.tables.ai_runs[0].status).toBe('CANCELLED_BY_HANDOFF');
+    expect(counts.ai).toBe(0);
+    expect(counts.chatwoot).toBe(0);
+    expect(counts.telegram).toBe(0);
+  });
+
+  it('AI provider failure releases its lease and leaves the human bridge operational', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c27', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '27',
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    vi.mocked(global.fetch).mockResolvedValueOnce({ ok: false, status: 503 } as Response);
+
+    await expect(handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_provider_failure',
+      payload: { convId: 'c27', messageId: 'm27' }
+    }, env)).rejects.toThrow('AI Provider Failed');
+    expect(env.DB.tables.conversations[0].ai_generation_id).toBeNull();
+
+    vi.mocked(global.fetch).mockImplementation(async (url: any) => {
+      if (String(url).includes('chatwoot')) counts.chatwoot++;
+      return { ok: true, json: async () => ({ id: 270 }) } as Response;
+    });
+    await handleQueueEvent({
+      version: 1,
+      source: 'telegram',
+      type: 'message_created',
+      eventId: 'tg_27',
+      payload: { updateRef: '27', messageRef: '27', threadRef: '27', content: 'Human recovery' }
+    }, env);
+
+    expect(counts.chatwoot).toBe(1);
+    expect(env.DB.tables.conversations[0].ai_mode).toBe('PAUSED_OPERATOR');
+  });
+
+  it('rejects a stable AI job identity collision across messages', async () => {
+    env.DB.tables.conversations.push({ id: 'c28', ai_mode: 'ENABLED', ai_handoff_epoch: 0 });
+    env.DB.tables.ai_runs.push({
+      trigger_event_ref: 'ai_collision', conversation_id: 'other-conversation',
+      trigger_message_ref: 'other-message', generation_id: 'generation-other',
+      handoff_epoch: 0, status: 'SUCCESS', response_text: 'Other answer'
+    });
+
+    await expect(handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_collision',
+      payload: { convId: 'c28', messageId: 'm28' }
+    }, env)).rejects.toThrow('AI run identity collision');
+    expect(counts.ai).toBe(0);
+    expect(counts.chatwoot).toBe(0);
+  });
+
+  it('operator between generation verification and durable success persist wins', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c29', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_thread_ref: '29', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    env.hooks.beforeAiRunSuccessPersist = async () => pauseOperator(env, 'c29');
+
+    const processing = handleQueueEvent({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_success_persist_race',
+      payload: { convId: 'c29', messageId: 'm29' }
+    }, env);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    resolveAi('Stale answer');
+    await expect(processing).rejects.toThrow('DISCARDED_STALE');
+
+    expect(env.DB.tables.ai_runs[0].status).toBe('DISCARDED_STALE');
+    expect(counts.chatwoot).toBe(0);
+    expect(counts.telegram).toBe(0);
+  });
+
+  it('an older command retry cannot override a newer Telegram AI command', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c30', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '30'
+    });
+    let firstAck = true;
+    vi.mocked(global.fetch).mockImplementation(async (url: any) => {
+      if (String(url).includes('telegram') && firstAck) {
+        firstAck = false;
+        return { ok: false, status: 429 } as Response;
+      }
+      if (String(url).includes('telegram')) {
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 300 } }) } as Response;
+      }
+      throw new Error('Unexpected provider call');
+    });
+    const off = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_30', payload: { updateRef: '30', messageRef: '30', threadRef: '30', content: '/ai_off' }
+    };
+    const on = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_31', payload: { updateRef: '31', messageRef: '31', threadRef: '30', content: '/ai_on' }
+    };
+
+    await expect(handleQueueEvent(off, env)).rejects.toBeInstanceOf(RetryableProcessingError);
+    await handleQueueEvent(on, env);
+    await handleQueueEvent(off, env);
+
+    expect(env.DB.tables.conversations[0].ai_mode).toBe('ENABLED');
+    expect(env.DB.tables.conversations[0].last_ai_command_update_id).toBe(31);
   });
 });

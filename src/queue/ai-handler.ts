@@ -2,7 +2,7 @@ import { Env } from '../config/env';
 import { AiTriggerEvent } from '../core/events';
 import { Conversation } from '../core/domain';
 import { getAIConfig } from '../config/ai';
-import { checkAutoResume, acquireGenerationLease, verifyGenerationLease, verifyHandoffEpoch, releaseGenerationLease, getDurableAiRun, saveDurableAiRun } from '../core/ai-state';
+import { checkAutoResume, acquireGenerationLease, verifyGenerationLease, verifyHandoffEpoch, releaseGenerationLease, getDurableAiRun, saveDurableAiRun, saveGeneratedAiResult } from '../core/ai-state';
 import { buildAIContext } from '../core/ai-context';
 import { generateChatCompletion } from '../adapters/ai/openai-compatible';
 import { logger } from '../observability/logger';
@@ -10,6 +10,7 @@ import { executeOutboundOperation } from '../core/outbound-operations';
 import { insertMessage } from '../core/conversation-service';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
+import { CancelledBeforeDeliveryError } from '../core/errors';
 
 export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise<void> {
   const config = getAIConfig(env);
@@ -29,12 +30,31 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first<any>();
   }
 
+  const existingRun = await getDurableAiRun(env, stableAiJobId);
+  if (
+    existingRun &&
+    (existingRun.conversation_id !== convId || existingRun.trigger_message_ref !== messageId)
+  ) {
+    throw new Error('AI run identity collision');
+  }
+  const cancelRun = async (handoffEpoch: number) => {
+    await saveDurableAiRun(
+      env,
+      stableAiJobId,
+      convId,
+      messageId,
+      existingRun?.generation_id || `cancelled:${stableAiJobId}`,
+      existingRun?.handoff_epoch ?? handoffEpoch,
+      'CANCELLED_BY_HANDOFF'
+    );
+  };
+
   if (conv!.ai_mode !== 'ENABLED') {
-    logger.info('AI is paused, dropping trigger', { conversation_id: convId });
+    await cancelRun(Number(conv!.ai_handoff_epoch || 0));
+    logger.info('AI trigger cancelled because AI is paused', { conversation_id: convId });
     return;
   }
 
-  const existingRun = await getDurableAiRun(env, stableAiJobId);
   let aiContent: string;
   let responseId: string;
   let generationId: string;
@@ -54,8 +74,8 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       // For FAILED or PENDING (expired), allow generating again.
       const lease = await acquireGenerationLease(env, convId, messageId);
       if (!lease.success) {
-        logger.warn('Failed to acquire AI generation lease (AI paused?)', { conversation_id: convId, source_event_ref: event.eventId });
-        return; 
+        await cancelRun(lease.handoffEpoch);
+        return;
       }
       generationId = lease.generationId!;
       handoffEpoch = lease.handoffEpoch!;
@@ -64,8 +84,8 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   } else {
     const lease = await acquireGenerationLease(env, convId, messageId);
     if (!lease.success) {
-      logger.warn('Failed to acquire AI generation lease (AI paused?)', { conversation_id: convId, source_event_ref: event.eventId });
-      return; 
+      await cancelRun(lease.handoffEpoch);
+      return;
     }
     generationId = lease.generationId!;
     handoffEpoch = lease.handoffEpoch!;
@@ -75,7 +95,10 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   async function performGeneration() {
     const startTime = Date.now();
     try {
-      await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'PENDING');
+      const runClaimed = await saveDurableAiRun(
+        env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'PENDING'
+      );
+      if (!runClaimed) return;
 
       const messages = await buildAIContext(env, convId, config);
       const result = await generateChatCompletion(config, messages);
@@ -96,7 +119,18 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       aiContent = result.content!;
       responseId = result.responseId || `ai_res_${stableAiJobId}`;
 
-      await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'SUCCESS', responseId, aiContent);
+      if (env.hooks?.beforeAiRunSuccessPersist) {
+        await env.hooks.beforeAiRunSuccessPersist(env, convId);
+      }
+      const resultSaved = await saveGeneratedAiResult(
+        env, stableAiJobId, convId, generationId, handoffEpoch, responseId, aiContent
+      );
+      if (!resultSaved) {
+        await saveDurableAiRun(
+          env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'DISCARDED_STALE'
+        );
+        throw new Error('DISCARDED_STALE');
+      }
 
       logger.info('AI generation successful, starting outbound delivery', {
         conversation_id: convId,
@@ -124,7 +158,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       if (!isEpochValid) {
         await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'CANCELLED_BY_HANDOFF');
         logger.warn('AI result permanently cancelled by human handoff before delivery', { conversation_id: convId, operation_id: generationId });
-        throw new Error('CANCELLED_BY_HANDOFF'); // abort outbound immediately
+        throw new CancelledBeforeDeliveryError();
       }
 
       let res;

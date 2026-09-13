@@ -16,17 +16,33 @@ export interface AIConfig {
 
 function parseBoundedInt(val: string | undefined, def: number, min: number, max: number): number {
   if (!val) return def;
-  const parsed = parseInt(val, 10);
-  if (isNaN(parsed)) return def;
+  const normalized = val.trim();
+  if (!/^\d+$/.test(normalized)) return def;
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed)) return def;
   if (parsed < min) return min;
   if (parsed > max) return max;
   return parsed;
 }
 
+function parseBaseUrl(value: string | undefined): string {
+  const raw = value?.trim() || '';
+  if (!raw || raw.length > 2048) return '';
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      return '';
+    }
+    return raw.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
 export function getAIConfig(env: Env): AIConfig {
-  const baseUrl = env.AI_BASE_URL || '';
-  const apiKey = env.AI_API_KEY || '';
-  const model = env.AI_MODEL || '';
+  const baseUrl = parseBaseUrl(env.AI_BASE_URL);
+  const apiKey = env.AI_API_KEY?.trim() || '';
+  const model = (env.AI_MODEL?.trim() || '').slice(0, 256);
 
   const enabled = Boolean(baseUrl && apiKey && model);
 
@@ -46,7 +62,7 @@ export function getAIConfig(env: Env): AIConfig {
     baseUrl,
     apiKey,
     model,
-    systemPrompt: env.AI_SYSTEM_PROMPT || 'You are a helpful customer support AI.',
+    systemPrompt: (env.AI_SYSTEM_PROMPT || 'You are a helpful customer support AI.').slice(0, 20000),
     requestTimeoutMs,
     contextMaxMessages: parseBoundedInt(env.AI_CONTEXT_MAX_MESSAGES, 20, 1, 100),
     contextMaxChars: parseBoundedInt(env.AI_CONTEXT_MAX_CHARS, 12000, 1000, 100000),

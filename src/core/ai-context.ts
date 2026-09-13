@@ -11,7 +11,7 @@ export async function buildAIContext(
   convId: string,
   config: AIConfig
 ): Promise<AIMessage[]> {
-  // Use created_at DESC, id DESC for deterministic ordering
+  // D1 rowid is monotonic for these inserts and breaks same-second timestamp ties.
   const messages = await env.DB.prepare(
     `SELECT actor_role, text_content 
      FROM messages 
@@ -27,8 +27,15 @@ export async function buildAIContext(
   let charCount = 0;
 
   for (const row of messages.results) {
-    let text = row.text_content || '';
-    const role = row.actor_role === 'CUSTOMER' ? 'user' : 'assistant';
+    const originalText = row.text_content || '';
+    const role: AIMessage['role'] = row.actor_role === 'CUSTOMER'
+      ? 'user'
+      : row.actor_role === 'AI'
+        ? 'assistant'
+        : 'system';
+    let text = row.actor_role === 'OPERATOR'
+      ? `Human operator: ${originalText}`
+      : originalText;
     
     // Hard limit truncation
     if (charCount + text.length > config.contextMaxChars) {
