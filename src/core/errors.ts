@@ -20,6 +20,13 @@ export class RetryableProcessingError extends Error {
   }
 }
 
+export class CancelledBeforeDeliveryError extends Error {
+  constructor() {
+    super('CANCELLED_BY_HANDOFF');
+    this.name = 'CancelledBeforeDeliveryError';
+  }
+}
+
 export function safeErrorCode(error: unknown): string {
   if (error instanceof ProviderDeliveryError) {
     return `${error.outcome}:${error.code}`;

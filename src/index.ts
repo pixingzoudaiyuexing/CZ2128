@@ -1,10 +1,10 @@
 import { verifyChatwootWebhook } from './adapters/chatwoot/webhook';
 import { verifyTelegramWebhook } from './adapters/telegram/webhook';
-import { SupportEvent } from './core/events';
-import { handleQueueEvent } from './queue/consumer';
-import { logger } from './observability/logger';
-import { RetryableProcessingError } from './core/errors';
 import { Env } from './config/env';
+import { RetryableProcessingError } from './core/errors';
+import { SupportEvent } from './core/events';
+import { logger } from './observability/logger';
+import { handleQueueEvent } from './queue/consumer';
 
 export type { Env } from './config/env';
 
@@ -76,7 +76,7 @@ export default {
 
     if (url.pathname === '/webhooks/chatwoot') {
       const { valid, payload, deliveryId, rawBody } = await verifyChatwootWebhook(request, env.CHATWOOT_WEBHOOK_SECRET);
-      
+
       if (!valid) {
         return new Response('Unauthorized', { status: 401 });
       }
@@ -89,7 +89,6 @@ export default {
         return new Response('Ignored', { status: 200 });
       }
 
-      // Fast-drop only after the signature has been verified.
       if (payload.event === 'message_created' && payload.source_id && String(payload.source_id).startsWith('cz2128:')) {
         return new Response('Echo dropped', { status: 200 });
       }
@@ -116,9 +115,9 @@ export default {
       }
       const pathSegment = url.pathname.replace('/webhooks/telegram/', '');
       const { valid, payload, updateId } = await verifyTelegramWebhook(
-        request, 
-        pathSegment, 
-        env.TELEGRAM_SECRET_PATH, 
+        request,
+        pathSegment,
+        env.TELEGRAM_SECRET_PATH,
         env.TELEGRAM_WEBHOOK_SECRET,
         env.BOT_GROUP_ID
       );
@@ -130,7 +129,7 @@ export default {
       if (!updateId) {
         return new Response('Malformed update', { status: 400 });
       }
-      
+
       const telegramMessage = payload.message || payload.edited_message;
       if (!telegramMessage) {
         return new Response('Ignored', { status: 200 });

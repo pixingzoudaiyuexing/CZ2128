@@ -38,5 +38,14 @@ export interface TelegramMessageEvent extends QueueEventBase {
   };
 }
 
+export interface AiTriggerEvent extends QueueEventBase {
+  source: 'internal';
+  type: 'ai_trigger';
+  payload: {
+    convId: string;
+    messageId: string;
+  };
+}
+
 export type ChatwootEvent = ChatwootMessageEvent | ChatwootLifecycleEvent;
-export type SupportEvent = ChatwootEvent | TelegramMessageEvent;
+export type SupportEvent = ChatwootEvent | TelegramMessageEvent | AiTriggerEvent;

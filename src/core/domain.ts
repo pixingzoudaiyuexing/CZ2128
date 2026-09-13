@@ -8,6 +8,12 @@ export interface Conversation {
   operator_thread_ref: string | null;
   operator_thread_status: 'OPEN' | 'CLOSED';
   last_operator_reply_at: number | null;
+  ai_mode: 'ENABLED' | 'PAUSED_OPERATOR' | 'PAUSED_MANUAL';
+  ai_generation_id: string | null;
+  ai_generation_started_at: number | null;
+  ai_generation_message_id: string | null;
+  ai_handoff_epoch: number;
+  last_telegram_operator_update_id: number | null;
   created_at: number;
   updated_at: number;
   version: number;

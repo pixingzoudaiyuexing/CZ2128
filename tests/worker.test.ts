@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Worker from '../src/index';
+import { RetryableProcessingError } from '../src/core/errors';
+import * as consumer from '../src/queue/consumer';
 
 vi.mock('../src/queue/consumer', () => ({
   handleQueueEvent: vi.fn(async (event: any) => {
@@ -26,6 +28,9 @@ describe('Worker Integration', () => {
   let ctx: any;
 
   beforeEach(() => {
+    vi.mocked(consumer.handleQueueEvent).mockImplementation(async (event: any) => {
+      if (event.type === 'error_trigger') throw new Error('Simulated failure');
+    });
     env = {
       DB: new MockD1(),
       QUEUE: new MockQueue(),
@@ -66,8 +71,6 @@ describe('Worker Integration', () => {
     const res = await Worker.fetch(req, env, ctx);
     expect(res.status).toBe(200);
     expect(env.QUEUE.messages.length).toBe(1);
-    expect(env.QUEUE.messages[0].source).toBe('chatwoot');
-    expect(env.QUEUE.messages[0].eventId).toBe('delivery-1');
     expect(env.QUEUE.messages[0]).toEqual({
       version: 1,
       source: 'chatwoot',
@@ -159,14 +162,13 @@ describe('Worker Integration', () => {
 
     const res = await Worker.fetch(req, env, ctx);
     expect(res.status).toBe(200);
-    expect(env.QUEUE.messages.length).toBe(1);
-    expect(env.QUEUE.messages[0].source).toBe('telegram');
-    expect(env.QUEUE.messages[0].eventId).toBe('tg_456');
-    expect(env.QUEUE.messages[0].payload).toEqual({
-      updateRef: '456',
-      messageRef: '9',
-      threadRef: '8',
-      content: 'Reply'
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toEqual({
+      version: 1,
+      source: 'telegram',
+      type: 'message_created',
+      eventId: 'tg_456',
+      payload: { updateRef: '456', messageRef: '9', threadRef: '8', content: 'Reply' }
     });
   });
 
@@ -278,6 +280,22 @@ describe('Worker Integration', () => {
     expect(env.QUEUE.messages).toHaveLength(0);
   });
 
+  it('uses the canonical delayed retry error', async () => {
+    vi.mocked(consumer.handleQueueEvent).mockRejectedValueOnce(new RetryableProcessingError('Locked', 37));
+    const message = {
+      body: { version: 1, source: 'internal', type: 'ai_trigger', eventId: '1', payload: { convId: 'c1', messageId: 'm1' } },
+      ack: vi.fn(),
+      retry: vi.fn()
+    };
+
+    if (Worker.queue) {
+      await Worker.queue({ messages: [message] } as any, env, ctx);
+    }
+
+    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 37 });
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+
   it('queue() -> runtime -> ack/retry', async () => {
     let acked = 0;
     let retried = 0;
@@ -299,7 +317,7 @@ describe('Worker Integration', () => {
     if (Worker.queue) {
       await Worker.queue(batch as any, env, ctx);
     }
-    
+
     expect(acked).toBe(1);
     expect(retried).toBe(1);
   });

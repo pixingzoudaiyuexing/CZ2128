@@ -1,13 +1,14 @@
+import { createTelegramTopic, sendTelegramMessage, closeTelegramTopic, reopenTelegramTopic } from '../adapters/telegram/api';
 import { Env } from '../config/env';
-import { ChatwootEvent } from '../core/events';
+import { pauseOperator } from '../core/ai-state';
 import {
   getOrCreateConversation,
   insertMessage,
   updateOperatorThreadRef,
   updateOperatorThreadStatus
 } from '../core/conversation-service';
+import { ChatwootEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
-import { createTelegramTopic, sendTelegramMessage, closeTelegramTopic, reopenTelegramTopic } from '../adapters/telegram/api';
 import { logger } from '../observability/logger';
 
 export async function processChatwootEvent(event: ChatwootEvent, env: Env): Promise<void> {
@@ -22,6 +23,10 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
     );
 
     const isOperator = payload.actorRole === 'OPERATOR';
+    if (isOperator) {
+      await pauseOperator(env, conv.id);
+    }
+
     await insertMessage(
       env,
       conv.id,
@@ -68,6 +73,19 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
       },
       `send_tg_${payload.messageRef}`
     );
+
+    if (!isOperator) {
+      await env.QUEUE.send({
+        version: 1,
+        source: 'internal',
+        type: 'ai_trigger',
+        eventId: `ai_trigger:${conv.id}:${payload.messageRef}`,
+        payload: {
+          convId: conv.id,
+          messageId: payload.messageRef
+        }
+      });
+    }
     return;
   }
 

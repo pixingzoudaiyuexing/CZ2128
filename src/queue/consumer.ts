@@ -1,9 +1,21 @@
-import { SupportEvent } from '../core/events';
 import { Env } from '../config/env';
+import { getAIConfig } from '../config/ai';
+import { RetryableProcessingError, safeErrorCode } from '../core/errors';
+import { SupportEvent } from '../core/events';
+import { logger } from '../observability/logger';
+import { processAiTrigger } from './ai-handler';
 import { processChatwootEvent } from './chatwoot-handler';
 import { processTelegramEvent } from './telegram-handler';
-import { logger } from '../observability/logger';
-import { RetryableProcessingError, safeErrorCode } from '../core/errors';
+
+const NORMAL_EVENT_LEASE_SECONDS = 30;
+const AI_EVENT_SAFETY_MARGIN_SECONDS = 15;
+
+function eventLeaseSeconds(event: SupportEvent, env: Env): number {
+  if (event.source === 'internal') {
+    return getAIConfig(env).generationLeaseSeconds + AI_EVENT_SAFETY_MARGIN_SECONDS;
+  }
+  return NORMAL_EVENT_LEASE_SECONDS;
+}
 
 export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<void> {
   if (event.version !== 1) {
@@ -11,7 +23,8 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const leaseUntil = now + 30; // 30s lease
+  const leaseSeconds = eventLeaseSeconds(event, env);
+  const leaseUntil = now + leaseSeconds;
   const claimToken = crypto.randomUUID();
 
   const insertResult = await env.DB.prepare(
@@ -22,27 +35,28 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
   const inserted = insertResult.meta.changes === 1;
 
   if (!inserted) {
-    // Atomic reclaim of FAILED or expired PROCESSING
     const claimResult = await env.DB.prepare(
-      `UPDATE event_receipts 
+      `UPDATE event_receipts
        SET status = 'PROCESSING', attempt_count = attempt_count + 1, lease_until = ?, claim_token = ?
-       WHERE source = ? AND source_event_ref = ? 
+       WHERE source = ? AND source_event_ref = ?
        AND (status = 'FAILED' OR (status = 'PROCESSING' AND lease_until <= ?))`
     ).bind(leaseUntil, claimToken, event.source, event.eventId, now).run();
 
     if (claimResult.meta.changes === 0) {
-      // Check if it's already processed or held by someone else
       const receipt = await env.DB.prepare(
-        'SELECT status FROM event_receipts WHERE source = ? AND source_event_ref = ?'
-      ).bind(event.source, event.eventId).first<any>();
+        'SELECT status, lease_until FROM event_receipts WHERE source = ? AND source_event_ref = ?'
+      ).bind(event.source, event.eventId).first<{ status: string; lease_until: number | null }>();
 
       if (receipt?.status === 'PROCESSED') {
         logger.info('Duplicate queue event, already processed', { source: event.source, source_event_ref: event.eventId });
         return;
       }
-      
+
+      const retryAfter = receipt?.lease_until && receipt.lease_until > now
+        ? receipt.lease_until - now
+        : leaseSeconds;
       logger.info('Event claim held by another worker', { source: event.source, source_event_ref: event.eventId });
-      throw new RetryableProcessingError('Event receipt lease is active', 30);
+      throw new RetryableProcessingError('Event receipt lease is active', retryAfter);
     }
   }
 
@@ -50,36 +64,36 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
   try {
     if (event.source === 'chatwoot') {
       await processChatwootEvent(event, env);
-    } else {
+    } else if (event.source === 'telegram') {
       await processTelegramEvent(event, env);
+    } else {
+      await processAiTrigger(event, env);
     }
-    
+
     const processedResult = await env.DB.prepare(
       `UPDATE event_receipts SET status = 'PROCESSED', processed_at = ?, lease_until = NULL, claim_token = NULL
        WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSING' AND claim_token = ?`
     ).bind(Math.floor(Date.now() / 1000), event.source, event.eventId, claimToken).run();
     if (processedResult.meta.changes !== 1) {
-      throw new RetryableProcessingError('Event receipt ownership was lost before completion', 30);
+      throw new RetryableProcessingError('Event receipt ownership was lost before completion', leaseSeconds);
     }
 
-    logger.info('Event processed successfully', { 
-      source: event.source, 
+    logger.info('Event processed successfully', {
+      source: event.source,
       source_event_ref: event.eventId,
       duration_ms: Date.now() - startTime
     });
-
   } catch (error: unknown) {
     await env.DB.prepare(
       `UPDATE event_receipts SET status = 'FAILED', last_error = ?, lease_until = NULL, claim_token = NULL
        WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSING' AND claim_token = ?`
     ).bind(safeErrorCode(error), event.source, event.eventId, claimToken).run();
-    
+
     logger.error('Event processing failed', error, {
       source: event.source,
       source_event_ref: event.eventId,
       duration_ms: Date.now() - startTime
     });
-    
     throw error;
   }
 }

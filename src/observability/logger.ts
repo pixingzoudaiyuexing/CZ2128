@@ -4,6 +4,7 @@ export interface LogContext {
   source_event_ref?: string;
   conversation_id?: string;
   operation_id?: string;
+  generation_id?: string;
   retry_count?: number;
   result?: string;
   error_category?: string;
@@ -20,11 +21,11 @@ export const logger = {
     console.log(JSON.stringify({ level: 'info', msg, ...context }));
   },
   error(msg: string, error: unknown, context?: LogContext) {
-    console.error(JSON.stringify({ 
-      level: 'error', 
-      msg, 
+    console.error(JSON.stringify({
+      level: 'error',
+      msg,
       error: errorName(error),
-      ...context 
+      ...context
     }));
   },
   warn(msg: string, context?: LogContext) {

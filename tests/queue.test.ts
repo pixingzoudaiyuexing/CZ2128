@@ -67,6 +67,25 @@ class MockPreparedStatement {
         c.operator_thread_status = nextStatus; c.updated_at = updatedAt; c.version += 1; meta.changes = 1;
       }
     }
+    if (this.query.includes('last_telegram_operator_update_id = ?')) {
+      const [operatorReplyAt, updateId, updatedAt, id, expectedUpdateId] = this.boundParams;
+      const c = this.db.tables.conversations.find(x => x.id === id);
+      if (
+        c &&
+        (c.last_telegram_operator_update_id === undefined || c.last_telegram_operator_update_id === null ||
+          Number(c.last_telegram_operator_update_id) < Number(expectedUpdateId))
+      ) {
+        if (c.ai_mode !== 'PAUSED_MANUAL') c.ai_mode = 'PAUSED_OPERATOR';
+        c.last_operator_reply_at = operatorReplyAt;
+        c.ai_generation_id = null;
+        c.ai_generation_started_at = null;
+        c.ai_generation_message_id = null;
+        c.ai_handoff_epoch = (c.ai_handoff_epoch || 0) + 1;
+        c.last_telegram_operator_update_id = updateId;
+        c.updated_at = updatedAt;
+        meta.changes = 1;
+      }
+    }
     if (this.query.includes('INSERT INTO messages')) {
       const [id, cid, p, pmr, d, ar, mt, tc, cat] = this.boundParams;
       if (!this.db.tables.messages.find(x => x.provider === p && x.provider_message_ref === pmr)) {
@@ -86,7 +105,7 @@ class MockPreparedStatement {
         meta.changes = 1;
       }
     }
-    if (this.query.includes('UPDATE event_receipts \n       SET status = \'PROCESSING\'')) {
+    if (this.query.includes("SET status = 'PROCESSING', attempt_count = attempt_count + 1")) {
       const [lu, claimToken, s, ser, now] = this.boundParams;
       const r = this.db.tables.event_receipts.find(x => x.source === s && x.source_event_ref === ser);
       if (r && (r.status === 'FAILED' || (r.status === 'PROCESSING' && r.lease_until <= now))) {
@@ -195,13 +214,19 @@ function chatwootMessageEvent(
   };
 }
 
-function telegramMessageEvent(eventId: string, messageRef: string, threadRef: string, content: string): SupportEvent {
+function telegramMessageEvent(
+  eventId: string,
+  updateRef: string,
+  messageRef: string,
+  threadRef: string,
+  content: string
+): SupportEvent {
   return {
     version: 1,
     eventId,
     source: 'telegram',
     type: 'message_created',
-    payload: { updateRef: eventId, messageRef, threadRef, content }
+    payload: { updateRef, messageRef, threadRef, content }
   };
 }
 
@@ -211,7 +236,7 @@ describe('Queue Event Processing', () => {
   beforeEach(() => {
     env = {
       DB: new MockD1(),
-      BOT_GROUP_ID: '-1001',
+      QUEUE: new (class { async send() {} })(), BOT_GROUP_ID: '-1001',
       CHATWOOT_API_TOKEN: 'token',
       CHATWOOT_API_URL: 'http://chatwoot',
       TELEGRAM_BOT_TOKEN: 'tg_token'
@@ -291,7 +316,7 @@ describe('Queue Event Processing', () => {
       status: 'SENDING', attempt_count: 1, lease_until: Math.floor(Date.now() / 1000) - 100, created_at: 0, updated_at: 0
     });
 
-    const event = telegramMessageEvent('tg-evt-2', '301', '99', 'Fail reply');
+    const event = telegramMessageEvent('tg-evt-2', '2', '301', '99', 'Fail reply');
 
     await handleQueueEvent(event, env);
     expect(db.tables.outbound_operations[0].status).toBe('AMBIGUOUS');
@@ -373,7 +398,7 @@ describe('Queue Event Processing', () => {
       id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
       operator_channel: 'telegram', operator_thread_ref: '99'
     });
-    const event = telegramMessageEvent('tg_701', '301', '99', 'Reply');
+    const event = telegramMessageEvent('tg_701', '701', '301', '99', 'Reply');
 
     await handleQueueEvent(event, env);
     await handleQueueEvent(event, env);
