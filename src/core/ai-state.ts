@@ -13,6 +13,7 @@ export async function pauseOperator(env: Env, convId: string): Promise<void> {
          ai_generation_id = NULL,
          ai_generation_started_at = NULL,
          ai_generation_message_id = NULL,
+         ai_handoff_epoch = ai_handoff_epoch + 1,
          updated_at = ?,
          version = version + 1
      WHERE id = ? AND ai_mode != 'PAUSED_MANUAL'`
@@ -29,6 +30,7 @@ export async function pauseManual(env: Env, convId: string): Promise<void> {
          ai_generation_id = NULL,
          ai_generation_started_at = NULL,
          ai_generation_message_id = NULL,
+         ai_handoff_epoch = ai_handoff_epoch + 1,
          updated_at = ?,
          version = version + 1
      WHERE id = ?`
@@ -81,27 +83,25 @@ export async function acquireGenerationLease(
   env: Env, 
   convId: string, 
   messageId: string
-): Promise<{ success: boolean; generationId?: string }> {
+): Promise<{ success: boolean; generationId?: string; handoffEpoch?: number }> {
   const config = getAIConfig(env);
   const now = Math.floor(Date.now() / 1000);
   const generationId = crypto.randomUUID();
   const leaseExpiryThreshold = now - config.generationLeaseSeconds;
 
-  // Before acquiring, check if we're locked so we can calculate retry delay
   const conv = await env.DB.prepare(
-    `SELECT ai_generation_id, ai_generation_started_at 
+    `SELECT ai_generation_id, ai_generation_started_at, ai_handoff_epoch 
      FROM conversations 
      WHERE id = ? AND ai_mode = 'ENABLED'`
-  ).bind(convId).first<Conversation>();
+  ).bind(convId).first<any>();
 
   if (!conv) {
-    return { success: false }; // Not ENABLED or conversation doesn't exist
+    return { success: false }; 
   }
 
   if (conv.ai_generation_id && conv.ai_generation_started_at && conv.ai_generation_started_at >= leaseExpiryThreshold) {
-    // Locked by active generation. Calculate delay.
     const expiresAt = conv.ai_generation_started_at + config.generationLeaseSeconds;
-    const delaySeconds = expiresAt - now + 2; // 2 seconds safety margin
+    const delaySeconds = expiresAt - now + 2;
     throw new RetryLaterError('AI Generation Lease locked', Math.max(delaySeconds, 2));
   }
 
@@ -118,7 +118,7 @@ export async function acquireGenerationLease(
   ).bind(generationId, now, messageId, now, convId, leaseExpiryThreshold).run();
 
   if (claim.meta.changes === 1) {
-    return { success: true, generationId };
+    return { success: true, generationId, handoffEpoch: conv.ai_handoff_epoch };
   }
   return { success: false };
 }
@@ -153,6 +153,19 @@ export async function verifyGenerationLease(
   return conv.ai_mode === 'ENABLED' && conv.ai_generation_id === generationId;
 }
 
+export async function verifyHandoffEpoch(
+  env: Env,
+  convId: string,
+  expectedEpoch: number
+): Promise<boolean> {
+  const conv = await env.DB.prepare(
+    `SELECT ai_mode, ai_handoff_epoch FROM conversations WHERE id = ?`
+  ).bind(convId).first<any>();
+  
+  if (!conv) return false;
+  return conv.ai_mode === 'ENABLED' && conv.ai_handoff_epoch === expectedEpoch;
+}
+
 export async function getDurableAiRun(env: Env, triggerEventRef: string) {
   return await env.DB.prepare(
     `SELECT * FROM ai_runs WHERE trigger_event_ref = ?`
@@ -165,6 +178,7 @@ export async function saveDurableAiRun(
   convId: string,
   triggerMessageRef: string,
   generationId: string,
+  handoffEpoch: number,
   status: string,
   providerResponseRef?: string,
   responseText?: string,
@@ -172,12 +186,12 @@ export async function saveDurableAiRun(
 ) {
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
-    `INSERT INTO ai_runs (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, provider_response_ref, response_text, status, last_error, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO ai_runs (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch, provider_response_ref, response_text, status, last_error, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (trigger_event_ref) DO UPDATE 
-     SET status = ?, provider_response_ref = ?, response_text = ?, last_error = ?, updated_at = ?`
+     SET status = ?, provider_response_ref = ?, response_text = ?, last_error = ?, generation_id = ?, handoff_epoch = ?, updated_at = ?`
   ).bind(
-    triggerEventRef, convId, triggerMessageRef, generationId, providerResponseRef || null, responseText || null, status, lastError || null, now, now,
-    status, providerResponseRef || null, responseText || null, lastError || null, now
+    triggerEventRef, convId, triggerMessageRef, generationId, handoffEpoch, providerResponseRef || null, responseText || null, status, lastError || null, now, now,
+    status, providerResponseRef || null, responseText || null, lastError || null, generationId, handoffEpoch, now
   ).run();
 }

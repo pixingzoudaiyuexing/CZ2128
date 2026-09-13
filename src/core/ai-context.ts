@@ -19,7 +19,7 @@ export async function buildAIContext(
        AND message_type = 'TEXT' 
        AND text_content IS NOT NULL 
        AND actor_role IN ('CUSTOMER', 'AI', 'OPERATOR')
-     ORDER BY created_at DESC, id DESC
+     ORDER BY created_at DESC, rowid DESC
      LIMIT ?`
   ).bind(convId, config.contextMaxMessages).all<any>();
 

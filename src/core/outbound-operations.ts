@@ -97,6 +97,15 @@ export async function executeOutboundOperation(
       error_category: 'PROVIDER_ERROR',
       duration_ms: Date.now() - startTime
     });
+    
+    if (error.message === 'CANCELLED_BY_HANDOFF') {
+      await env.DB.prepare(
+        `UPDATE outbound_operations 
+         SET status = 'FAILED_FINAL', last_error = ?, updated_at = ?
+         WHERE id = ?`
+      ).bind('CANCELLED_BY_HANDOFF', Math.floor(Date.now() / 1000), id).run();
+      return { status: 'FAILED_FINAL' };
+    }
 
     await env.DB.prepare(
       `UPDATE outbound_operations 

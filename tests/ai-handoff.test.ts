@@ -63,7 +63,7 @@ class MockPreparedStatement {
     } else if (this.query.includes("INSERT INTO ai_runs")) {
       const existing = this.db.tables.ai_runs.find(r => r.trigger_event_ref === this.boundParams[0]);
       if (existing) {
-        existing.status = this.boundParams[10]; existing.provider_response_ref = this.boundParams[11]; existing.response_text = this.boundParams[12];
+        existing.status = this.boundParams[11]; existing.provider_response_ref = this.boundParams[12]; existing.response_text = this.boundParams[13];
       } else {
         this.db.tables.ai_runs.push({ trigger_event_ref: this.boundParams[0], status: this.boundParams[6], response_text: this.boundParams[5], provider_response_ref: this.boundParams[4], generation_id: this.boundParams[3] });
       }

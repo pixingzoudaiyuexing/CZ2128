@@ -6,6 +6,7 @@ import { RetryLaterError } from './core/events';
 import { logger } from './observability/logger';
 
 export interface Env {
+  hooks?: { beforeVisibleSend?: (env: Env, accountRef: string, convRef: string, content: string, opId: string) => Promise<{ id?: number | string }> };
   DB: D1Database;
   QUEUE: Queue<SupportEvent>;
   CHATWOOT_WEBHOOK_SECRET: string;
@@ -100,7 +101,11 @@ export default {
       try {
         await handleQueueEvent(message.body, env);
         message.ack();
-      } catch (error) {
+      } catch (error: any) {
+        if (error instanceof RetryLaterError || error?.name === 'RetryLaterError') {
+          message.retry({ delaySeconds: error.delaySeconds });
+          continue;
+        }
         logger.error('Failed to process queue message', error, { eventId: message.body.eventId });
         message.retry();
       }
