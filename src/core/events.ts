@@ -1,3 +1,5 @@
+import { AttachmentDescriptor } from './attachments';
+
 interface QueueEventBase {
   version: 1;
   eventId: string;
@@ -12,8 +14,9 @@ export interface ChatwootMessageEvent extends QueueEventBase {
     customerRef: string;
     customerName?: string;
     messageRef: string;
-    content: string;
+    content?: string;
     actorRole: 'CUSTOMER' | 'OPERATOR';
+    attachments?: AttachmentDescriptor[];
   };
 }
 
@@ -34,7 +37,8 @@ export interface TelegramMessageEvent extends QueueEventBase {
     updateRef: string;
     messageRef: string;
     threadRef: string;
-    content: string;
+    content?: string;
+    attachments?: AttachmentDescriptor[];
   };
 }
 
@@ -47,5 +51,15 @@ export interface AiTriggerEvent extends QueueEventBase {
   };
 }
 
+export interface AttachmentTransferEvent extends QueueEventBase {
+  source: 'internal';
+  type: 'attachment_transfer';
+  payload: {
+    attachmentId: string;
+    accessToken: string;
+    locator: AttachmentDescriptor['locator'];
+  };
+}
+
 export type ChatwootEvent = ChatwootMessageEvent | ChatwootLifecycleEvent;
-export type SupportEvent = ChatwootEvent | TelegramMessageEvent | AiTriggerEvent;
+export type SupportEvent = ChatwootEvent | TelegramMessageEvent | AiTriggerEvent | AttachmentTransferEvent;

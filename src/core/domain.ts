@@ -46,7 +46,7 @@ export interface OutboundOperation {
   id: string;
   conversation_id: string;
   destination_provider: string;
-  operation_type: 'SEND_MESSAGE' | 'CREATE_TOPIC' | 'CLOSE_TOPIC' | 'REOPEN_TOPIC';
+  operation_type: 'SEND_MESSAGE' | 'SEND_ATTACHMENT' | 'CREATE_TOPIC' | 'CLOSE_TOPIC' | 'REOPEN_TOPIC';
   status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED_RETRYABLE' | 'FAILED_FINAL' | 'AMBIGUOUS';
   provider_message_ref: string | null;
   attempt_count: number;
