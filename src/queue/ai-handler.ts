@@ -112,7 +112,7 @@ export async function processAiTrigger(event: SupportEvent, env: Env): Promise<v
   // Check if generation returned successfully, or if it was thrown above (e.g. DISCARDED_STALE or FAILED)
   if (!aiContent!) return;
 
-  await executeOutboundOperation(
+  const chatwootDelivery = await executeOutboundOperation(
     env,
     convId,
     'chatwoot',
@@ -142,6 +142,18 @@ export async function processAiTrigger(event: SupportEvent, env: Env): Promise<v
   );
 
   if (conv!.operator_thread_ref) {
+    if (chatwootDelivery.status !== 'SENT') {
+      logger.info(
+        'Skipping Telegram AI mirror because Chatwoot delivery is not confirmed SENT',
+        {
+          conversation_id: convId,
+          operation_id: stableAiJobId,
+          result: chatwootDelivery.status
+        }
+      );
+      return;
+    }
+
     await executeOutboundOperation(
       env,
       convId,
