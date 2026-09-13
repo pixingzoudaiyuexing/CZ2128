@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Architecture Draft / Pre-Implementation**
+Status: **Architecture Approved / Phase 1 Implementation Ready**
 
 ## Purpose
 
@@ -29,8 +29,8 @@ Chatwoot, Telegram, Cloudflare, and any future business system are adapters/infr
 7. AI replies use recent conversation context rather than only the current message.
 8. Images and files can be uploaded from Telegram, stored temporarily in R2, and delivered to the customer as an image or expiring download link.
 9. Incoming webhooks are authenticated and idempotent.
-10. Failed asynchronous work is retried safely without duplicating customer-visible messages.
-11. Core flows have automated tests.
+10. Queue retries use stable event/operation identity so normal retries do not duplicate customer-visible messages; ambiguous third-party delivery outcomes are explicitly recorded rather than hidden behind a false exactly-once guarantee.
+11. Core flows have automated tests, including duplicate delivery and AI/operator race cases.
 
 ## V1 Non-Goals
 
@@ -45,6 +45,7 @@ The following are intentionally deferred:
 - Multi-tenant SaaS control plane
 - Custom analytics/admin dashboard
 - Durable Objects unless testing proves D1/Queues insufficient for conversation consistency
+- KV caching without a measured need
 
 ## Product Principles
 
@@ -52,8 +53,9 @@ The following are intentionally deferred:
 - **Platform-agnostic core:** Core code uses conversation/message/customer/operator abstractions, not Chatwoot-specific domain types.
 - **Reliable before clever:** Duplicate prevention, retries, message ordering, security, and observability come before advanced AI features.
 - **AI is optional:** Human support must continue to work when the AI provider is unavailable.
-- **Private-by-default attachments:** R2 objects are private; access is granted through short-lived gateway links.
-- **Exact expiration:** Application-level expiry is enforced even if physical R2 lifecycle deletion happens later.
+- **Human wins races:** If an operator intervenes while AI is generating, the human state wins and stale AI output is discarded.
+- **Private-by-default attachments:** R2 objects are private; access is granted through opaque expiring gateway links.
+- **Exact logical expiration:** Application-level expiry is enforced even if physical R2 lifecycle deletion happens later.
 - **No automatic unreviewed learning:** Human answers may become knowledge candidates, but publication requires review in a later phase.
 
 ## Legacy Reference
@@ -71,4 +73,4 @@ Crisp-specific APIs, session models, content-hash echo detection, and KV-as-prim
 
 ## Definition of V1 Done
 
-V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-to-end with D1 persistence, webhook verification, provider-ID-based idempotency/echo prevention, retry behavior, and automated tests for the critical state transitions.
+V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-to-end with D1 persistence, webhook verification, provider-ID/operation-ID-based idempotency and echo prevention, Queue retry behavior, guarded AI generation, attachment expiry, and automated tests for critical state transitions and failure modes.
