@@ -2,6 +2,7 @@ import { verifyChatwootWebhook } from './adapters/chatwoot/webhook';
 import { verifyTelegramWebhook } from './adapters/telegram/webhook';
 import { SupportEvent } from './core/events';
 import { handleQueueEvent } from './queue/consumer';
+import { RetryLaterError } from './core/events';
 import { logger } from './observability/logger';
 
 export interface Env {

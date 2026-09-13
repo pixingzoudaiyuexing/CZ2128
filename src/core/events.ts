@@ -4,3 +4,10 @@ export interface SupportEvent {
   eventId: string;
   payload: any;
 }
+
+export class RetryLaterError extends Error {
+  constructor(message: string, public delaySeconds: number) {
+    super(message);
+    this.name = 'RetryLaterError';
+  }
+}

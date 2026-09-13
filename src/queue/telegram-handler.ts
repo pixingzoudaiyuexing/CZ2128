@@ -20,20 +20,41 @@ export async function processTelegramEvent(event: SupportEvent, env: Env): Promi
 
     if (!conv) return;
 
-    // AI Handoff commands
     if (content.trim() === '/ai_off') {
       await pauseManual(env, conv.id);
-      await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, 'AI 已关闭，后续由人工客服处理。');
+      await executeOutboundOperation(
+        env,
+        conv.id,
+        'telegram',
+        'SEND_MESSAGE',
+        async () => {
+          const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, 'AI 已关闭，后续由人工客服处理。');
+          return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
+        },
+        `ai_off_ack:${messageId}`
+      );
       return;
     }
 
     if (content.trim() === '/ai_on') {
       await resumeManual(env, conv.id);
-      await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, 'AI 已开启。');
+      await executeOutboundOperation(
+        env,
+        conv.id,
+        'telegram',
+        'SEND_MESSAGE',
+        async () => {
+          const msg = (env.AI_BASE_URL && env.AI_API_KEY && env.AI_MODEL) 
+                      ? 'AI 已开启。' 
+                      : 'AI 已允许，但当前 AI Provider 未配置。';
+          const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, msg);
+          return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
+        },
+        `ai_on_ack:${messageId}`
+      );
       return;
     }
 
-    // Normal operator reply
     await pauseOperator(env, conv.id);
 
     await insertMessage(
@@ -54,7 +75,7 @@ export async function processTelegramEvent(event: SupportEvent, env: Env): Promi
       'SEND_MESSAGE',
       async (opId) => {
         const res = await createChatwootMessage(env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, content, String(opId));
-        return { providerMessageRef: String(res.messageId) };
+        return { providerMessageRef: String((res as any).messageId || (res as any).message_id || (res as any).id) };
       },
       `send_chatwoot_${messageId}`
     );

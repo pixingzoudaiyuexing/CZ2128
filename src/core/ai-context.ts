@@ -11,6 +11,7 @@ export async function buildAIContext(
   convId: string,
   config: AIConfig
 ): Promise<AIMessage[]> {
+  // Use created_at DESC, id DESC for deterministic ordering
   const messages = await env.DB.prepare(
     `SELECT actor_role, text_content 
      FROM messages 
@@ -18,7 +19,7 @@ export async function buildAIContext(
        AND message_type = 'TEXT' 
        AND text_content IS NOT NULL 
        AND actor_role IN ('CUSTOMER', 'AI', 'OPERATOR')
-     ORDER BY created_at DESC 
+     ORDER BY created_at DESC, id DESC
      LIMIT ?`
   ).bind(convId, config.contextMaxMessages).all<any>();
 
@@ -26,12 +27,19 @@ export async function buildAIContext(
   let charCount = 0;
 
   for (const row of messages.results) {
-    const text = row.text_content || '';
-    if (charCount + text.length > config.contextMaxChars && selected.length > 0) {
+    let text = row.text_content || '';
+    const role = row.actor_role === 'CUSTOMER' ? 'user' : 'assistant';
+    
+    // Hard limit truncation
+    if (charCount + text.length > config.contextMaxChars) {
+      const allowedLength = config.contextMaxChars - charCount;
+      if (allowedLength > 0) {
+        text = text.substring(0, allowedLength);
+        selected.push({ role, content: text });
+      }
       break; 
     }
 
-    const role = row.actor_role === 'CUSTOMER' ? 'user' : 'assistant';
     selected.push({ role, content: text });
     charCount += text.length;
   }
