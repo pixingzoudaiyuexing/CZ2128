@@ -3,6 +3,7 @@ import { SupportEvent } from '../core/events';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { executeOutboundOperation } from '../core/outbound-operations';
 import { createTelegramTopic, sendTelegramMessage, closeTelegramTopic, reopenTelegramTopic } from '../adapters/telegram/api';
+import { pauseOperator } from '../core/ai-state';
 import { logger } from '../observability/logger';
 
 export async function processChatwootEvent(event: SupportEvent, env: Env): Promise<void> {
@@ -11,22 +12,15 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
   const conversationId = String(payload.conversation?.id || payload.id);
 
   if (event.type === 'message_created') {
-    // Phase 1 only processes incoming (customer) or outgoing (human operator)
     if (payload.message_type !== 'incoming' && payload.message_type !== 'outgoing') {
       return;
     }
 
     const isOutgoing = payload.message_type === 'outgoing';
+    const isHumanOperator = isOutgoing && payload.sender?.type === 'user' && !payload.private && !(payload.source_id && String(payload.source_id).startsWith('cz2128:'));
 
-    // Verify it's a real human outgoing message
-    if (isOutgoing) {
-      if (payload.private) return; // Don't forward private notes
-      
-      const senderType = payload.sender?.type;
-      if (senderType === 'agent_bot' || senderType === 'system') return; // Don't forward bot/system
-      
-      const sourceId = payload.source_id;
-      if (sourceId && String(sourceId).startsWith('cz2128:')) return; // CZ2128 echo
+    if (isOutgoing && !isHumanOperator) {
+      return;
     }
 
     const customerRef = String(payload.sender?.id);
@@ -40,7 +34,11 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
 
     const messageId = String(payload.id);
     const content = payload.content;
-    const role = isOutgoing ? 'OPERATOR' : 'CUSTOMER';
+
+    // Phase 2: If human operator replies from Chatwoot, pause AI
+    if (isHumanOperator) {
+      await pauseOperator(env, conv.id);
+    }
 
     await insertMessage(
       env,
@@ -48,14 +46,13 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
       'chatwoot',
       messageId,
       isOutgoing ? 'OUTBOUND' : 'INBOUND',
-      role,
+      isHumanOperator ? 'OPERATOR' : 'CUSTOMER',
       'TEXT',
       content
     );
 
     let threadRef = conv.operator_thread_ref;
 
-    // We only create topics on first message (which would normally be INCOMING).
     if (!threadRef) {
       const topicRes = await executeOutboundOperation(
         env,
@@ -78,17 +75,33 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
       }
     }
 
-    await executeOutboundOperation(
-      env,
-      conv.id,
-      'telegram',
-      'SEND_MESSAGE',
-      async () => {
-        const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef!, content);
-        return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
-      },
-      `send_tg_${messageId}`
-    );
+    if (threadRef) {
+      await executeOutboundOperation(
+        env,
+        conv.id,
+        'telegram',
+        'SEND_MESSAGE',
+        async () => {
+          const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef!, content);
+          return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
+        },
+        `send_tg_${messageId}`
+      );
+    }
+
+    // Phase 2: Trigger AI generation for customer messages
+    if (!isOutgoing) {
+      await env.QUEUE.send({
+        source: 'internal',
+        type: 'ai_trigger',
+        eventId: `ai_trigger:${conv.id}:${messageId}`,
+        payload: {
+          convId: conv.id,
+          messageId,
+          content
+        }
+      });
+    }
   }
 
   if (event.type === 'conversation_status_changed') {

@@ -1,24 +1,33 @@
-# CZ2128 - Phase 1 Handoff
+# CZ2128 - Phase 2 Handoff
 
 ## 状态
-- **Current Branch**: `gemini/phase1-foundation`
-- **Final SHA**: 待 Commit 之后最后更新
-- **PR**: #1
-- **CI**: GitHub Actions `build-and-test` 已真实通过。
-- **Migration**: Schema V1 `0001_initial_schema.sql` 已经真实跑通。
+- **Parent Branch**: `gemini/phase1-foundation`
+- **Parent SHA**: 2cdf7b7ea4011d50739263914d829632df06bab3
+- **Current Branch**: `gemini/phase2-ai-handoff`
+- **PR #1**: Phase 1 frozen / unmerged
+- **PR #2**: Phase 2 stacked PR
+- **CI**: SUCCESS
+- **Migration**: Schema V2 `0002_ai_handoff.sql` 已添加。
 
-## 实际数据表 (Minimum Phase 1 Schema)
-1. `conversations` (对话映射实体与基础追踪)
-2. `messages` (去重用的 provider source)
-3. `event_receipts` (加入了 lease_until 支持 Atomic 消费的排队票据)
-4. `outbound_operations` (对外的发信锁和 AMBIGUOUS 兜底)
+## Phase 2 Scope Completed
+- 实现完整的 OpenAI-compatible AI adapter。
+- 引入了 `ai_mode` (ENABLED, PAUSED_OPERATOR, PAUSED_MANUAL) 人类接管状态机。
+- 引入了严格的 `ai_generation_id` 和基于 D1 CAS 的并发生成排他锁（Generation Concurrency）。
+- 处理了并发 Race：人工在生成期间回复会安全丢弃旧 AI 结果，连续客户发问安全退避并依赖排队重试。
+- 具备基础的 Message Context Budget 控制。
+- `/ai_on` 与 `/ai_off` Telegram 命令支持。
+- AI Outbound 完全桥接复用 Phase 1 管道并带回显消除。
+
+## Tests
+- Race Tests: Operator reply during generation -> DISCARD, Rapid customer messages -> RETRY, AI provider failure -> RELEASE.
+- Context & Config defaults, Handoff transitions.
 
 ## Known Limitations
-- 在某些极端的重发或未定义 Webhook 的 payload 模型改变时，由于严格去重和 AMBIGUOUS 机制介入，可能会使得对应操作进入死信并需要管理员干预才能在数据库恢复状态；没有额外的监控 Dashboard 将其展现到 UI 是当前的唯一限制（将留给 Phase 4）。
-- 本地开发对 D1 的 Mock 不可能 100% 还原 Cloudflare 线上 SQLite 方言，上线前需连接 Preview DB 测试。
+- AI Budget 目前只依靠粗略字符数 (`AI_CONTEXT_MAX_CHARS`) 计算，可能对实际 LLM Token 数目略有偏差。
+- 错误日志没有上报机制，必须依靠 Cloudflare 后台排查。
 
 ## Codex Takeover Notes
-对于后续接手阶段的 Codex，特别提醒：
-1. **并发锁与队列**：Phase 1 已经打通 HTTP -> 队列 -> `queue()` runtime 的通道，并实装了基于 D1 CAS 的 `lease_until` 和 `AMBIGUOUS` 控制，这是出入两端的生命线。如果增加排队类型，请复用 `event_receipts` 的 Atomic 模型。
-2. **Phase 2 (AI Handoff + Multi-turn Context)**：V1 Schema 被极度简化，只包含了必选项，没有任何与 AI 有关的结构字段。Phase 2 正式开始前你需要创建 `migrations/0002` 以将这些业务表重新补充回来。
-3. Phase 5 才会有 RAG，请不要在 Phase 2 时提前做错。
+对于后续接手的 Codex：
+1. **重点重新验证**：`src/core/ai-state.ts` 中的 `acquireGenerationLease` 及其 `UPDATE ... WHERE ... AND ... < ...` 的逻辑。
+2. **Race condition**：最危险的场景是 AI 请求耗时几十秒期间，发生了多次人工接管、人工解除、客户连续留言，这套依靠 `ai_generation_id` 强绑定的方案在理论上安全，但需要 Staging 环境与真实 provider 进行长时间检验。
+3. Phase 3 如果要增加 RAG 或 Vector DB，请利用 Phase 2 的 Context 提取做挂载，不应破坏现有的流转安全锁。

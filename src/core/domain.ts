@@ -7,6 +7,10 @@ export interface Conversation {
   operator_channel: string;
   operator_thread_ref: string | null;
   last_operator_reply_at: number | null;
+  ai_mode: 'ENABLED' | 'PAUSED_OPERATOR' | 'PAUSED_MANUAL';
+  ai_generation_id: string | null;
+  ai_generation_started_at: number | null;
+  ai_generation_message_id: string | null;
   created_at: number;
   updated_at: number;
   version: number;

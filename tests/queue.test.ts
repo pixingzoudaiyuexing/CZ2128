@@ -162,7 +162,7 @@ describe('Queue Event Processing', () => {
   beforeEach(() => {
     env = {
       DB: new MockD1(),
-      BOT_GROUP_ID: '-1001',
+      QUEUE: new (class { async send() {} })(), BOT_GROUP_ID: '-1001',
       CHATWOOT_API_TOKEN: 'token',
       CHATWOOT_API_URL: 'http://chatwoot',
       TELEGRAM_BOT_TOKEN: 'tg_token'

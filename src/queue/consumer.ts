@@ -2,6 +2,7 @@ import { SupportEvent } from '../core/events';
 import { Env } from '../index';
 import { processChatwootEvent } from './chatwoot-handler';
 import { processTelegramEvent } from './telegram-handler';
+import { processAiTrigger } from './ai-handler';
 import { logger } from '../observability/logger';
 
 export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<void> {
@@ -50,6 +51,8 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
       await processChatwootEvent(event, env);
     } else if (event.source === 'telegram') {
       await processTelegramEvent(event, env);
+    } else if (event.source === 'internal' && event.type === 'ai_trigger') {
+      await processAiTrigger(event, env);
     }
     
     await env.DB.prepare(

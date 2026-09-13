@@ -14,6 +14,15 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_SECRET_PATH: string;
   BOT_GROUP_ID: string;
+  AI_BASE_URL?: string;
+  AI_API_KEY?: string;
+  AI_MODEL?: string;
+  AI_SYSTEM_PROMPT?: string;
+  AI_REQUEST_TIMEOUT_MS?: string;
+  AI_CONTEXT_MAX_MESSAGES?: string;
+  AI_CONTEXT_MAX_CHARS?: string;
+  AI_GENERATION_LEASE_SECONDS?: string;
+  AI_OPERATOR_PAUSE_TIMEOUT_SECONDS?: string;
 }
 
 export default {
