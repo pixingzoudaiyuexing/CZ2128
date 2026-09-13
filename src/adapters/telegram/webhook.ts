@@ -1,11 +1,12 @@
 export async function verifyTelegramWebhook(
   request: Request,
   pathSegment: string,
-  botToken: string,
-  secretToken: string
+  secretPath: string,
+  secretToken: string,
+  botGroupId: string
 ): Promise<{ valid: boolean; payload?: any; updateId?: string }> {
-  // Use botToken as the path segment for secrecy
-  if (pathSegment !== botToken) {
+  
+  if (pathSegment !== secretPath) {
     return { valid: false };
   }
 
@@ -18,6 +19,11 @@ export async function verifyTelegramWebhook(
   try {
     payload = await request.clone().json();
   } catch (e) {
+    return { valid: false };
+  }
+
+  const chat = payload.message?.chat || payload.edited_message?.chat;
+  if (chat && chat.id.toString() !== botGroupId) {
     return { valid: false };
   }
 

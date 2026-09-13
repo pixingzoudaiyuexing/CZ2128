@@ -11,7 +11,23 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
   const conversationId = String(payload.conversation?.id || payload.id);
 
   if (event.type === 'message_created') {
-    if (payload.message_type !== 0) return; // Only process incoming messages (0)
+    // Phase 1 only processes incoming (customer) or outgoing (human operator)
+    if (payload.message_type !== 'incoming' && payload.message_type !== 'outgoing') {
+      return;
+    }
+
+    const isOutgoing = payload.message_type === 'outgoing';
+
+    // Verify it's a real human outgoing message
+    if (isOutgoing) {
+      if (payload.private) return; // Don't forward private notes
+      
+      const senderType = payload.sender?.type;
+      if (senderType === 'agent_bot' || senderType === 'system') return; // Don't forward bot/system
+      
+      const sourceId = payload.source_id;
+      if (sourceId && String(sourceId).startsWith('cz2128:')) return; // CZ2128 echo
+    }
 
     const customerRef = String(payload.sender?.id);
     const conv = await getOrCreateConversation(
@@ -24,20 +40,22 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
 
     const messageId = String(payload.id);
     const content = payload.content;
+    const role = isOutgoing ? 'OPERATOR' : 'CUSTOMER';
 
     await insertMessage(
       env,
       conv.id,
       'chatwoot',
       messageId,
-      'INBOUND',
-      'CUSTOMER',
+      isOutgoing ? 'OUTBOUND' : 'INBOUND',
+      role,
       'TEXT',
       content
     );
 
     let threadRef = conv.operator_thread_ref;
 
+    // We only create topics on first message (which would normally be INCOMING).
     if (!threadRef) {
       const topicRes = await executeOutboundOperation(
         env,
@@ -46,7 +64,7 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
         'UPDATE_STATUS',
         async () => {
           const res = await createTelegramTopic(env, env.BOT_GROUP_ID, `Chatwoot #${conversationId}`);
-          return { providerMessageRef: String(res.messageThreadId) };
+          return { providerMessageRef: String(res.messageThreadId || res.message_thread_id) };
         },
         `create_topic_${conv.id}`
       );
@@ -67,7 +85,7 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
       'SEND_MESSAGE',
       async () => {
         const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef!, content);
-        return { providerMessageRef: String(res.messageId) };
+        return { providerMessageRef: String(res.messageId || res.message_id) };
       },
       `send_tg_${messageId}`
     );

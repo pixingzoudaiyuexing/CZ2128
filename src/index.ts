@@ -1,6 +1,8 @@
 import { verifyChatwootWebhook } from './adapters/chatwoot/webhook';
 import { verifyTelegramWebhook } from './adapters/telegram/webhook';
 import { SupportEvent } from './core/events';
+import { handleQueueEvent } from './queue/consumer';
+import { logger } from './observability/logger';
 
 export interface Env {
   DB: D1Database;
@@ -10,6 +12,7 @@ export interface Env {
   CHATWOOT_API_URL: string;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
+  TELEGRAM_SECRET_PATH: string;
   BOT_GROUP_ID: string;
 }
 
@@ -28,12 +31,11 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      // 快速回声消除
-      if (payload.event === 'message_created' && payload.source_id && payload.source_id.startsWith('cz2128:')) {
+      // Fast drop echoes
+      if (payload.event === 'message_created' && payload.source_id && String(payload.source_id).startsWith('cz2128:')) {
         return new Response('Echo dropped', { status: 200 });
       }
 
-      // Event fallback: combination of account + event type + payload id
       const eventId = deliveryId || `cw_${payload.account?.id}_${payload.event}_${payload.id}`;
 
       await env.QUEUE.send({
@@ -48,16 +50,26 @@ export default {
 
     if (url.pathname.startsWith('/webhooks/telegram/')) {
       const pathSegment = url.pathname.replace('/webhooks/telegram/', '');
-      const { valid, payload } = await verifyTelegramWebhook(request, pathSegment, env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_WEBHOOK_SECRET);
+      const { valid, payload, updateId } = await verifyTelegramWebhook(
+        request, 
+        pathSegment, 
+        env.TELEGRAM_SECRET_PATH, 
+        env.TELEGRAM_WEBHOOK_SECRET,
+        env.BOT_GROUP_ID
+      );
 
       if (!valid) {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      // Telegram fallback
-      const updateId = payload.update_id;
       if (!updateId) {
         return new Response('Malformed update', { status: 400 });
+      }
+      
+      const isBot = payload.message?.from?.is_bot || payload.edited_message?.from?.is_bot || false;
+      if (isBot) {
+        // Safe fast-drop for bot messages
+        return new Response('Accepted', { status: 200 });
       }
 
       await env.QUEUE.send({
@@ -71,5 +83,17 @@ export default {
     }
 
     return new Response('Not Found', { status: 404 });
+  },
+
+  async queue(batch: MessageBatch<SupportEvent>, env: Env, ctx: ExecutionContext): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        await handleQueueEvent(message.body, env);
+        message.ack();
+      } catch (error) {
+        logger.error('Failed to process queue message', error, { eventId: message.body.eventId });
+        message.retry();
+      }
+    }
   }
 };

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleQueueEvent } from '../src/queue/consumer';
-import { SupportEvent } from '../src/core/events';
+import { SupportEvent } from '../core/events';
 
 class MockPreparedStatement {
   constructor(private db: MockD1, private query: string) {}
@@ -176,7 +176,7 @@ describe('Queue Event Processing', () => {
   it('handles customer Chatwoot message -> creates topic and sends to Telegram', async () => {
     const event: SupportEvent = {
       eventId: 'cw-evt-1', source: 'chatwoot', type: 'message_created',
-      payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3, type: 'contact' }, id: 4, content: 'Hello', message_type: 0 }
+      payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3, type: 'contact' }, id: 4, content: 'Hello', message_type: "incoming" }
     };
     await handleQueueEvent(event, env);
     const db = env.DB as MockD1;
@@ -190,7 +190,7 @@ describe('Queue Event Processing', () => {
   it('handles concurrent duplicate event safely (atomic claim)', async () => {
     const event: SupportEvent = {
       eventId: 'cw-evt-concurrent', source: 'chatwoot', type: 'message_created',
-      payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3 }, id: 4, content: 'Hi', message_type: 0 }
+      payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3 }, id: 4, content: 'Hi', message_type: "incoming" }
     };
     // Promise.all tests concurrency
     const results = await Promise.allSettled([
@@ -198,8 +198,6 @@ describe('Queue Event Processing', () => {
       handleQueueEvent(event, env)
     ]);
     
-    // One should succeed, one should reject (or return safely depending on locking)
-    // Wait, if it fails to lock, it throws "Event locked by another worker"
     const db = env.DB as MockD1;
     expect(db.tables.event_receipts.length).toBe(1);
     expect(db.tables.messages.length).toBe(1); // Only 1 provider side effect
@@ -213,7 +211,6 @@ describe('Queue Event Processing', () => {
       operator_channel: 'telegram', operator_thread_ref: '99'
     });
     
-    // Setup an outbound op stuck in SENDING and expired
     db.tables.outbound_operations.push({
       id: 'send_chatwoot_301', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
       status: 'SENDING', attempt_count: 1, lease_until: Math.floor(Date.now() / 1000) - 100, created_at: 0, updated_at: 0
@@ -226,7 +223,6 @@ describe('Queue Event Processing', () => {
 
     await handleQueueEvent(event, env);
     expect(db.tables.outbound_operations[0].status).toBe('AMBIGUOUS');
-    // And NO fetch should be made!
     expect(global.fetch).toHaveBeenCalledTimes(0);
   });
 
@@ -250,5 +246,62 @@ describe('Queue Event Processing', () => {
     };
     await handleQueueEvent(eventOpen, env);
     expect(db.tables.outbound_operations.some(o => o.operation_type === 'REOPEN_TOPIC')).toBe(true);
+  });
+
+  describe('Chatwoot Handler logic', () => {
+    it('message_type="incoming" -> Telegram exactly once', async () => {
+      const event: SupportEvent = {
+        eventId: 'cw-evt-inc', source: 'chatwoot', type: 'message_created',
+        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3 }, id: 4, content: 'Hi', message_type: 'incoming' }
+      };
+      await handleQueueEvent(event, env);
+      const db = env.DB as MockD1;
+      expect(db.tables.messages.find(m => m.provider_message_ref === '4')).toBeTruthy();
+      expect(global.fetch).toHaveBeenCalledTimes(2); // create topic + send tg
+    });
+
+    it('message_type="outgoing" human operator -> Telegram exactly once', async () => {
+      const event: SupportEvent = {
+        eventId: 'cw-evt-out', source: 'chatwoot', type: 'message_created',
+        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 5, type: 'user' }, id: 6, content: 'Reply', message_type: 'outgoing' }
+      };
+      await handleQueueEvent(event, env);
+      const db = env.DB as MockD1;
+      expect(db.tables.messages.find(m => m.provider_message_ref === '6')).toBeTruthy();
+      expect(global.fetch).toHaveBeenCalledTimes(2); 
+    });
+
+    it('message_type="outgoing" source_id="cz2128:..." -> fast-drop -> Telegram 0 calls', async () => {
+      const event: SupportEvent = {
+        eventId: 'cw-evt-echo', source: 'chatwoot', type: 'message_created',
+        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 5 }, id: 7, content: 'Echo', message_type: 'outgoing', source_id: 'cz2128:op1' }
+      };
+      await handleQueueEvent(event, env);
+      const db = env.DB as MockD1;
+      expect(db.tables.messages.find(m => m.provider_message_ref === '7')).toBeUndefined();
+      expect(global.fetch).toHaveBeenCalledTimes(0);
+    });
+
+    it('private outgoing -> Telegram 0 calls', async () => {
+      const event: SupportEvent = {
+        eventId: 'cw-evt-priv', source: 'chatwoot', type: 'message_created',
+        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 5 }, id: 8, content: 'Note', message_type: 'outgoing', private: true }
+      };
+      await handleQueueEvent(event, env);
+      const db = env.DB as MockD1;
+      expect(db.tables.messages.find(m => m.provider_message_ref === '8')).toBeUndefined();
+      expect(global.fetch).toHaveBeenCalledTimes(0);
+    });
+
+    it('bot/system -> 不误当人工普通回复', async () => {
+      const event: SupportEvent = {
+        eventId: 'cw-evt-bot', source: 'chatwoot', type: 'message_created',
+        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 9, type: 'agent_bot' }, id: 9, content: 'Bot', message_type: 'outgoing' }
+      };
+      await handleQueueEvent(event, env);
+      const db = env.DB as MockD1;
+      expect(db.tables.messages.find(m => m.provider_message_ref === '9')).toBeUndefined();
+      expect(global.fetch).toHaveBeenCalledTimes(0);
+    });
   });
 });
