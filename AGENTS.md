@@ -16,9 +16,11 @@ If code and documentation conflict, stop and verify ground truth before changing
 
 ## Current Phase
 
-The repository is currently in **architecture review / pre-implementation**.
+The repository is currently in **Phase 1 — Foundation + Chatwoot/Telegram Core**.
 
-Do not begin application implementation until `ARCHITECTURE.md` is marked approved after independent review and Primary final decision.
+Phase 0 architecture review is complete. `ARCHITECTURE.md` and `DECISIONS.md` are the approved V1 baseline.
+
+Implementation may now begin, but Phase 1 must not silently pull Phase 2+ features forward unless they are required for a correct Phase 1 contract.
 
 ## Architectural Boundaries
 
@@ -26,10 +28,37 @@ Do not begin application implementation until `ARCHITECTURE.md` is marked approv
 - Telegram is an operator channel adapter, not the core domain.
 - AI providers are replaceable adapters.
 - R2 is the first attachment-store adapter.
-- D1 is the V1 canonical gateway database unless the approved architecture changes.
+- D1 is the V1 canonical gateway database.
+- Cloudflare Queues is part of V1 ingress/async reliability.
+- KV is not required for V1 correctness.
+- Durable Objects are deferred unless measured concurrency/ordering evidence proves they are needed.
 - Core code must not import provider-specific concepts unnecessarily.
 - Do not modify or fork Chatwoot as part of CZ2128 V1.
 - Do not copy the legacy Crisp implementation wholesale.
+- Do not build unused adapters or generalized framework layers for hypothetical future providers.
+
+## Frozen V1 Concurrency / Idempotency Rules
+
+- Cloudflare Queues is at-least-once; duplicate delivery must be assumed.
+- Provider webhook/message IDs and stable internal operation IDs are primary identity; message-text hashes are not.
+- Chatwoot gateway-originated messages should use a stable `source_id` marker such as `cz2128:<operation_id>` where supported.
+- D1 event receipts remain authoritative inbound duplicate records.
+- D1 outbound operation records remain authoritative provider side-effect records.
+- Never blindly repeat a visible external side effect because a Queue message was retried.
+- AI human handoff mode is separate from the transient generation lease.
+- An operator pause must win even if an AI request is already in flight; stale AI output must be discarded.
+
+## Telegram Topic Rule
+
+V1 uses:
+
+```text
+1 Chatwoot conversation = 1 Telegram forum topic
+```
+
+- Resolve -> close topic.
+- Reopen -> reopen topic.
+- Do not switch to one-customer-one-topic without an explicit architecture decision.
 
 ## Legacy Reference
 
@@ -46,20 +75,26 @@ Do not inherit the following without explicit review:
 - content-hash-only echo detection
 - monolithic single-file Worker architecture
 - syntax-check-only test strategy
+- EasyImages as a required dependency
 
 ## Implementation Rules
 
 - Use TypeScript.
 - Keep modules small and dependency direction clear.
 - Provider adapters depend on core contracts; core must not depend on provider implementations.
+- Keep HTTP ingress thin: verify, validate, normalize, enqueue, acknowledge.
 - All incoming webhooks require authentication/verification before processing.
+- Chatwoot verification uses the raw request body, signature and timestamp/replay window.
+- Telegram verification uses the secret-token header plus the configured group/chat constraints.
 - Every externally delivered event must be idempotent.
-- Retries must not create duplicate customer-visible messages.
-- Do not place file bodies in queue messages.
+- Retries must not normally create duplicate customer-visible messages.
+- Model ambiguous third-party delivery outcomes honestly; do not claim exactly-once guarantees the provider cannot support.
+- Do not place file bodies in Queue messages.
 - R2 objects are private by default.
 - Secrets belong in Cloudflare secrets/environment bindings, never committed files.
-- Logs must redact secrets and sensitive URL/query values.
+- Logs must redact secrets, sensitive URL/query values and authorization/webhook-secret headers.
 - Human support must keep working if AI is disabled or unavailable.
+- Do not expose raw upstream error bodies to customers.
 
 ## Testing Rules
 
@@ -71,8 +106,35 @@ For changed behavior:
 - Run typecheck/lint/tests as applicable.
 - Validate migrations against a clean local/test database.
 - For webhook/state changes, include duplicate-delivery tests.
-- For retry changes, prove no duplicate visible messages.
-- For attachment changes, test expiration and unauthorized access.
+- For Queue retry changes, prove stable operation/event identity and no ordinary duplicate visible message.
+- For AI generation changes, test operator-interrupt and rapid-message races.
+- For attachment changes, test expiration, unauthorized access, size limits and missing R2 objects.
+
+## Phase 1 Scope Guard
+
+Phase 1 is the human bridge foundation. It includes:
+
+- Worker/TypeScript foundation
+- D1 migrations/repositories
+- Chatwoot webhook/API adapter
+- Telegram webhook/API adapter
+- Queues ingress/consumer
+- conversation/topic mapping and lifecycle
+- bidirectional human text sync
+- event/message idempotency
+- outbound operation ledger
+- structured logging
+- critical automated tests
+
+Phase 1 does **not** require:
+
+- AI implementation
+- RAG/knowledge base
+- learning workflow
+- analytics UI
+- attachment implementation beyond interfaces needed to avoid architectural dead ends
+- Durable Objects
+- KV caching
 
 ## Git / Task Hygiene
 
