@@ -31,7 +31,7 @@ Frozen outcomes:
 
 ## Phase 1 — Foundation + Chatwoot/Telegram Core
 
-Status: **NEXT / APPROVED**
+Status: **IN INDEPENDENT AUDIT / PR #1 OPEN**
 
 Goal: establish the new repository structure and reliable human support bridge before introducing AI.
 

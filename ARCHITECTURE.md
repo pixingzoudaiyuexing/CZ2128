@@ -233,7 +233,7 @@ Minimum fields:
 - `conversation_id`
 - `destination_provider`
 - `operation_type`
-- `status` (`PENDING`, `SENDING`, `SENT`, `FAILED_RETRYABLE`, `FAILED_FINAL`)
+- `status` (`PENDING`, `SENDING`, `SENT`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `AMBIGUOUS`)
 - `provider_message_ref` nullable
 - `attempt_count`
 - `lease_until` nullable

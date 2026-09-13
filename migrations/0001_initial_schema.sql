@@ -1,0 +1,59 @@
+CREATE TABLE conversations (
+    id TEXT PRIMARY KEY,
+    helpdesk_provider TEXT NOT NULL,
+    helpdesk_account_ref TEXT NOT NULL,
+    helpdesk_conversation_ref TEXT NOT NULL,
+    customer_ref TEXT NOT NULL,
+    operator_channel TEXT NOT NULL,
+    operator_thread_ref TEXT,
+    operator_thread_status TEXT NOT NULL DEFAULT 'OPEN',
+    last_operator_reply_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref)
+);
+
+CREATE UNIQUE INDEX conversations_operator_thread_unique
+    ON conversations(operator_channel, operator_thread_ref)
+    WHERE operator_thread_ref IS NOT NULL;
+
+CREATE TABLE messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    provider TEXT NOT NULL,
+    provider_message_ref TEXT,
+    direction TEXT NOT NULL,
+    actor_role TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    text_content TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(provider, provider_message_ref)
+);
+
+CREATE TABLE event_receipts (
+    source TEXT NOT NULL,
+    source_event_ref TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    lease_until INTEGER,
+    claim_token TEXT,
+    last_error TEXT,
+    processed_at INTEGER,
+    PRIMARY KEY(source, source_event_ref)
+);
+
+CREATE TABLE outbound_operations (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    destination_provider TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    provider_message_ref TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    lease_until INTEGER,
+    lease_token TEXT,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
