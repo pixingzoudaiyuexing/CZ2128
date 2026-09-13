@@ -1,8 +1,8 @@
-import { Env } from '../index';
+import { Env } from '../config/env';
 import { Conversation } from './domain';
 import { logger } from '../observability/logger';
 import { getAIConfig } from '../config/ai';
-import { RetryLaterError } from './events';
+import { RetryableProcessingError } from './errors';
 
 export async function pauseOperator(env: Env, convId: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
@@ -102,7 +102,7 @@ export async function acquireGenerationLease(
   if (conv.ai_generation_id && conv.ai_generation_started_at && conv.ai_generation_started_at >= leaseExpiryThreshold) {
     const expiresAt = conv.ai_generation_started_at + config.generationLeaseSeconds;
     const delaySeconds = expiresAt - now + 2;
-    throw new RetryLaterError('AI Generation Lease locked', Math.max(delaySeconds, 2));
+    throw new RetryableProcessingError('AI generation lease is active', Math.max(delaySeconds, 2));
   }
 
   if (env.hooks && env.hooks.beforeGenerationLeaseClaim) await env.hooks.beforeGenerationLeaseClaim(env, convId);

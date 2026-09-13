@@ -1,4 +1,4 @@
-import { Env } from '../index';
+import { Env } from './env';
 import { logger } from '../observability/logger';
 
 export interface AIConfig {

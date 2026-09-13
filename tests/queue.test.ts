@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleQueueEvent } from '../src/queue/consumer';
 import { SupportEvent } from '../src/core/events';
+import { getOrCreateConversation } from '../src/core/conversation-service';
 
 class MockPreparedStatement {
   constructor(private db: MockD1, private query: string) {}
@@ -23,13 +24,13 @@ class MockPreparedStatement {
         const r = this.db.tables.conversations.find(x => x.helpdesk_provider === p && x.helpdesk_account_ref === a && x.helpdesk_conversation_ref === c);
         return r ? { ...r } : null;
       }
+      if (this.query.includes('WHERE id = ?')) {
+        const o = this.db.tables.conversations.find(c => c.id === this.boundParams[0]);
+        return o ? { ...o } : null;
+      }
       if (this.query.includes('operator_thread_ref')) {
         const [c, r] = this.boundParams;
         const o = this.db.tables.conversations.find(x => x.operator_channel === c && x.operator_thread_ref === r);
-        return o ? { ...o } : null;
-      }
-      if (this.query.includes('id = ?')) {
-        const o = this.db.tables.conversations.find(c => c.id === this.boundParams[0]);
         return o ? { ...o } : null;
       }
     }
@@ -55,7 +56,16 @@ class MockPreparedStatement {
     if (this.query.includes('UPDATE conversations SET operator_thread_ref')) {
       const [r, uat, id] = this.boundParams;
       const c = this.db.tables.conversations.find(x => x.id === id);
-      if (c) { c.operator_thread_ref = r; c.updated_at = uat; meta.changes = 1; }
+      if (c && !c.operator_thread_ref) {
+        c.operator_thread_ref = r; c.updated_at = uat; c.version += 1; meta.changes = 1;
+      }
+    }
+    if (this.query.includes('SET operator_thread_status = ?')) {
+      const [nextStatus, updatedAt, id, expectedVersion, expectedStatus] = this.boundParams;
+      const c = this.db.tables.conversations.find(x => x.id === id);
+      if (c && c.version === expectedVersion && (c.operator_thread_status || 'OPEN') === expectedStatus) {
+        c.operator_thread_status = nextStatus; c.updated_at = updatedAt; c.version += 1; meta.changes = 1;
+      }
     }
     if (this.query.includes('INSERT INTO messages')) {
       const [id, cid, p, pmr, d, ar, mt, tc, cat] = this.boundParams;
@@ -68,35 +78,38 @@ class MockPreparedStatement {
       }
     }
     if (this.query.includes('INSERT INTO event_receipts')) {
-      const [s, ser, st, ac, lu] = this.boundParams;
+      const [s, ser, lu, claimToken] = this.boundParams;
       if (!this.db.tables.event_receipts.find(x => x.source === s && x.source_event_ref === ser)) {
         this.db.tables.event_receipts.push({
-          source: s, source_event_ref: ser, status: 'PROCESSING', attempt_count: 1, lease_until: lu
+          source: s, source_event_ref: ser, status: 'PROCESSING', attempt_count: 1, lease_until: lu, claim_token: claimToken
         });
         meta.changes = 1;
-      } else {
-        throw new Error('UNIQUE constraint failed');
       }
     }
-    if (this.query.includes('UPDATE event_receipts \n       SET status = \'PROCESSING\'')) {
-      const [lu, s, ser, now] = this.boundParams;
+    if (this.query.includes("SET status = 'PROCESSING', attempt_count = attempt_count + 1")) {
+      const [lu, claimToken, s, ser, now] = this.boundParams;
       const r = this.db.tables.event_receipts.find(x => x.source === s && x.source_event_ref === ser);
       if (r && (r.status === 'FAILED' || (r.status === 'PROCESSING' && r.lease_until <= now))) {
         r.status = 'PROCESSING';
         r.attempt_count++;
         r.lease_until = lu;
+        r.claim_token = claimToken;
         meta.changes = 1;
       }
     }
     if (this.query.includes('UPDATE event_receipts SET status = \'PROCESSED\'')) {
-      const [pat, s, ser] = this.boundParams;
+      const [pat, s, ser, claimToken] = this.boundParams;
       const r = this.db.tables.event_receipts.find(x => x.source === s && x.source_event_ref === ser);
-      if (r) { r.status = 'PROCESSED'; r.processed_at = pat; meta.changes = 1; }
+      if (r?.status === 'PROCESSING' && r.claim_token === claimToken) {
+        r.status = 'PROCESSED'; r.processed_at = pat; r.lease_until = null; r.claim_token = null; meta.changes = 1;
+      }
     }
     if (this.query.includes('UPDATE event_receipts SET status = \'FAILED\'')) {
-      const [err, s, ser] = this.boundParams;
+      const [err, s, ser, claimToken] = this.boundParams;
       const r = this.db.tables.event_receipts.find(x => x.source === s && x.source_event_ref === ser);
-      if (r) { r.status = 'FAILED'; r.last_error = err; meta.changes = 1; }
+      if (r?.status === 'PROCESSING' && r.claim_token === claimToken) {
+        r.status = 'FAILED'; r.last_error = err; r.lease_until = null; r.claim_token = null; meta.changes = 1;
+      }
     }
     if (this.query.includes('INSERT INTO outbound_operations')) {
       const [id, cid, dp, ot, st, cat, uat] = this.boundParams;
@@ -106,27 +119,29 @@ class MockPreparedStatement {
           status: st, attempt_count: 0, created_at: cat, updated_at: uat
         });
         meta.changes = 1;
-      } else {
-        throw new Error('UNIQUE');
       }
     }
     if (this.query.includes("status = 'SENDING'") && this.query.includes("attempt_count + 1")) {
-      const [lu, now, id] = this.boundParams;
+      const [lu, leaseToken, now, id] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
       if (o && (o.status === 'PENDING' || o.status === 'FAILED_RETRYABLE')) {
-        o.status = 'SENDING'; o.lease_until = lu; o.attempt_count++;
+        o.status = 'SENDING'; o.lease_until = lu; o.lease_token = leaseToken; o.attempt_count++;
         meta.changes = 1;
       }
     }
     if (this.query.includes("status = 'SENT'")) {
-      const [pmr, now, id] = this.boundParams;
+      const [pmr, now, id, leaseToken] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
-      if (o) { o.status = 'SENT'; o.provider_message_ref = pmr; meta.changes = 1; }
+      if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
+        o.status = 'SENT'; o.provider_message_ref = pmr; o.lease_until = null; o.lease_token = null; meta.changes = 1;
+      }
     }
-    if (this.query.includes("status = 'FAILED_RETRYABLE'")) {
-      const [err, now, id] = this.boundParams;
+    if (this.query.includes('SET status = ?, last_error = ?')) {
+      const [status, err, now, id, leaseToken] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
-      if (o) { o.status = 'FAILED_RETRYABLE'; o.last_error = err; meta.changes = 1; }
+      if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
+        o.status = status; o.last_error = err; o.lease_until = null; o.lease_token = null; meta.changes = 1;
+      }
     }
     if (this.query.includes("status = 'FAILED_FINAL'")) {
       const [now, id] = this.boundParams;
@@ -156,6 +171,40 @@ class MockD1 {
   }
 }
 
+function chatwootMessageEvent(
+  eventId: string,
+  messageRef: string,
+  content: string,
+  actorRole: 'CUSTOMER' | 'OPERATOR' = 'CUSTOMER',
+  customerName?: string
+): SupportEvent {
+  return {
+    version: 1,
+    eventId,
+    source: 'chatwoot',
+    type: 'message_created',
+    payload: {
+      accountRef: '1',
+      conversationRef: '2',
+      customerRef: '3',
+      customerName,
+      messageRef,
+      content,
+      actorRole
+    }
+  };
+}
+
+function telegramMessageEvent(eventId: string, messageRef: string, threadRef: string, content: string): SupportEvent {
+  return {
+    version: 1,
+    eventId,
+    source: 'telegram',
+    type: 'message_created',
+    payload: { updateRef: eventId, messageRef, threadRef, content }
+  };
+}
+
 describe('Queue Event Processing', () => {
   let env: any;
 
@@ -169,15 +218,12 @@ describe('Queue Event Processing', () => {
     };
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ result: { message_thread_id: 99, message_id: 100 }, id: 200 })
+      json: async () => ({ ok: true, result: { message_thread_id: 99, message_id: 100 }, id: 200 })
     });
   });
 
   it('handles customer Chatwoot message -> creates topic and sends to Telegram', async () => {
-    const event: SupportEvent = {
-      eventId: 'cw-evt-1', source: 'chatwoot', type: 'message_created',
-      payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3, type: 'contact' }, id: 4, content: 'Hello', message_type: "incoming" }
-    };
+    const event = chatwootMessageEvent('cw-evt-1', '4', 'Hello');
     await handleQueueEvent(event, env);
     const db = env.DB as MockD1;
     expect(db.tables.event_receipts[0].status).toBe('PROCESSED');
@@ -188,10 +234,7 @@ describe('Queue Event Processing', () => {
   });
 
   it('handles concurrent duplicate event safely (atomic claim)', async () => {
-    const event: SupportEvent = {
-      eventId: 'cw-evt-concurrent', source: 'chatwoot', type: 'message_created',
-      payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3 }, id: 4, content: 'Hi', message_type: "incoming" }
-    };
+    const event = chatwootMessageEvent('cw-evt-concurrent', '4', 'Hi');
     // Promise.all tests concurrency
     const results = await Promise.allSettled([
       handleQueueEvent(event, env),
@@ -202,24 +245,53 @@ describe('Queue Event Processing', () => {
     expect(db.tables.event_receipts.length).toBe(1);
     expect(db.tables.messages.length).toBe(1); // Only 1 provider side effect
     expect(global.fetch).toHaveBeenCalledTimes(2); // create topic + send message
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('protects conversation creation with the database unique key', async () => {
+    const [first, second] = await Promise.all([
+      getOrCreateConversation(env, 'chatwoot', '1', '2', '3'),
+      getOrCreateConversation(env, 'chatwoot', '1', '2', '3')
+    ]);
+    const db = env.DB as MockD1;
+    expect(db.tables.conversations).toHaveLength(1);
+    expect(first.id).toBe(second.id);
+  });
+
+  it('serializes topic creation across different events and delivers both after retry', async () => {
+    const firstEvent = chatwootMessageEvent('cw-topic-race-1', '41', 'First', 'CUSTOMER', 'Customer');
+    const secondEvent = chatwootMessageEvent('cw-topic-race-2', '42', 'Second', 'CUSTOMER', 'Customer');
+
+    const concurrent = await Promise.allSettled([
+      handleQueueEvent(firstEvent, env),
+      handleQueueEvent(secondEvent, env)
+    ]);
+    expect(concurrent.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(concurrent.filter(result => result.status === 'rejected')).toHaveLength(1);
+
+    const retryEvent = concurrent[0].status === 'rejected' ? firstEvent : secondEvent;
+    await handleQueueEvent(retryEvent, env);
+
+    const db = env.DB as MockD1;
+    expect(db.tables.conversations).toHaveLength(1);
+    expect(db.tables.outbound_operations.filter(operation => operation.id.startsWith('create_topic_'))).toHaveLength(1);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 
   it('bounds retry attempts and handles ambiguous delivery', async () => {
     const db = env.DB as MockD1;
     db.tables.conversations.push({
       id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
-      operator_channel: 'telegram', operator_thread_ref: '99'
+      operator_channel: 'telegram', operator_thread_ref: '99', operator_thread_status: 'OPEN', version: 1
     });
     
     db.tables.outbound_operations.push({
-      id: 'send_chatwoot_301', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+      id: 'send_chatwoot_301', conversation_id: 'conv-1', destination_provider: 'chatwoot', operation_type: 'SEND_MESSAGE',
       status: 'SENDING', attempt_count: 1, lease_until: Math.floor(Date.now() / 1000) - 100, created_at: 0, updated_at: 0
     });
 
-    const event: SupportEvent = {
-      eventId: 'tg-evt-2', source: 'telegram', type: 'message_created',
-      payload: { message: { message_thread_id: 99, message_id: 301, text: 'Fail reply' } }
-    };
+    const event = telegramMessageEvent('tg-evt-2', '301', '99', 'Fail reply');
 
     await handleQueueEvent(event, env);
     expect(db.tables.outbound_operations[0].status).toBe('AMBIGUOUS');
@@ -230,30 +302,90 @@ describe('Queue Event Processing', () => {
     const db = env.DB as MockD1;
     db.tables.conversations.push({
       id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
-      operator_channel: 'telegram', operator_thread_ref: '99'
+      operator_channel: 'telegram', operator_thread_ref: '99', operator_thread_status: 'OPEN', version: 1
     });
 
     const eventRes: SupportEvent = {
-      eventId: 'cw-evt-res', source: 'chatwoot', type: 'conversation_status_changed',
-      payload: { account: { id: 1 }, id: 2, status: 'resolved' }
+      version: 1, eventId: 'cw-evt-res', source: 'chatwoot', type: 'conversation_status_changed',
+      payload: { accountRef: '1', conversationRef: '2', status: 'resolved' }
     };
     await handleQueueEvent(eventRes, env);
     expect(db.tables.outbound_operations.some(o => o.operation_type === 'CLOSE_TOPIC')).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    await handleQueueEvent({ ...eventRes, eventId: 'cw-evt-res-duplicate' }, env);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(db.tables.conversations[0].operator_thread_status).toBe('CLOSED');
 
     const eventOpen: SupportEvent = {
-      eventId: 'cw-evt-open', source: 'chatwoot', type: 'conversation_status_changed',
-      payload: { account: { id: 1 }, id: 2, status: 'open' }
+      version: 1, eventId: 'cw-evt-open', source: 'chatwoot', type: 'conversation_status_changed',
+      payload: { accountRef: '1', conversationRef: '2', status: 'open' }
     };
     await handleQueueEvent(eventOpen, env);
     expect(db.tables.outbound_operations.some(o => o.operation_type === 'REOPEN_TOPIC')).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    await handleQueueEvent({ ...eventOpen, eventId: 'cw-evt-open-duplicate' }, env);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(db.tables.conversations[0].operator_thread_status).toBe('OPEN');
+
+    await handleQueueEvent({ ...eventRes, eventId: 'cw-evt-res-next-cycle' }, env);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(db.tables.outbound_operations.filter(o => o.operation_type === 'CLOSE_TOPIC')).toHaveLength(2);
+  });
+
+  it('reuses an existing topic for later Chatwoot messages', async () => {
+    const first = chatwootMessageEvent('cw-reuse-1', '51', 'First', 'CUSTOMER', 'Alice');
+    const second = chatwootMessageEvent('cw-reuse-2', '52', 'Second', 'CUSTOMER', 'Alice Updated');
+
+    await handleQueueEvent(first, env);
+    await handleQueueEvent(second, env);
+
+    const db = env.DB as MockD1;
+    expect(db.tables.outbound_operations.filter(operation => operation.id.startsWith('create_topic_'))).toHaveLength(1);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    const createTopicBody = JSON.parse(String((global.fetch as any).mock.calls[0][1].body));
+    expect(createTopicBody.name).toBe('Alice | Chatwoot #2');
+  });
+
+  it('does not suppress different provider messages with identical text', async () => {
+    const first = chatwootMessageEvent('cw-identical-1', '61', 'Same text');
+    const second = chatwootMessageEvent('cw-identical-2', '62', 'Same text');
+
+    await handleQueueEvent(first, env);
+    await handleQueueEvent(second, env);
+
+    const db = env.DB as MockD1;
+    expect(db.tables.messages.filter(message => message.text_content === 'Same text')).toHaveLength(2);
+    expect(db.tables.outbound_operations.filter(operation => operation.id.startsWith('send_tg_'))).toHaveLength(2);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects unsupported queue envelope versions', async () => {
+    const event = { ...chatwootMessageEvent('cw-v2', '63', 'Future'), version: 2 };
+    await expect(handleQueueEvent(event as any, env)).rejects.toThrow('Unsupported queue event version');
+    const db = env.DB as MockD1;
+    expect(db.tables.event_receipts).toHaveLength(0);
+    expect(global.fetch).toHaveBeenCalledTimes(0);
+  });
+
+  it('delivers a duplicate Telegram operator update to Chatwoot once with source_id', async () => {
+    const db = env.DB as MockD1;
+    db.tables.conversations.push({
+      id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
+      operator_channel: 'telegram', operator_thread_ref: '99'
+    });
+    const event = telegramMessageEvent('tg_701', '301', '99', 'Reply');
+
+    await handleQueueEvent(event, env);
+    await handleQueueEvent(event, env);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String((global.fetch as any).mock.calls[0][1].body));
+    expect(body.source_id).toBe('cz2128:send_chatwoot_301');
   });
 
   describe('Chatwoot Handler logic', () => {
     it('message_type="incoming" -> Telegram exactly once', async () => {
-      const event: SupportEvent = {
-        eventId: 'cw-evt-inc', source: 'chatwoot', type: 'message_created',
-        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 3 }, id: 4, content: 'Hi', message_type: 'incoming' }
-      };
+      const event = chatwootMessageEvent('cw-evt-inc', '4', 'Hi');
       await handleQueueEvent(event, env);
       const db = env.DB as MockD1;
       expect(db.tables.messages.find(m => m.provider_message_ref === '4')).toBeTruthy();
@@ -261,47 +393,13 @@ describe('Queue Event Processing', () => {
     });
 
     it('message_type="outgoing" human operator -> Telegram exactly once', async () => {
-      const event: SupportEvent = {
-        eventId: 'cw-evt-out', source: 'chatwoot', type: 'message_created',
-        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 5, type: 'user' }, id: 6, content: 'Reply', message_type: 'outgoing' }
-      };
+      const event = chatwootMessageEvent('cw-evt-out', '6', 'Reply', 'OPERATOR');
+      await handleQueueEvent(event, env);
       await handleQueueEvent(event, env);
       const db = env.DB as MockD1;
       expect(db.tables.messages.find(m => m.provider_message_ref === '6')).toBeTruthy();
-      expect(global.fetch).toHaveBeenCalledTimes(2); 
+      expect(global.fetch).toHaveBeenCalledTimes(2);
     });
 
-    it('message_type="outgoing" source_id="cz2128:..." -> fast-drop -> Telegram 0 calls', async () => {
-      const event: SupportEvent = {
-        eventId: 'cw-evt-echo', source: 'chatwoot', type: 'message_created',
-        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 5 }, id: 7, content: 'Echo', message_type: 'outgoing', source_id: 'cz2128:op1' }
-      };
-      await handleQueueEvent(event, env);
-      const db = env.DB as MockD1;
-      expect(db.tables.messages.find(m => m.provider_message_ref === '7')).toBeUndefined();
-      expect(global.fetch).toHaveBeenCalledTimes(0);
-    });
-
-    it('private outgoing -> Telegram 0 calls', async () => {
-      const event: SupportEvent = {
-        eventId: 'cw-evt-priv', source: 'chatwoot', type: 'message_created',
-        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 5 }, id: 8, content: 'Note', message_type: 'outgoing', private: true }
-      };
-      await handleQueueEvent(event, env);
-      const db = env.DB as MockD1;
-      expect(db.tables.messages.find(m => m.provider_message_ref === '8')).toBeUndefined();
-      expect(global.fetch).toHaveBeenCalledTimes(0);
-    });
-
-    it('bot/system -> 不误当人工普通回复', async () => {
-      const event: SupportEvent = {
-        eventId: 'cw-evt-bot', source: 'chatwoot', type: 'message_created',
-        payload: { account: { id: 1 }, conversation: { id: 2 }, sender: { id: 9, type: 'agent_bot' }, id: 9, content: 'Bot', message_type: 'outgoing' }
-      };
-      await handleQueueEvent(event, env);
-      const db = env.DB as MockD1;
-      expect(db.tables.messages.find(m => m.provider_message_ref === '9')).toBeUndefined();
-      expect(global.fetch).toHaveBeenCalledTimes(0);
-    });
   });
 });

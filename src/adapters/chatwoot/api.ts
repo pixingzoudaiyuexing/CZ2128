@@ -1,4 +1,5 @@
-import { Env } from '../../index';
+import { Env } from '../../config/env';
+import { ProviderDeliveryError } from '../../core/errors';
 
 export async function createChatwootMessage(
   env: Env,
@@ -9,9 +10,6 @@ export async function createChatwootMessage(
 ): Promise<{ messageId: string }> {
   const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
   
-  // Try to use source_id if supported by API. Chatwoot currently supports custom attributes?
-  // Documentation says: "CZ2128-originated Chatwoot messages should carry a stable source_id marker such as cz2128:<outbound_operation_id> where supported."
-  // For V1, we'll pass source_id in the payload, if it's ignored we can fallback to something else, but architecture says "fast echo guard".
   const body = {
     content,
     message_type: 'outgoing',
@@ -19,19 +17,34 @@ export async function createChatwootMessage(
     source_id: `cz2128:${outboundOperationId}`
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'api_access_token': env.CHATWOOT_API_TOKEN
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Chatwoot createMessage failed: ${await response.text()}`);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api_access_token': env.CHATWOOT_API_TOKEN
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ProviderDeliveryError('AMBIGUOUS', 'CHATWOOT_TRANSPORT_ERROR');
   }
 
-  const data = await response.json() as any;
-  return { messageId: String(data.id) };
+  if (!response.ok) {
+    const outcome = response.status === 429
+      ? 'RETRYABLE'
+      : response.status === 408 || response.status >= 500
+        ? 'AMBIGUOUS'
+        : 'FINAL';
+    throw new ProviderDeliveryError(outcome, `CHATWOOT_HTTP_${response.status}`);
+  }
+
+  try {
+    const data = await response.json() as any;
+    if (data.id === undefined || data.id === null) throw new Error('Missing message id');
+    return { messageId: String(data.id) };
+  } catch {
+    throw new ProviderDeliveryError('AMBIGUOUS', 'CHATWOOT_INVALID_SUCCESS_RESPONSE');
+  }
 }

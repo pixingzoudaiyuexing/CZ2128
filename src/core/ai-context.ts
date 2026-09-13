@@ -1,4 +1,4 @@
-import { Env } from '../index';
+import { Env } from '../config/env';
 import { AIConfig } from '../config/ai';
 
 export interface AIMessage {

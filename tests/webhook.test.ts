@@ -79,6 +79,16 @@ describe('Chatwoot Webhook Auth', () => {
     expect(res.valid).toBe(false);
   });
 
+  it('future timestamp outside replay window -> FAIL', async () => {
+    const body = JSON.stringify({ event: 'message_created' });
+    const ts = Math.floor(Date.now() / 1000) + 301;
+    const sig = await generateSignature(body, ts);
+
+    const req = createRequest(body, sig, String(ts));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
+  });
+
   it('missing timestamp -> FAIL', async () => {
     const req = createRequest('{}', 'sha256=abc', null);
     const res = await verifyChatwootWebhook(req, secret);
@@ -87,6 +97,12 @@ describe('Chatwoot Webhook Auth', () => {
 
   it('malformed signature -> FAIL', async () => {
     const req = createRequest('{}', 'sha256=xxx', String(Math.floor(Date.now() / 1000)));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
+  });
+
+  it('wrong-length hexadecimal signature -> FAIL', async () => {
+    const req = createRequest('{}', 'sha256=aabb', String(Math.floor(Date.now() / 1000)));
     const res = await verifyChatwootWebhook(req, secret);
     expect(res.valid).toBe(false);
   });
@@ -120,5 +136,42 @@ describe('Telegram Webhook Auth', () => {
     const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': secret }, 'wrong-path');
     const res = await verifyTelegramWebhook(req, 'wrong-path', expectedPath, secret, "-100");
     expect(res.valid).toBe(false);
+  });
+
+  it('empty Telegram secrets fail closed', async () => {
+    const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': '' }, '');
+    const res = await verifyTelegramWebhook(req, '', '', '', '-100');
+    expect(res.valid).toBe(false);
+  });
+
+  it('wrong group -> FAIL', async () => {
+    const req = new Request('http://localhost/webhooks/telegram/12345', {
+      method: 'POST',
+      headers: { 'X-Telegram-Bot-Api-Secret-Token': secret },
+      body: JSON.stringify({ update_id: 2, message: { chat: { id: -200 } } })
+    });
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret, '-100');
+    expect(res.valid).toBe(false);
+  });
+
+  it('message without chat -> FAIL', async () => {
+    const req = new Request('http://localhost/webhooks/telegram/12345', {
+      method: 'POST',
+      headers: { 'X-Telegram-Bot-Api-Secret-Token': secret },
+      body: JSON.stringify({ update_id: 3, message: { message_id: 4 } })
+    });
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret, '-100');
+    expect(res.valid).toBe(false);
+  });
+
+  it('non-integer update_id is not accepted as stable identity', async () => {
+    const req = new Request('http://localhost/webhooks/telegram/12345', {
+      method: 'POST',
+      headers: { 'X-Telegram-Bot-Api-Secret-Token': secret },
+      body: JSON.stringify({ update_id: '3' })
+    });
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret, '-100');
+    expect(res.valid).toBe(true);
+    expect(res.updateId).toBeUndefined();
   });
 });

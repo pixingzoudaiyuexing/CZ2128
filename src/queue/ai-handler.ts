@@ -1,5 +1,5 @@
-import { Env } from '../index';
-import { SupportEvent } from '../core/events';
+import { Env } from '../config/env';
+import { AiTriggerEvent } from '../core/events';
 import { Conversation } from '../core/domain';
 import { getAIConfig } from '../config/ai';
 import { checkAutoResume, acquireGenerationLease, verifyGenerationLease, verifyHandoffEpoch, releaseGenerationLease, getDurableAiRun, saveDurableAiRun } from '../core/ai-state';
@@ -11,14 +11,14 @@ import { insertMessage } from '../core/conversation-service';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 
-export async function processAiTrigger(event: SupportEvent, env: Env): Promise<void> {
+export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise<void> {
   const config = getAIConfig(env);
   if (!config.enabled) {
     logger.info('AI is disabled or unconfigured, dropping trigger', { source_event_ref: event.eventId });
     return;
   }
 
-  const { convId, messageId, content } = event.payload;
+  const { convId, messageId } = event.payload;
   const stableAiJobId = event.eventId; // e.g. ai_trigger:convId:messageId
 
   let conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first<any>();
