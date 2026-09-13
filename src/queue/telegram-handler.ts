@@ -11,19 +11,16 @@ export async function processTelegramEvent(event: SupportEvent, env: Env): Promi
     const message = payload.message || payload.edited_message;
     if (!message) return;
 
-    const threadRef = String(message.message_thread_id || message.message_id); // Fallback to message_id for non-forum or general
+    const threadRef = String(message.message_thread_id || message.message_id);
     const text = message.text || message.caption;
     
-    if (!text) return; // Ignore non-text messages for Phase 1 if we don't have attachments, wait we don't do attachments here yet
+    if (!text) return; 
 
-    // Find the conversation by operator_thread_ref
     const conv = await env.DB.prepare(
       'SELECT * FROM conversations WHERE operator_channel = ? AND operator_thread_ref = ?'
     ).bind('telegram', threadRef).first<any>();
 
     if (!conv) {
-      // If we can't find a mapped conversation, it's either general chat or an unmapped topic.
-      // We don't map Telegram messages to Chatwoot unless there's a conversation.
       return;
     }
 
@@ -58,9 +55,8 @@ export async function processTelegramEvent(event: SupportEvent, env: Env): Promi
       `send_chatwoot_${messageId}`
     );
     
-    // Update last operator reply at
     await env.DB.prepare(
-      'UPDATE conversations SET last_operator_reply_at = ?, ai_mode = ? WHERE id = ?'
-    ).bind(Math.floor(Date.now() / 1000), 'PAUSED_OPERATOR', conv.id).run();
+      'UPDATE conversations SET last_operator_reply_at = ? WHERE id = ?'
+    ).bind(Math.floor(Date.now() / 1000), conv.id).run();
   }
 }

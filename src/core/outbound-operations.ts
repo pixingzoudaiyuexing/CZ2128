@@ -11,7 +11,6 @@ export async function executeOutboundOperation(
   const id = deterministicOperationId || crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
   
-  // Try to create or claim the operation
   let op = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?').bind(id).first<any>();
   if (!op) {
     await env.DB.prepare(
@@ -22,14 +21,22 @@ export async function executeOutboundOperation(
   }
 
   if (op.status === 'SENT' || op.status === 'FAILED_FINAL') {
-    return; // Already done
+    return;
   }
 
   if (op.status === 'SENDING' && op.lease_until && op.lease_until > now) {
     return; // Active lease, block concurrent send
   }
 
-  // Claim lease
+  if (op.attempt_count >= 3) {
+    await env.DB.prepare(
+      `UPDATE outbound_operations 
+       SET status = 'FAILED_FINAL', updated_at = ?
+       WHERE id = ?`
+    ).bind(now, id).run();
+    return; // Bounded attempts reached
+  }
+
   const leaseUntil = now + 30; // 30 seconds
   await env.DB.prepare(
     `UPDATE outbound_operations 

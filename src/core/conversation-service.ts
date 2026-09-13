@@ -19,11 +19,11 @@ export async function getOrCreateConversation(
     await env.DB.prepare(
       `INSERT INTO conversations (
         id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, 
-        customer_ref, operator_channel, ai_mode, created_at, updated_at, version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        customer_ref, operator_channel, created_at, updated_at, version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref,
-      customer_ref, 'telegram', 'ENABLED', now, now, 1
+      customer_ref, 'telegram', now, now, 1
     ).run();
 
     conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(id).first<Conversation>();
@@ -77,10 +77,5 @@ export async function enqueueOutboundOperation(
      VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, conversationId, destinationProvider, operationType, 'PENDING', now, now).run();
   
-  // Actually we should store textContent somewhere to send, maybe in a separate queue or payload field.
-  // Wait, the outbound operation needs the payload if it's asynchronous! 
-  // For V1, the consumer does provider operations inline, wait.
-  // Oh, "Outbound Operations: SENT does not resend. active lease blocks duplicate concurrent send."
-  // So the queue consumer creates outbound operation, then tries to send it.
   return id;
 }
