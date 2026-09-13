@@ -1,82 +1,116 @@
 # CZ2128 Roadmap
 
-Status: **Draft — architecture review in progress**
+Status: **Phase 0 complete — Phase 1 approved to start**
 
 ## Phase 0 — Architecture Freeze
 
+Status: **COMPLETE**
+
 Goal: approve a buildable V1 architecture before implementation.
 
-Deliverables:
+Completed deliverables:
 
 - `PROJECT.md`
 - `ARCHITECTURE.md`
 - `DECISIONS.md`
 - `AGENTS.md`
 - Independent Gemini architecture review
-- Primary final decision and doc updates
+- Primary final decision and architecture updates
 
-Exit criteria:
+Frozen outcomes:
 
-- storage responsibilities are clear
-- webhook verification/idempotency strategy is approved
-- message/AI handoff state model is approved
-- attachment architecture is approved
-- retry/queue strategy is approved
-- V1 scope/non-goals are frozen
+- D1 is canonical gateway state/history.
+- Cloudflare Queues is mandatory for asynchronous processing/retries.
+- Durable Objects are deferred, not prohibited.
+- AI handoff mode and transient generation locking are separate concepts.
+- Provider IDs and stable operation IDs define idempotency; content hashes do not.
+- One Chatwoot conversation maps to one Telegram topic in V1.
+- Resolved/reopened Chatwoot conversations close/reopen their Telegram topics.
+- R2 is the unified private temporary attachment store.
+- Chatwoot remains unmodified upstream.
 
 ## Phase 1 — Foundation + Chatwoot/Telegram Core
 
-Goal: establish the new repository structure and reliable human support bridge.
+Status: **NEXT / APPROVED**
+
+Goal: establish the new repository structure and reliable human support bridge before introducing AI.
 
 Scope:
 
-- TypeScript Worker project foundation
+- TypeScript Cloudflare Worker project foundation
 - configuration/secrets contracts
+- framework-light HTTP routing unless implementation evidence justifies a small router dependency
 - D1 migrations and repositories
-- Chatwoot webhook verification and adapter
-- Telegram webhook verification and channel adapter
-- queue ingress/consumer baseline
-- conversation ↔ Telegram topic mapping
+- minimum tables for conversations, messages, event receipts and outbound operations
+- Chatwoot webhook raw-body HMAC/timestamp verification
+- Chatwoot delivery/message ID idempotency
+- Chatwoot `source_id=cz2128:<operation_id>` correlation for gateway-originated messages where supported
+- Telegram webhook path + secret-token verification
+- Telegram `update_id` idempotency
+- Cloudflare Queue ingress/consumer baseline
+- stable Queue event envelope and retry/DLQ policy
+- one Chatwoot conversation ↔ one Telegram topic mapping
+- topic create/reuse
+- topic close/reopen on Chatwoot conversation lifecycle
 - customer message -> Telegram
 - Telegram operator reply -> Chatwoot
 - Chatwoot human reply -> Telegram
-- provider-ID-based event/message idempotency
-- structured logging
-- automated tests for critical bridge flows
+- outbound operation ledger / guarded side effects
+- structured redacted logging
+- automated tests for all critical bridge/idempotency flows
 
-No AI dependency required for this phase to function.
+No AI dependency is required for Phase 1 to function.
+
+Exit criteria:
+
+- normal messages sync in both directions
+- duplicate webhooks/queue deliveries do not normally duplicate visible messages
+- echo loops are suppressed using provider correlation, not text hashes
+- resolved/reopened conversation topic lifecycle works
+- provider failure/retry state is inspectable
+- typecheck/lint/tests pass
+- migrations work on a clean local/test D1 database
 
 ## Phase 2 — AI Handoff + Multi-turn Context
 
-Goal: restore and improve the proven AI behavior from the legacy bot.
+Goal: restore and improve proven AI behavior from the legacy bot without weakening human support reliability.
 
 Scope:
 
 - OpenAI-compatible adapter
-- `ENABLED / PAUSED_OPERATOR / PAUSED_MANUAL` state machine
+- human handoff modes: `ENABLED / PAUSED_OPERATOR / PAUSED_MANUAL`
+- generation lease fields and guarded D1 acquisition/release
 - Telegram AI on/off controls
 - operator pause from Telegram and Chatwoot
+- operator reply while generation is running invalidates/discards stale AI result
 - auto-resume timeout on next customer message
+- rapid customer message handling without silent loss or accidental double answer
 - bounded recent D1 conversation context
-- AI failure fallback to human path
-- tests for all state transitions and duplicate deliveries
+- persist customer/AI/operator conversational messages
+- exclude ordinary system/activity events from AI context
+- AI failure releases generation lease and leaves human bridge operational
+- tests for state races, retries, duplicate deliveries and provider failures
 
 ## Phase 3 — Unified Temporary Attachments
 
-Goal: replace EasyImages and support ordinary temporary files.
+Goal: replace EasyImages and support ordinary temporary files through one private attachment subsystem.
 
 Scope:
 
 - private R2 bucket
 - image upload/serve path
 - ordinary file upload/serve path
-- opaque access tokens
+- streaming upload without whole-file buffering where platform APIs allow
+- opaque access tokens; store hashes where practical
 - D1 attachment metadata
-- exact logical expiry
+- exact logical expiry in application
 - R2 lifecycle cleanup
-- Telegram oversize handling
-- Crisp-era EasyImages dependency removed from the new project
-- tests for access, expiry, missing/deleted objects, and retries
+- hosted Telegram Bot API 20 MB download-limit enforcement
+- clear oversize operator feedback
+- safe filename/content-disposition handling
+- GET/HEAD download path; Range support if practical and justified
+- Crisp-era EasyImages dependency absent from the new project
+- tests for access, expiry, missing/deleted objects, oversize rejection and retries
 
 ## Phase 4 — Reliability Hardening
 
@@ -85,13 +119,17 @@ Goal: make production failure modes explicit and recoverable.
 Scope:
 
 - retry policy refinement
-- dead-letter handling
-- reconciliation tools/commands for failed deliveries
+- dead-letter handling and inspection
+- ambiguous third-party delivery outcome handling
+- reconciliation tools/commands for failed/uncertain deliveries
 - additional provider-correlation edge cases
 - migration rollback/recovery procedures
 - rate-limit behavior
 - structured error taxonomy
 - production runbook
+- concurrency/load tests to decide whether per-conversation Durable Objects are actually needed
+
+Durable Objects may be introduced here only if measured correctness/ordering problems justify them.
 
 ## Phase 5 — Knowledge / RAG
 
