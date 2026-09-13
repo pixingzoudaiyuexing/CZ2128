@@ -12,6 +12,7 @@ class HandlerDb {
   }];
   outbound: any[] = [];
   lastOutboundLeaseUntil = 0;
+  failStoredPersistence = false;
 
   prepare(query: string) {
     let params: any[] = [];
@@ -41,12 +42,14 @@ class HandlerDb {
     let changes = 0;
     if (query.includes("SET status = 'FETCHING'")) {
       const row = this.attachments.find(item => item.id === params[1]);
-      if (row && row.attempt_count < 3 && ['PENDING', 'FETCHING', 'FAILED_RETRYABLE'].includes(row.status)) {
+      if (row && row.attempt_count < params[2] && ['PENDING', 'FETCHING', 'FAILED_RETRYABLE'].includes(row.status)) {
         row.status = 'FETCHING'; row.attempt_count += 1; changes = 1;
       }
     } else if (query.includes("SET status = 'STORED'")) {
       const row = this.attachments.find(item => item.id === params[3] && item.status === 'FETCHING');
-      if (row) { row.status = 'STORED'; row.size_bytes = params[0]; row.expires_at = params[1]; changes = 1; }
+      if (row && !this.failStoredPersistence) {
+        row.status = 'STORED'; row.size_bytes = params[0]; row.expires_at = params[1]; changes = 1;
+      }
     } else if (query.includes("SET status = 'DELIVERED'")) {
       const row = this.attachments.find(item => item.id === params[2] && item.status === 'STORED');
       if (row) { row.status = 'DELIVERED'; row.destination_message_ref = params[0]; changes = 1; }
@@ -251,6 +254,84 @@ describe('attachment transfer ledger', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('marks an exhausted FETCHING attachment final without source or R2 execution', async () => {
+    const fixture = await setup('telegram', 'PENDING');
+    fixture.db.attachments[0].status = 'FETCHING';
+    fixture.db.attachments[0].attempt_count = 3;
+    const createMultipartUpload = vi.fn();
+    fixture.env.ATTACHMENTS_BUCKET = { createMultipartUpload };
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(createMultipartUpload).not.toHaveBeenCalled();
+    expect(fixture.db.attachments[0].status).toBe('FAILED_FINAL');
+    expect(fixture.db.attachments[0].last_error).toBe('ATTACHMENT_ATTEMPTS_EXHAUSTED');
+  });
+
+  it('bounds retries when R2 completes but the STORED transition is not persisted', async () => {
+    const fixture = await setup('telegram', 'PENDING');
+    fixture.db.failStoredPersistence = true;
+    const bytes = new Uint8Array([1]);
+    const createMultipartUpload = vi.fn(async () => ({
+      uploadPart: async (partNumber: number) => ({ partNumber, etag: `part-${partNumber}` }),
+      complete: async () => undefined,
+      abort: async () => undefined
+    }));
+    fixture.env.ATTACHMENTS_BUCKET = { createMultipartUpload };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) =>
+      String(url).includes('/getFile')
+        ? new Response(JSON.stringify({ ok: true, result: { file_path: 'file' } }), { status: 200 })
+        : new Response(new Blob([bytes]).stream(), { status: 200 })
+    );
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
+    }
+    await expect(processAttachmentTransfer(fixture.event, fixture.env)).resolves.toBeUndefined();
+
+    expect(fixture.db.attachments[0].attempt_count).toBe(3);
+    expect(fixture.db.attachments[0].status).toBe('FAILED_FINAL');
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(createMultipartUpload).toHaveBeenCalledTimes(3);
+  });
+
+  it('allows a normal retryable source/storage failure to succeed on the next attempt', async () => {
+    const fixture = await setup('telegram', 'PENDING');
+    const bytes = new Uint8Array([1]);
+    let storageAttempt = 0;
+    fixture.env.ATTACHMENTS_BUCKET = {
+      createMultipartUpload: async () => ({
+        uploadPart: async (partNumber: number) => {
+          storageAttempt += 1;
+          if (storageAttempt === 1) throw new Error('temporary R2 failure');
+          return { partNumber, etag: `part-${partNumber}` };
+        },
+        complete: async () => undefined,
+        abort: async () => undefined
+      }),
+      get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
+      if (String(url).includes('/getFile')) {
+        return new Response(JSON.stringify({ ok: true, result: { file_path: 'file' } }), { status: 200 });
+      }
+      if (String(url).includes('/file/bot')) {
+        return new Response(new Blob([bytes]).stream(), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 9 }), { status: 200 });
+    });
+
+    await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
+    expect(fixture.db.attachments[0].status).toBe('FAILED_RETRYABLE');
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fixture.db.attachments[0].attempt_count).toBe(2);
+    expect(fixture.db.attachments[0].status).toBe('DELIVERED');
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
   it('stops retrying after the third source/storage attempt', async () => {
     const fixture = await setup('telegram', 'PENDING');
     fixture.env.ATTACHMENTS_BUCKET = {
@@ -260,7 +341,7 @@ describe('attachment transfer ledger', () => {
         abort: async () => undefined
       })
     };
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) =>
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) =>
       String(url).includes('/getFile')
         ? new Response(JSON.stringify({ ok: true, result: { file_path: 'file' } }), { status: 200 })
         : new Response(new Blob([new Uint8Array([1])]).stream(), { status: 200 })
@@ -269,9 +350,11 @@ describe('attachment transfer ledger', () => {
     await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
     await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
     await expect(processAttachmentTransfer(fixture.event, fixture.env)).resolves.toBeUndefined();
+    await expect(processAttachmentTransfer(fixture.event, fixture.env)).resolves.toBeUndefined();
 
     expect(fixture.db.attachments[0].attempt_count).toBe(3);
     expect(fixture.db.attachments[0].status).toBe('FAILED_FINAL');
     expect(fixture.db.attachments[0].expires_at).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 });

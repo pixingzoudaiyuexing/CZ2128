@@ -38,11 +38,61 @@ function parseContentLength(response: Response, maxBytes: number): number | unde
   return parsed;
 }
 
-function isPrivateIpv4(hostname: string): boolean {
+function parseIpv4Literal(hostname: string): number[] | null {
   const parts = hostname.split('.');
-  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return false;
-  const [a, b] = parts.map(Number);
-  return a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
+  return parts.map(Number);
+}
+
+function isDisallowedIpv4(parts: number[]): boolean {
+  const [a, b] = parts;
+  return (
+    parts.every(part => part === 0) ||
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
+function parseIpv6Literal(hostname: string): number[] | null {
+  if (!hostname.includes(':')) return null;
+  const halves = hostname.toLowerCase().split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const segments = [...left, ...right];
+  if (segments.some(segment => !/^[0-9a-f]{1,4}$/.test(segment))) return null;
+  const omitted = 8 - segments.length;
+  if ((halves.length === 1 && omitted !== 0) || (halves.length === 2 && omitted < 1)) return null;
+  return [
+    ...left.map(segment => Number.parseInt(segment, 16)),
+    ...Array.from({ length: omitted }, () => 0),
+    ...right.map(segment => Number.parseInt(segment, 16))
+  ];
+}
+
+function isDisallowedLiteralAddress(hostname: string): boolean {
+  const ipv4 = parseIpv4Literal(hostname);
+  if (ipv4) return isDisallowedIpv4(ipv4);
+
+  const ipv6 = parseIpv6Literal(hostname);
+  if (!ipv6) return false;
+  if (ipv6.every(segment => segment === 0)) return true;
+  if (ipv6.slice(0, 7).every(segment => segment === 0) && ipv6[7] === 1) return true;
+  if ((ipv6[0] & 0xfe00) === 0xfc00) return true;
+  if ((ipv6[0] & 0xffc0) === 0xfe80) return true;
+  if ((ipv6[0] & 0xff00) === 0xff00) return true;
+  if (ipv6.slice(0, 5).every(segment => segment === 0) && ipv6[5] === 0xffff) {
+    return isDisallowedIpv4([
+      ipv6[6] >> 8,
+      ipv6[6] & 0xff,
+      ipv6[7] >> 8,
+      ipv6[7] & 0xff
+    ]);
+  }
+  return false;
 }
 
 function validateChatwootUrl(url: URL, config: AttachmentConfig, initial: boolean): void {
@@ -51,11 +101,9 @@ function validateChatwootUrl(url: URL, config: AttachmentConfig, initial: boolea
     throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
   }
   if (
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '::' || hostname === '::1' ||
-    hostname === '0.0.0.0' ||
+    hostname === 'localhost' || hostname.endsWith('.localhost') ||
     hostname === 'metadata.google.internal' || hostname === 'metadata.internal' ||
-    hostname.startsWith('fe80:') || hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('ff') ||
-    hostname.startsWith('::ffff:') || isPrivateIpv4(hostname)
+    isDisallowedLiteralAddress(hostname)
   ) {
     throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
   }

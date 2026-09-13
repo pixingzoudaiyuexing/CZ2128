@@ -23,18 +23,33 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
   if (tokenHash !== existing.access_token_hash) {
     throw new RetryableProcessingError('Attachment job token was superseded', 1);
   }
-  const claimed = await claimAttachment(env, event.payload.attachmentId);
-  if (!claimed || claimed.status === 'DELIVERED' || claimed.status === 'FAILED_FINAL') return;
-  let row: typeof claimed = claimed;
+  let row = existing;
+  if (existing.status !== 'STORED') {
+    const claim = await claimAttachment(env, event.payload.attachmentId);
+    if (claim.outcome === 'EXHAUSTED') {
+      await markAttachmentFailure(
+        env,
+        claim.row.id,
+        false,
+        claim.row.last_error || 'ATTACHMENT_ATTEMPTS_EXHAUSTED',
+        config
+      );
+      return;
+    }
+    if (claim.outcome === 'NOT_CLAIMED') {
+      if (!claim.row || claim.row.status === 'DELIVERED' || claim.row.status === 'FAILED_FINAL') return;
+      if (claim.row.status !== 'STORED') {
+        throw new RetryableProcessingError('Attachment source claim was not acquired', 2);
+      }
+      row = claim.row;
+    } else {
+      row = claim.row;
+    }
+  }
   if (row.expires_at !== null && row.expires_at <= Math.floor(Date.now() / 1000)) {
     await markAttachmentFailure(env, row.id, false, 'EXPIRED', config);
     return;
   }
-  if (row.status === 'FAILED_RETRYABLE' && row.attempt_count >= 3) {
-    await markAttachmentFailure(env, row.id, false, row.last_error || 'ATTACHMENT_ATTEMPTS_EXHAUSTED', config);
-    return;
-  }
-
   try {
     if (row.status !== 'STORED') {
       if (event.payload.locator.provider !== row.source_provider) {

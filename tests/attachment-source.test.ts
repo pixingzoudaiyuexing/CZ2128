@@ -53,6 +53,48 @@ class MultipartBucket {
 describe('attachment source security', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it('allows an exact allowlisted DNS hostname that starts with fc', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(stream([1]), { status: 200, headers: { 'Content-Length': '1' } })
+    );
+    const fcdnEnv = { ...env, CHATWOOT_API_URL: 'https://fcdn.example.com' } as any;
+
+    const result = await downloadChatwootAttachment(
+      fcdnEnv,
+      'https://fcdn.example.com/file',
+      getAttachmentConfig(fcdnEnv)
+    );
+    result.finish();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'https://0.0.0.0/file',
+    'https://127.0.0.1/file',
+    'https://10.0.0.1/file',
+    'https://172.16.0.1/file',
+    'https://192.168.1.1/file',
+    'https://169.254.169.254/latest/meta-data',
+    'https://[fe90::1]/file',
+    'https://[febf::1]/file',
+    'https://[fc00::1]/file',
+    'https://[fd00::1]/file',
+    'https://[ff00::1]/file',
+    'https://[::1]/file',
+    'https://[::ffff:127.0.0.1]/file',
+    'https://[::ffff:169.254.1.1]/file',
+    'https://[::ffff:192.168.1.1]/file'
+  ])('rejects an exact-allowlisted special IP literal %s', async url => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const literalEnv = { ...env, CHATWOOT_API_URL: new URL(url).origin } as any;
+
+    await expect(
+      downloadChatwootAttachment(literalEnv, url, getAttachmentConfig(literalEnv))
+    ).rejects.toMatchObject({ code: 'SOURCE_URL_NOT_ALLOWED', retryable: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     'https://arbitrary.example/file',
     'http://chatwoot.example/file',

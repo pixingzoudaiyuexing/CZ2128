@@ -19,6 +19,13 @@ export interface DiscoveredAttachment {
   job?: AttachmentTransferEvent;
 }
 
+export const MAX_ATTACHMENT_SOURCE_ATTEMPTS = 3;
+
+export type AttachmentClaimResult =
+  | { outcome: 'CLAIMED'; row: AttachmentRow }
+  | { outcome: 'NOT_CLAIMED'; row: AttachmentRow | null }
+  | { outcome: 'EXHAUSTED'; row: AttachmentRow };
+
 export async function discoverAttachment(
   env: Env,
   config: AttachmentConfig,
@@ -103,18 +110,27 @@ export async function getAttachment(env: Env, attachmentId: string): Promise<Att
   return env.DB.prepare('SELECT * FROM attachments WHERE id = ?').bind(attachmentId).first<AttachmentRow>();
 }
 
-export async function claimAttachment(env: Env, attachmentId: string): Promise<AttachmentRow | null> {
+export async function claimAttachment(env: Env, attachmentId: string): Promise<AttachmentClaimResult> {
   const now = Math.floor(Date.now() / 1000);
   const claimed = await env.DB.prepare(
     `UPDATE attachments
      SET status = 'FETCHING', attempt_count = attempt_count + 1, last_error = NULL, updated_at = ?
-     WHERE id = ? AND attempt_count < 3
+     WHERE id = ? AND attempt_count < ?
        AND status IN ('PENDING', 'FETCHING', 'FAILED_RETRYABLE')`
-  ).bind(now, attachmentId).run();
-  if (claimed.meta.changes !== 1) {
-    return env.DB.prepare('SELECT * FROM attachments WHERE id = ?').bind(attachmentId).first<AttachmentRow>();
+  ).bind(now, attachmentId, MAX_ATTACHMENT_SOURCE_ATTEMPTS).run();
+  const row = await env.DB.prepare('SELECT * FROM attachments WHERE id = ?').bind(attachmentId).first<AttachmentRow>();
+  if (claimed.meta.changes === 1) {
+    if (!row) throw new Error('Claimed attachment row could not be loaded');
+    return { outcome: 'CLAIMED', row };
   }
-  return env.DB.prepare('SELECT * FROM attachments WHERE id = ?').bind(attachmentId).first<AttachmentRow>();
+  if (
+    row &&
+    ['PENDING', 'FETCHING', 'FAILED_RETRYABLE'].includes(row.status) &&
+    row.attempt_count >= MAX_ATTACHMENT_SOURCE_ATTEMPTS
+  ) {
+    return { outcome: 'EXHAUSTED', row };
+  }
+  return { outcome: 'NOT_CLAIMED', row };
 }
 
 export async function markAttachmentStored(
@@ -140,7 +156,9 @@ export async function markAttachmentFailure(
   config: AttachmentConfig
 ): Promise<'FAILED_RETRYABLE' | 'FAILED_FINAL'> {
   const row = await env.DB.prepare('SELECT attempt_count FROM attachments WHERE id = ?').bind(attachmentId).first<{ attempt_count: number }>();
-  const status = retryable && Number(row?.attempt_count || 0) < 3 ? 'FAILED_RETRYABLE' : 'FAILED_FINAL';
+  const status = retryable && Number(row?.attempt_count || 0) < MAX_ATTACHMENT_SOURCE_ATTEMPTS
+    ? 'FAILED_RETRYABLE'
+    : 'FAILED_FINAL';
   const now = Math.floor(Date.now() / 1000);
   const result = await env.DB.prepare(
     `UPDATE attachments
