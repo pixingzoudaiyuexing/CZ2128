@@ -1,12 +1,12 @@
-# CZ2128 - Phase 2 Handoff
+# CZ2128 - Phase 3 Handoff
 
 ## 状态
-- **Current Branch**: `main`
+- **Current Branch**: `codex/phase3-attachments`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
 - **PR #2**: merged; Phase 2 complete and frozen
-- **Phase 3**: design frozen; implementation not started
+- **Phase 3**: implementation in PR #3; do not merge before Primary review
 - **Final HEAD / CI**: 以 Phase 2 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
@@ -30,4 +30,13 @@
 - Third-party staging and real D1/Queue concurrency remain required before production acceptance.
 - `AMBIGUOUS` visible delivery outcomes require Phase 4 reconciliation or manual inspection and are never blindly resent.
 - OpenAI-compatible errors are persisted and logged only as bounded categories; raw provider bodies, exception text and API keys are not recorded.
-- Phase 3 attachments/R2 are not part of this branch.
+- Phase 4 reconciliation is not part of this branch.
+
+## Phase 3 Attachment Contract
+- Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
+- 20 MiB per attachment, ten attachments per provider message, 24-hour business TTL.
+- Source-to-R2 uses bounded multipart chunks; provider delivery uses one bounded single-file buffer at a time.
+- Chatwoot downloads use exact HTTPS allowlists, manual redirects and cross-origin credential stripping.
+- Secure proxy supports GET, HEAD and single byte ranges with uniform 404 access failures.
+- Hourly cleanup removes at most 100 expired rows after R2 deletion succeeds.
+- Real R2, Chatwoot and Telegram staging validation remains required.

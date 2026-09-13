@@ -19,6 +19,14 @@ Core:
 - `BOT_GROUP_ID`: Telegram group ID where topics are created
 - `CHATWOOT_API_TOKEN` and `CHATWOOT_API_URL`: Chatwoot API credentials
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
+- `CHATWOOT_ATTACHMENT_ALLOWED_HOSTS`: comma-separated exact HTTPS storage/CDN hosts permitted for Chatwoot attachment redirects
+
+Optional attachment limits:
+- `ATTACHMENT_MAX_BYTES`: maximum bytes per attachment, capped at 20 MiB
+- `ATTACHMENT_MAX_COUNT_PER_MESSAGE`: maximum attachments processed per provider message, capped at 10
+- `ATTACHMENT_TTL_SECONDS`: business retention, capped at 86400 seconds
+- `ATTACHMENT_SOURCE_TIMEOUT_MS`: source download timeout, default 30000
+- `ATTACHMENT_DESTINATION_TIMEOUT_MS`: destination upload timeout, default 30000
 
 Optional AI configuration:
 - `AI_BASE_URL`: OpenAI-compatible API base URL, for example `https://api.openai.com/v1`
@@ -44,3 +52,20 @@ Optional AI configuration:
 - `PAUSED_OPERATOR` can auto-resume only when a new customer event arrives after the configured timeout.
 - Missing AI configuration does not stop the human Chatwoot/Telegram bridge.
 - AI context represents customer text as `user`, generated answers as `assistant`, and human operator replies as labeled `system` messages.
+
+## Temporary Attachments
+- `ATTACHMENTS_BUCKET` is a private R2 binding for `cz2128-attachments`.
+- Source downloads are limited to 20 MiB and stream into bounded R2 multipart chunks.
+- Telegram and Chatwoot destinations receive multipart uploads, one attachment at a time.
+- `GET` and `HEAD /attachments/:token` use a 256-bit opaque bearer token; D1 stores only its SHA-256 hash.
+- The proxy supports one `Range` request and returns `Cache-Control: private, no-store` plus `X-Content-Type-Options: nosniff`.
+- Hourly scheduled cleanup removes expired R2 objects and then deletes their D1 rows in batches of 100.
+
+Deployment prerequisites:
+
+```bash
+npx wrangler r2 bucket create cz2128-attachments
+npx wrangler r2 bucket lifecycle add cz2128-attachments attachment-retention attachments/ --expire-days 7 --abort-multipart-days 7
+```
+
+Review the bucket and lifecycle configuration before running these commands. Phase 3 development does not create or modify production Cloudflare resources. Real R2, Telegram and Chatwoot attachment flows require staging validation before production use.

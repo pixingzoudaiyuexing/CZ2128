@@ -556,3 +556,19 @@ Resolved:
 8. **Recent D1 messages are sufficient for V1 AI context; RAG is deferred.**
 
 With these decisions frozen, Phase 1 implementation may begin.
+
+## 17. Phase 3 Temporary Attachment Transport
+
+Phase 3 implements one reusable attachment core for Telegram and Chatwoot sources:
+
+- one source message maps to zero-to-ten durable attachment rows and one stable Queue job per row;
+- source identity is `(source_provider, source_message_ref, source_attachment_ref)`;
+- R2 object keys are anonymous `attachments/<attachment-id>` values and the bucket remains private;
+- Telegram source downloads use `getFile`; Chatwoot source downloads accept only verified webhook locators, exact HTTPS hosts, manual redirects and stripped credentials after an origin change;
+- source bodies are counted while streaming into bounded 5 MiB R2 multipart chunks, with a hard 20 MiB ceiling;
+- destination multipart sends process one attachment at a time with a bounded 20 MiB single-file buffer and use the existing outbound operation ledger;
+- bearer download URLs use 32 random bytes, while D1 stores only SHA-256 of the raw token;
+- `/attachments/:token` supports GET, HEAD and one byte range, returns private no-store downloads, and uses uniform 404 responses for invalid access;
+- stored data has a 24-hour business TTL, hourly logical cleanup is bounded to 100 rows, and a seven-day R2 lifecycle rule is the orphan safety net.
+
+Attachment-only customer messages do not create AI triggers. Captions remain ordinary text messages and are not duplicated in attachment delivery. Telegram operator attachments participate in the existing Telegram `update_id` state-order fence.

@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-2 complete — Phase 3 design frozen / implementation not started**
+Status: **Phases 1-2 complete — Phase 3 implementation in PR #3**
 
 ## Phase 0 — Architecture Freeze
 
@@ -95,7 +95,7 @@ Scope:
 
 ## Phase 3 — Unified Temporary Attachments
 
-Status: **DESIGN FROZEN / IMPLEMENTATION NOT STARTED**
+Status: **IMPLEMENTATION / PR #3 OPEN**
 
 Goal: replace EasyImages and support ordinary temporary files through one private attachment subsystem.
 

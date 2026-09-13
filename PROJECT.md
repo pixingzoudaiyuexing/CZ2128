@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-2 Complete / Phase 3 Design Frozen / Phase 3 Implementation Not Started**
+Status: **Phases 1-2 Complete / Phase 3 Implementation in PR #3**
 
 ## Purpose
 

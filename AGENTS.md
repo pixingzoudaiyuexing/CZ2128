@@ -16,11 +16,9 @@ If code and documentation conflict, stop and verify ground truth before changing
 
 ## Current Phase
 
-The repository is currently in **Phase 1 — Foundation + Chatwoot/Telegram Core**.
+Phases 1 and 2 are complete. **Phase 3 — Unified Temporary Attachments / R2** is being implemented in PR #3.
 
-Phase 0 architecture review is complete. `ARCHITECTURE.md` and `DECISIONS.md` are the approved V1 baseline.
-
-Implementation may now begin, but Phase 1 must not silently pull Phase 2+ features forward unless they are required for a correct Phase 1 contract.
+`ARCHITECTURE.md` and `DECISIONS.md` remain the approved V1 baseline. Phase 3 must preserve the hardened webhook, Queue, outbound ambiguity and AI handoff contracts from Phases 1 and 2.
 
 ## Architectural Boundaries
 
