@@ -6,7 +6,7 @@ import { RetryLaterError } from './core/events';
 import { logger } from './observability/logger';
 
 export interface Env {
-  hooks?: { beforeVisibleSend?: (env: Env, accountRef: string, convRef: string, content: string, opId: string) => Promise<{ id?: number | string }> };
+  hooks?: { beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>; beforeVisibleSend?: (env: Env, accountRef: string, convRef: string, content: string, opId: string) => Promise<{ id?: number | string }> };
   DB: D1Database;
   QUEUE: Queue<SupportEvent>;
   CHATWOOT_WEBHOOK_SECRET: string;

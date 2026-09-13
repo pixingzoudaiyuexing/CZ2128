@@ -40,23 +40,40 @@ export async function processAiTrigger(event: SupportEvent, env: Env): Promise<v
   let generationId: string;
   let handoffEpoch: number;
 
-  if (existingRun && existingRun.status === 'SUCCESS' && existingRun.response_text) {
-    logger.info('Found existing durable AI run, skipping generation', { conversation_id: convId, operation_id: stableAiJobId });
-    aiContent = existingRun.response_text;
-    responseId = existingRun.provider_response_ref || `ai_res_fallback_${stableAiJobId}`;
-    generationId = existingRun.generation_id;
-    handoffEpoch = existingRun.handoff_epoch;
+  if (existingRun) {
+    if (existingRun.status === 'SUCCESS' && existingRun.response_text) {
+      logger.info('Found existing durable AI run, skipping generation', { conversation_id: convId, operation_id: stableAiJobId });
+      aiContent = existingRun.response_text;
+      responseId = existingRun.provider_response_ref || `ai_res_fallback_${stableAiJobId}`;
+      generationId = existingRun.generation_id;
+      handoffEpoch = existingRun.handoff_epoch;
+    } else if (existingRun.status === 'CANCELLED_BY_HANDOFF' || existingRun.status === 'DISCARDED_STALE') {
+      logger.info('AI run is permanently cancelled by previous handoff, stopping', { conversation_id: convId, operation_id: stableAiJobId });
+      return;
+    } else {
+      // For FAILED or PENDING (expired), allow generating again.
+      const lease = await acquireGenerationLease(env, convId, messageId);
+      if (!lease.success) {
+        logger.warn('Failed to acquire AI generation lease (AI paused?)', { conversation_id: convId, source_event_ref: event.eventId });
+        return; 
+      }
+      generationId = lease.generationId!;
+      handoffEpoch = lease.handoffEpoch!;
+      await performGeneration();
+    }
   } else {
     const lease = await acquireGenerationLease(env, convId, messageId);
     if (!lease.success) {
       logger.warn('Failed to acquire AI generation lease (AI paused?)', { conversation_id: convId, source_event_ref: event.eventId });
       return; 
     }
-
     generationId = lease.generationId!;
     handoffEpoch = lease.handoffEpoch!;
-    const startTime = Date.now();
+    await performGeneration();
+  }
 
+  async function performGeneration() {
+    const startTime = Date.now();
     try {
       await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'PENDING');
 
@@ -73,7 +90,7 @@ export async function processAiTrigger(event: SupportEvent, env: Env): Promise<v
       if (!isValid) {
         logger.warn('AI result discarded because generation lease was invalidated', { conversation_id: convId, operation_id: generationId });
         await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'DISCARDED_STALE');
-        return;
+        throw new Error('DISCARDED_STALE'); 
       }
 
       aiContent = result.content!;
@@ -92,18 +109,22 @@ export async function processAiTrigger(event: SupportEvent, env: Env): Promise<v
   }
 
   // Delivery Phase
+  // Check if generation returned successfully, or if it was thrown above (e.g. DISCARDED_STALE or FAILED)
+  if (!aiContent!) return;
+
   await executeOutboundOperation(
     env,
     convId,
     'chatwoot',
     'SEND_MESSAGE',
     async (opId) => {
-      // FINAL PREFLIGHT GUARD: Ensure AI is still ENABLED and epoch matches
+      // FINAL PREFLIGHT GUARD: Ensure epoch matches
+      if (env.hooks && env.hooks.beforeAiDispatchPreflight) await env.hooks.beforeAiDispatchPreflight(env, convId);
       const isEpochValid = await verifyHandoffEpoch(env, convId, handoffEpoch);
       if (!isEpochValid) {
         await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'CANCELLED_BY_HANDOFF');
         logger.warn('AI result permanently cancelled by human handoff before delivery', { conversation_id: convId, operation_id: generationId });
-        throw new Error('CANCELLED_BY_HANDOFF'); // Expected to abort outbound immediately
+        throw new Error('CANCELLED_BY_HANDOFF'); // abort outbound immediately
       }
 
       let res;
