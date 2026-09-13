@@ -13,7 +13,7 @@ export interface Conversation {
   ai_generation_started_at: number | null;
   ai_generation_message_id: string | null;
   ai_handoff_epoch: number;
-  last_ai_command_update_id: number | null;
+  last_telegram_operator_update_id: number | null;
   created_at: number;
   updated_at: number;
   version: number;

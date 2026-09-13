@@ -2,7 +2,7 @@ import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { Env } from '../config/env';
-import { applyManualCommand, pauseOperator } from '../core/ai-state';
+import { applyTelegramOperatorAction } from '../core/ai-state';
 import { insertMessage } from '../core/conversation-service';
 import { TelegramMessageEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
@@ -18,11 +18,11 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
   const command = payload.content.trim();
   if (command === '/ai_off' || command === '/ai_on') {
     const operationId = `${command === '/ai_off' ? 'ai_off' : 'ai_on'}_ack:${payload.messageRef}`;
-    const commandState = await applyManualCommand(
+    const commandState = await applyTelegramOperatorAction(
       env,
       conv.id,
       payload.updateRef,
-      command === '/ai_off' ? 'PAUSED_MANUAL' : 'ENABLED'
+      command === '/ai_off' ? 'AI_OFF' : 'AI_ON'
     );
     if (commandState === 'STALE') {
       await markOutboundOperationFinal(env, operationId, 'STALE_AI_COMMAND');
@@ -48,7 +48,7 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     return;
   }
 
-  await pauseOperator(env, conv.id);
+  await applyTelegramOperatorAction(env, conv.id, payload.updateRef, 'HUMAN_REPLY');
   await insertMessage(
     env,
     conv.id,

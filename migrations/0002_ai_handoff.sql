@@ -3,7 +3,7 @@ ALTER TABLE conversations ADD COLUMN ai_generation_id TEXT;
 ALTER TABLE conversations ADD COLUMN ai_generation_started_at INTEGER;
 ALTER TABLE conversations ADD COLUMN ai_generation_message_id TEXT;
 ALTER TABLE conversations ADD COLUMN ai_handoff_epoch INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE conversations ADD COLUMN last_ai_command_update_id INTEGER;
+ALTER TABLE conversations ADD COLUMN last_telegram_operator_update_id INTEGER;
 
 CREATE INDEX idx_messages_conversation_id_created_at ON messages(conversation_id, created_at, id);
 

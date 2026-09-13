@@ -55,40 +55,62 @@ export async function resumeManual(env: Env, convId: string): Promise<void> {
   logger.info('AI resumed manually (/ai_on)', { conversation_id: convId });
 }
 
-export async function applyManualCommand(
+export type TelegramOperatorAction = 'HUMAN_REPLY' | 'AI_OFF' | 'AI_ON';
+export type OrderedActionResult = 'APPLIED' | 'CURRENT' | 'STALE';
+
+export async function applyTelegramOperatorAction(
   env: Env,
   convId: string,
   updateRef: string,
-  mode: 'ENABLED' | 'PAUSED_MANUAL'
-): Promise<'APPLIED' | 'CURRENT' | 'STALE'> {
+  action: TelegramOperatorAction
+): Promise<OrderedActionResult> {
   const updateId = Number(updateRef);
   if (!Number.isSafeInteger(updateId) || updateId < 0) {
-    throw new Error('Invalid Telegram command update id');
+    throw new Error('Invalid Telegram operator update id');
   }
   const now = Math.floor(Date.now() / 1000);
-  const setMode = mode === 'PAUSED_MANUAL'
-    ? `SET ai_mode = 'PAUSED_MANUAL',
+  if (action === 'HUMAN_REPLY') {
+    const result = await env.DB.prepare(
+      `UPDATE conversations
+       SET ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
+           last_operator_reply_at = ?,
            ai_generation_id = NULL,
            ai_generation_started_at = NULL,
            ai_generation_message_id = NULL,
            ai_handoff_epoch = ai_handoff_epoch + 1,
-           last_ai_command_update_id = ?, updated_at = ?, version = version + 1`
-    : `SET ai_mode = 'ENABLED',
+           last_telegram_operator_update_id = ?,
+           updated_at = ?,
+           version = version + 1
+       WHERE id = ?
+         AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)`
+    ).bind(now, updateId, now, convId, updateId).run();
+    if (result.meta.changes === 1) return 'APPLIED';
+  } else {
+    const setMode = action === 'AI_OFF'
+      ? `SET ai_mode = 'PAUSED_MANUAL',
+             ai_generation_id = NULL,
+             ai_generation_started_at = NULL,
+             ai_generation_message_id = NULL,
+             ai_handoff_epoch = ai_handoff_epoch + 1,
+             last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`
+      : `SET ai_mode = 'ENABLED',
            ai_generation_id = NULL,
            ai_generation_started_at = NULL,
            ai_generation_message_id = NULL,
-           last_ai_command_update_id = ?, updated_at = ?, version = version + 1`;
-  const result = await env.DB.prepare(
-    `UPDATE conversations ${setMode}
-     WHERE id = ? AND (last_ai_command_update_id IS NULL OR last_ai_command_update_id < ?)`
-  ).bind(updateId, now, convId, updateId).run();
-  if (result.meta.changes === 1) return 'APPLIED';
+             last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`;
+    const result = await env.DB.prepare(
+      `UPDATE conversations ${setMode}
+       WHERE id = ?
+         AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)`
+    ).bind(updateId, now, convId, updateId).run();
+    if (result.meta.changes === 1) return 'APPLIED';
+  }
 
   const current = await env.DB.prepare(
-    'SELECT last_ai_command_update_id FROM conversations WHERE id = ?'
-  ).bind(convId).first<{ last_ai_command_update_id: number | null }>();
-  if (!current) throw new Error('Conversation not found for AI command');
-  return Number(current.last_ai_command_update_id) === updateId ? 'CURRENT' : 'STALE';
+    'SELECT last_telegram_operator_update_id FROM conversations WHERE id = ?'
+  ).bind(convId).first<{ last_telegram_operator_update_id: number | null }>();
+  if (!current) throw new Error('Conversation not found for Telegram operator action');
+  return Number(current.last_telegram_operator_update_id) === updateId ? 'CURRENT' : 'STALE';
 }
 
 export async function checkAutoResume(env: Env, conv: Conversation): Promise<boolean> {

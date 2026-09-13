@@ -78,18 +78,31 @@ class MockPreparedStatement {
         row.version = (row.version || 1) + 1;
         meta.changes = 1;
       }
-    } else if (this.query.includes('last_ai_command_update_id = ?')) {
-      const [updateId, updatedAt, id, expectedUpdateId] = this.boundParams;
+    } else if (this.query.includes('last_telegram_operator_update_id = ?')) {
+      const isHumanReply = this.query.includes('last_operator_reply_at = ?');
+      const [operatorReplyAt, updateId, updatedAt, id, expectedUpdateId] = isHumanReply
+        ? this.boundParams
+        : [undefined, ...this.boundParams];
       const row = this.db.tables.conversations.find(item => item.id === id);
       if (
         row &&
-        (row.last_ai_command_update_id === undefined || row.last_ai_command_update_id === null ||
-          Number(row.last_ai_command_update_id) < Number(expectedUpdateId))
+        (row.last_telegram_operator_update_id === undefined || row.last_telegram_operator_update_id === null ||
+          Number(row.last_telegram_operator_update_id) < Number(expectedUpdateId))
       ) {
-        row.ai_mode = this.query.includes("SET ai_mode = 'PAUSED_MANUAL'") ? 'PAUSED_MANUAL' : 'ENABLED';
+        if (isHumanReply) {
+          if (row.ai_mode !== 'PAUSED_MANUAL') row.ai_mode = 'PAUSED_OPERATOR';
+          row.last_operator_reply_at = operatorReplyAt;
+          row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
+        } else if (this.query.includes("SET ai_mode = 'PAUSED_MANUAL'")) {
+          row.ai_mode = 'PAUSED_MANUAL';
+          row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
+        } else {
+          row.ai_mode = 'ENABLED';
+        }
         row.ai_generation_id = null;
-        if (row.ai_mode === 'PAUSED_MANUAL') row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
-        row.last_ai_command_update_id = updateId;
+        row.ai_generation_started_at = null;
+        row.ai_generation_message_id = null;
+        row.last_telegram_operator_update_id = updateId;
         row.updated_at = updatedAt;
         meta.changes = 1;
       }
@@ -968,6 +981,109 @@ describe('Phase 2 AI Handoff', () => {
     await handleQueueEvent(off, env);
 
     expect(env.DB.tables.conversations[0].ai_mode).toBe('ENABLED');
-    expect(env.DB.tables.conversations[0].last_ai_command_update_id).toBe(31);
+    expect(env.DB.tables.conversations[0].last_telegram_operator_update_id).toBe(31);
+  });
+
+  it('older ai_on cannot override a newer Telegram human reply', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c31', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '31',
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    const aiOn = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_100', payload: { updateRef: '100', messageRef: '100', threadRef: '31', content: '/ai_on' }
+    };
+    const human = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_101', payload: { updateRef: '101', messageRef: '101', threadRef: '31', content: 'Human reply' }
+    };
+
+    await handleQueueEvent(human, env);
+    await handleQueueEvent(aiOn, env);
+
+    const conv = env.DB.tables.conversations[0];
+    expect(conv.ai_mode).toBe('PAUSED_OPERATOR');
+    expect(conv.last_telegram_operator_update_id).toBe(101);
+    expect(counts.chatwoot).toBe(1);
+    expect(counts.telegram).toBe(0);
+  });
+
+  it('older human reply bridges without overriding a newer ai_on state', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c32', ai_mode: 'PAUSED_OPERATOR', ai_handoff_epoch: 4,
+      operator_channel: 'telegram', operator_thread_ref: '32',
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    const human = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_100_human', payload: { updateRef: '100', messageRef: '100', threadRef: '32', content: 'Earlier human reply' }
+    };
+    const aiOn = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_101_on', payload: { updateRef: '101', messageRef: '101', threadRef: '32', content: '/ai_on' }
+    };
+
+    await handleQueueEvent(aiOn, env);
+    env.DB.tables.conversations[0].ai_generation_id = 'newer-generation';
+    await handleQueueEvent(human, env);
+
+    const conv = env.DB.tables.conversations[0];
+    expect(conv.ai_mode).toBe('ENABLED');
+    expect(conv.ai_handoff_epoch).toBe(4);
+    expect(conv.ai_generation_id).toBe('newer-generation');
+    expect(conv.last_telegram_operator_update_id).toBe(101);
+    expect(counts.chatwoot).toBe(1);
+  });
+
+  it('newer human reply preserves PAUSED_MANUAL and advances cancellation state', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c33', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '33',
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    await handleQueueEvent({
+      version: 1, source: 'telegram', type: 'message_created', eventId: 'tg_100_off',
+      payload: { updateRef: '100', messageRef: '100', threadRef: '33', content: '/ai_off' }
+    }, env);
+    env.DB.tables.conversations[0].ai_generation_id = 'generation-after-command';
+    await handleQueueEvent({
+      version: 1, source: 'telegram', type: 'message_created', eventId: 'tg_101_human',
+      payload: { updateRef: '101', messageRef: '101', threadRef: '33', content: 'Manual takeover reply' }
+    }, env);
+
+    const conv = env.DB.tables.conversations[0];
+    expect(conv.ai_mode).toBe('PAUSED_MANUAL');
+    expect(conv.ai_handoff_epoch).toBe(2);
+    expect(conv.ai_generation_id).toBeNull();
+    expect(conv.last_operator_reply_at).toBeTruthy();
+    expect(conv.last_telegram_operator_update_id).toBe(101);
+    expect(counts.chatwoot).toBe(1);
+  });
+
+  it('same Telegram operator updates do not repeat state or visible effects', async () => {
+    env.DB.tables.conversations.push({
+      id: 'c34', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
+      operator_channel: 'telegram', operator_thread_ref: '34',
+      helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
+    });
+    const human = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_200', payload: { updateRef: '200', messageRef: '200', threadRef: '34', content: 'Human once' }
+    };
+    const aiOff = {
+      version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
+      eventId: 'tg_201', payload: { updateRef: '201', messageRef: '201', threadRef: '34', content: '/ai_off' }
+    };
+
+    await handleQueueEvent(human, env);
+    await handleQueueEvent(human, env);
+    expect(env.DB.tables.conversations[0].ai_handoff_epoch).toBe(1);
+    expect(counts.chatwoot).toBe(1);
+
+    await handleQueueEvent(aiOff, env);
+    await handleQueueEvent(aiOff, env);
+    expect(env.DB.tables.conversations[0].ai_handoff_epoch).toBe(2);
+    expect(counts.telegram).toBe(1);
   });
 });
