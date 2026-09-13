@@ -3,9 +3,13 @@
 CZ2128 is a bridge connecting Chatwoot and Telegram using Cloudflare Workers.
 
 ## Setup
-- `npm install`
+- `npm ci`
 - `npx wrangler d1 migrations apply cz2128-db --local`
+- `npm run typecheck`
+- `npm run lint`
 - `npm run test`
+
+Before deployment, replace the local-only D1 database ID in `wrangler.toml` and create both `cz2128-queue` and its `cz2128-dlq` dead-letter queue.
 
 ## Environment Variables
 - `CHATWOOT_WEBHOOK_SECRET`: Chatwoot webhook signature secret
@@ -17,3 +21,8 @@ CZ2128 is a bridge connecting Chatwoot and Telegram using Cloudflare Workers.
 
 ## Lifecycle
 Listens to `conversation_status_changed` to sync Chatwoot's `open` and `resolved` states to Telegram `reopenForumTopic` and `closeForumTopic`.
+
+## Webhook Identity
+- Configure the Chatwoot webhook secret so Chatwoot sends the delivery, timestamp, and HMAC signature headers.
+- Configure `TELEGRAM_SECRET_PATH` independently from `TELEGRAM_BOT_TOKEN`.
+- Provider webhooks are authenticated and normalized before a versioned event is sent to Cloudflare Queues.
