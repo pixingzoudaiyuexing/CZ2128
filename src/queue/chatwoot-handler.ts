@@ -1,6 +1,11 @@
 import { Env } from '../config/env';
 import { ChatwootEvent } from '../core/events';
-import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
+import {
+  getOrCreateConversation,
+  insertMessage,
+  updateOperatorThreadRef,
+  updateOperatorThreadStatus
+} from '../core/conversation-service';
 import { executeOutboundOperation } from '../core/outbound-operations';
 import { createTelegramTopic, sendTelegramMessage, closeTelegramTopic, reopenTelegramTopic } from '../adapters/telegram/api';
 import { logger } from '../observability/logger';
@@ -72,8 +77,13 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
   ).bind('chatwoot', payload.accountRef, payload.conversationRef).first<any>();
 
   if (!conv?.operator_thread_ref) return;
+  const currentStatus = conv.operator_thread_status || 'OPEN';
+  const nextStatus = payload.status === 'resolved' ? 'CLOSED' : 'OPEN';
+  if (currentStatus === nextStatus) return;
+
+  const operationId = `${nextStatus === 'CLOSED' ? 'close' : 'reopen'}_topic_${conv.id}_${conv.version}`;
   if (payload.status === 'resolved') {
-    await executeOutboundOperation(
+    const result = await executeOutboundOperation(
       env,
       conv.id,
       'telegram',
@@ -82,10 +92,13 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
         await closeTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref);
         return {};
       },
-      `close_topic_${payload.conversationRef}_${event.eventId}`
+      operationId
     );
+    if (result.status === 'SENT') {
+      await updateOperatorThreadStatus(env, conv.id, conv.version, 'OPEN', 'CLOSED');
+    }
   } else {
-    await executeOutboundOperation(
+    const result = await executeOutboundOperation(
       env,
       conv.id,
       'telegram',
@@ -94,7 +107,10 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
         await reopenTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref);
         return {};
       },
-      `reopen_topic_${payload.conversationRef}_${event.eventId}`
+      operationId
     );
+    if (result.status === 'SENT') {
+      await updateOperatorThreadStatus(env, conv.id, conv.version, 'CLOSED', 'OPEN');
+    }
   }
 }

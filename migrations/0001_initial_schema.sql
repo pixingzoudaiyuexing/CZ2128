@@ -6,6 +6,7 @@ CREATE TABLE conversations (
     customer_ref TEXT NOT NULL,
     operator_channel TEXT NOT NULL,
     operator_thread_ref TEXT,
+    operator_thread_status TEXT NOT NULL DEFAULT 'OPEN',
     last_operator_reply_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,

@@ -8,7 +8,7 @@
 - **Migration**: Schema V1 `0001_initial_schema.sql` 由本地验证和 CI 从 clean D1 执行。
 
 ## 实际数据表 (Minimum Phase 1 Schema)
-1. `conversations` (对话映射实体与基础追踪)
+1. `conversations` (对话映射、`OPEN/CLOSED` topic lifecycle 状态与版本追踪)
 2. `messages` (去重用的 provider source)
 3. `event_receipts` (`lease_until` + `claim_token` 实现带 ownership fencing 的 Atomic 消费票据)
 4. `outbound_operations` (`lease_until` + `lease_token` 实现对外发信锁和 `AMBIGUOUS` 兜底)

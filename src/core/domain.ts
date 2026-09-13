@@ -6,6 +6,7 @@ export interface Conversation {
   customer_ref: string;
   operator_channel: string;
   operator_thread_ref: string | null;
+  operator_thread_status: 'OPEN' | 'CLOSED';
   last_operator_reply_at: number | null;
   created_at: number;
   updated_at: number;

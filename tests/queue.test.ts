@@ -60,6 +60,13 @@ class MockPreparedStatement {
         c.operator_thread_ref = r; c.updated_at = uat; c.version += 1; meta.changes = 1;
       }
     }
+    if (this.query.includes('SET operator_thread_status = ?')) {
+      const [nextStatus, updatedAt, id, expectedVersion, expectedStatus] = this.boundParams;
+      const c = this.db.tables.conversations.find(x => x.id === id);
+      if (c && c.version === expectedVersion && (c.operator_thread_status || 'OPEN') === expectedStatus) {
+        c.operator_thread_status = nextStatus; c.updated_at = updatedAt; c.version += 1; meta.changes = 1;
+      }
+    }
     if (this.query.includes('INSERT INTO messages')) {
       const [id, cid, p, pmr, d, ar, mt, tc, cat] = this.boundParams;
       if (!this.db.tables.messages.find(x => x.provider === p && x.provider_message_ref === pmr)) {
@@ -276,7 +283,7 @@ describe('Queue Event Processing', () => {
     const db = env.DB as MockD1;
     db.tables.conversations.push({
       id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
-      operator_channel: 'telegram', operator_thread_ref: '99'
+      operator_channel: 'telegram', operator_thread_ref: '99', operator_thread_status: 'OPEN', version: 1
     });
     
     db.tables.outbound_operations.push({
@@ -295,7 +302,7 @@ describe('Queue Event Processing', () => {
     const db = env.DB as MockD1;
     db.tables.conversations.push({
       id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
-      operator_channel: 'telegram', operator_thread_ref: '99'
+      operator_channel: 'telegram', operator_thread_ref: '99', operator_thread_status: 'OPEN', version: 1
     });
 
     const eventRes: SupportEvent = {
@@ -305,8 +312,9 @@ describe('Queue Event Processing', () => {
     await handleQueueEvent(eventRes, env);
     expect(db.tables.outbound_operations.some(o => o.operation_type === 'CLOSE_TOPIC')).toBe(true);
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    await handleQueueEvent(eventRes, env);
+    await handleQueueEvent({ ...eventRes, eventId: 'cw-evt-res-duplicate' }, env);
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(db.tables.conversations[0].operator_thread_status).toBe('CLOSED');
 
     const eventOpen: SupportEvent = {
       version: 1, eventId: 'cw-evt-open', source: 'chatwoot', type: 'conversation_status_changed',
@@ -315,8 +323,13 @@ describe('Queue Event Processing', () => {
     await handleQueueEvent(eventOpen, env);
     expect(db.tables.outbound_operations.some(o => o.operation_type === 'REOPEN_TOPIC')).toBe(true);
     expect(global.fetch).toHaveBeenCalledTimes(2);
-    await handleQueueEvent(eventOpen, env);
+    await handleQueueEvent({ ...eventOpen, eventId: 'cw-evt-open-duplicate' }, env);
     expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(db.tables.conversations[0].operator_thread_status).toBe('OPEN');
+
+    await handleQueueEvent({ ...eventRes, eventId: 'cw-evt-res-next-cycle' }, env);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(db.tables.outbound_operations.filter(o => o.operation_type === 'CLOSE_TOPIC')).toHaveLength(2);
   });
 
   it('reuses an existing topic for later Chatwoot messages', async () => {

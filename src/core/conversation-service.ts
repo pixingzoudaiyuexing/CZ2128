@@ -57,6 +57,28 @@ export async function updateOperatorThreadRef(
   return winner.operator_thread_ref;
 }
 
+export async function updateOperatorThreadStatus(
+  env: DatabaseEnv,
+  conversationId: string,
+  expectedVersion: number,
+  expectedStatus: 'OPEN' | 'CLOSED',
+  nextStatus: 'OPEN' | 'CLOSED'
+): Promise<void> {
+  const result = await env.DB.prepare(
+    `UPDATE conversations
+     SET operator_thread_status = ?, updated_at = ?, version = version + 1
+     WHERE id = ? AND version = ? AND operator_thread_status = ?`
+  ).bind(nextStatus, Math.floor(Date.now() / 1000), conversationId, expectedVersion, expectedStatus).run();
+  if (result.meta.changes === 1) return;
+
+  const current = await env.DB.prepare(
+    'SELECT operator_thread_status FROM conversations WHERE id = ?'
+  ).bind(conversationId).first<{ operator_thread_status: string }>();
+  if (current?.operator_thread_status !== nextStatus) {
+    throw new Error('Operator thread status changed concurrently');
+  }
+}
+
 export async function insertMessage(
   env: DatabaseEnv,
   conversationId: string,
