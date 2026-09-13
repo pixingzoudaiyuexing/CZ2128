@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phase 1 merged — Phase 2 independent audit in progress**
+Status: **Phases 1-2 complete — Phase 3 design frozen / implementation not started**
 
 ## Phase 0 — Architecture Freeze
 
@@ -73,7 +73,7 @@ Exit criteria:
 
 ## Phase 2 — AI Handoff + Multi-turn Context
 
-Status: **IN INDEPENDENT AUDIT / PR #2 OPEN**
+Status: **COMPLETE / MERGED**
 
 Goal: restore and improve proven AI behavior from the legacy bot without weakening human support reliability.
 
@@ -94,6 +94,8 @@ Scope:
 - tests for state races, retries, duplicate deliveries and provider failures
 
 ## Phase 3 — Unified Temporary Attachments
+
+Status: **DESIGN FROZEN / IMPLEMENTATION NOT STARTED**
 
 Goal: replace EasyImages and support ordinary temporary files through one private attachment subsystem.
 

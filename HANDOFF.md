@@ -1,12 +1,13 @@
 # CZ2128 - Phase 2 Handoff
 
 ## 状态
-- **Current Branch**: `gemini/phase2-ai-handoff`
+- **Current Branch**: `main`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
-- **PR #2**: open; Phase 2 independent audit in progress
-- **Final HEAD / CI**: 以独立审计 Return Package 和 PR #2 当前远端 HEAD 为准，不在本文件保存自指 SHA。
+- **PR #2**: merged; Phase 2 complete and frozen
+- **Phase 3**: design frozen; implementation not started
+- **Final HEAD / CI**: 以 Phase 2 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
 - Provider ingress is authenticated before normalization into a version 1 typed Queue envelope.
