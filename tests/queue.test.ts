@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleQueueEvent } from '../src/queue/consumer';
-import { SupportEvent } from '../core/events';
+import { SupportEvent } from '../src/core/events';
 
 class MockPreparedStatement {
   constructor(private db: MockD1, private query: string) {}

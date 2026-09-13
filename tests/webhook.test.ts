@@ -106,19 +106,19 @@ describe('Telegram Webhook Auth', () => {
 
   it('valid -> PASS', async () => {
     const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': secret });
-    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret);
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret, "-100");
     expect(res.valid).toBe(true);
   });
 
   it('wrong secret -> FAIL', async () => {
     const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': 'wrong' });
-    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret);
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret, "-100");
     expect(res.valid).toBe(false);
   });
 
   it('wrong path -> FAIL', async () => {
     const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': secret }, 'wrong-path');
-    const res = await verifyTelegramWebhook(req, 'wrong-path', expectedPath, secret);
+    const res = await verifyTelegramWebhook(req, 'wrong-path', expectedPath, secret, "-100");
     expect(res.valid).toBe(false);
   });
 });

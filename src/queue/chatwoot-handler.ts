@@ -64,7 +64,7 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
         'UPDATE_STATUS',
         async () => {
           const res = await createTelegramTopic(env, env.BOT_GROUP_ID, `Chatwoot #${conversationId}`);
-          return { providerMessageRef: String(res.messageThreadId || res.message_thread_id) };
+          return { providerMessageRef: String((res as any).messageThreadId || (res as any).message_thread_id) };
         },
         `create_topic_${conv.id}`
       );
@@ -85,7 +85,7 @@ export async function processChatwootEvent(event: SupportEvent, env: Env): Promi
       'SEND_MESSAGE',
       async () => {
         const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef!, content);
-        return { providerMessageRef: String(res.messageId || res.message_id) };
+        return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
       },
       `send_tg_${messageId}`
     );

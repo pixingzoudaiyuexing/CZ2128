@@ -8,6 +8,7 @@ export interface LogContext {
   result?: string;
   error_category?: string;
   duration_ms?: number;
+  eventId?: string;
 }
 
 export const logger = {
