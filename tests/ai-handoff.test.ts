@@ -16,7 +16,7 @@ class MockPreparedStatement {
       return this.db.tables.conversations.find(c => c.id === this.boundParams[0]) || null;
     }
     if (this.query.includes('operator_channel')) return this.db.tables.conversations.find(c => c.operator_channel === this.boundParams[0] && c.operator_thread_ref === this.boundParams[1]) || null;
-    if (this.query.includes('FROM event_receipts')) return this.db.tables.event_receipts.find(x => x.source === this.boundParams[0] && x.source_event_ref === this.boundParams[1]) || null;
+    if (this.query.includes('FROM event_receipts')) return this.db.tables.event_receipts.find((x: any) => x.source === this.boundParams[0] && x.source_event_ref === this.boundParams[1]) || null;
     if (this.query.includes('FROM outbound_operations')) return this.db.tables.outbound_operations.find(o => o.id === this.boundParams[0]) || null;
     if (this.query.includes('FROM ai_runs')) return this.db.tables.ai_runs.find(r => r.trigger_event_ref === this.boundParams[0]) || null;
     return null;
@@ -37,10 +37,10 @@ class MockPreparedStatement {
   async run() {
     const meta = { changes: 0 };
     if (this.query.includes("status = 'SENT'")) { 
-      const o = this.db.tables.outbound_operations.find(x => x.id === this.boundParams[2]); 
+      const o = this.db.tables.outbound_operations.find((x: any) => x.id === this.boundParams[2]); 
       if (o) { o.status = 'SENT'; meta.changes = 1; } 
     } else if (this.query.includes("status = 'SENDING'") && this.query.includes("attempt_count + 1")) {
-      const o = this.db.tables.outbound_operations.find(x => x.id === this.boundParams[2]);
+      const o = this.db.tables.outbound_operations.find((x: any) => x.id === this.boundParams[2]);
       if (o) { o.status = 'SENDING'; meta.changes = 1; }
     } else if (this.query.includes("SET ai_mode = 'PAUSED_OPERATOR'")) {
       const c = this.db.tables.conversations.find(c => c.id === this.boundParams[2]);
@@ -67,15 +67,15 @@ class MockPreparedStatement {
       this.db.messageSeq = (this.db.messageSeq || 0) + 1;
       this.db.tables.messages.push({ conversation_id: this.boundParams[1], provider_message_ref: this.boundParams[3], actor_role: this.boundParams[5], text_content: this.boundParams[7], created_at: this.boundParams[8], id: Date.now(), _rowid: this.db.messageSeq }); meta.changes = 1;
     } else if (this.query.includes("INSERT INTO event_receipts")) {
-      const r = this.db.tables.event_receipts.find(x => x.source === this.boundParams[0] && x.source_event_ref === this.boundParams[1]);
+      const r = this.db.tables.event_receipts.find((x: any) => x.source === this.boundParams[0] && x.source_event_ref === this.boundParams[1]);
       if (!r) { this.db.tables.event_receipts.push({ source: this.boundParams[0], source_event_ref: this.boundParams[1], status: 'PROCESSING', attempt_count: 1, lease_until: this.boundParams[4] }); meta.changes = 1; } else if (r.status === 'FAILED') { r.status = 'PROCESSING'; meta.changes = 1; } else throw new Error('UNIQUE');
     } else if (this.query.includes("UPDATE event_receipts")) {
-      const r = this.db.tables.event_receipts.find(x => x.source === this.boundParams[1] && x.source_event_ref === this.boundParams[2]);
+      const r = this.db.tables.event_receipts.find((x: any) => x.source === this.boundParams[1] && x.source_event_ref === this.boundParams[2]);
       if (r) { r.status = this.query.includes('PROCESSED') ? 'PROCESSED' : (this.query.includes('FAILED') ? 'FAILED' : 'PROCESSING'); meta.changes = 1; }
     } else if (this.query.includes("INSERT INTO outbound_operations")) {
       this.db.tables.outbound_operations.push({ id: this.boundParams[0], status: this.boundParams[4] }); meta.changes = 1;
     } else if (this.query.includes("UPDATE outbound_operations")) {
-      const o = this.db.tables.outbound_operations.find(x => x.id === 'op17' || x.id === this.boundParams[2] || x.id === this.boundParams[3] || x.id === this.boundParams[4]);
+      const o = this.db.tables.outbound_operations.find((x: any) => x.id === 'op17' || x.id === this.boundParams[2] || x.id === this.boundParams[3] || x.id === this.boundParams[4]);
       if (o) { 
         if (this.query.includes("status = 'FAILED_FINAL'")) { o.status = 'FAILED_FINAL'; }
         else { o.status = this.boundParams[0]; }
@@ -114,7 +114,7 @@ describe('Phase 2 AI Handoff', () => {
     global.fetch = vi.fn().mockImplementation((url) => {
       const s = String(url);
       if (s.includes('ai')) { counts.ai++; return new Promise(r => { 
-          fetchResolver = (val) => {
+          fetchResolver = (val: any) => {
             
             r(val);
           };
@@ -413,7 +413,7 @@ describe('Phase 2 AI Handoff', () => {
         counts.ai++;
         try { const body = JSON.parse(init.body); aiPromptMessages = body.messages; } catch(e){}
         return new Promise(r => { 
-          fetchResolver = (val) => {
+          fetchResolver = (val: any) => {
             
             r(val);
           };
@@ -438,11 +438,11 @@ describe('Phase 2 AI Handoff', () => {
     env.DB.tables.conversations.push({ id: 'c16', ai_mode: 'ENABLED', ai_handoff_epoch: 0 });
     
     env.DB = Object.assign(new MockD1(), env.DB);
-    const origPrepare = env.DB.prepare.bind(env.DB);
-    env.DB.prepare = (q) => {
+    const origPrepare = env.DB.prepare.bind(env.DB) as any;
+    env.DB.prepare = (q: string) => {
       if (q.includes('ai_generation_id = ?')) {
         return {
-          bind: (...args) => ({
+          bind: (...args: any[]) => ({
              run: async () => ({ meta: { changes: 0 } })
           })
         };
@@ -466,7 +466,7 @@ describe('Phase 2 AI Handoff', () => {
       }, 'op17');
     } catch (e) {}
 
-    expect(env.DB.tables.outbound_operations.find(x => x.id === 'op17').status).toBe('FAILED_FINAL');
+    expect(env.DB.tables.outbound_operations.find((x: any) => x.id === 'op17').status).toBe('FAILED_FINAL');
     expect(callCount).toBe(1);
 
     // retry
