@@ -1,88 +1,124 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { verifyChatwootWebhook } from '../src/adapters/chatwoot/webhook';
 import { verifyTelegramWebhook } from '../src/adapters/telegram/webhook';
+import crypto from 'crypto';
 
-describe('Webhook Verification', () => {
-  it('should verify Chatwoot webhook successfully', async () => {
-    const secret = 'test_secret';
-    const payload = JSON.stringify({ event: 'message_created', id: 123 });
-    const timestamp = Math.floor(Date.now() / 1000).toString();
+if (!globalThis.crypto) {
+  globalThis.crypto = crypto as any;
+}
 
-    // Create HMAC signature manually
+describe('Chatwoot Webhook Auth', () => {
+  const secret = 'super-secret';
+  
+  async function generateSignature(payload: string, timestamp: number, signSecret: string = secret) {
     const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey(
+    const key = await globalThis.crypto.subtle.importKey(
       'raw',
-      enc.encode(secret),
+      enc.encode(signSecret),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
       ['sign']
     );
-    const signatureBuffer = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+    const signatureBuffer = await globalThis.crypto.subtle.sign(
+      'HMAC',
+      key,
+      enc.encode(`${timestamp}.${payload}`)
+    );
     const hashArray = Array.from(new Uint8Array(signatureBuffer));
-    const signatureHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return 'sha256=' + hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
 
-    const req = new Request('http://localhost/webhooks/chatwoot', {
+  function createRequest(body: string, signature: string | null, timestamp: string | null) {
+    const headers = new Headers();
+    if (signature) headers.set('X-Chatwoot-Signature', signature);
+    if (timestamp) headers.set('X-Chatwoot-Timestamp', timestamp);
+    return new Request('http://localhost/webhooks/chatwoot', {
       method: 'POST',
-      headers: {
-        'X-Chatwoot-Signature': signatureHex,
-        'X-Chatwoot-Timestamp': timestamp,
-        'X-Chatwoot-Delivery': 'delivery-123'
-      },
-      body: payload
+      headers,
+      body
     });
+  }
 
-    const result = await verifyChatwootWebhook(req, secret);
-    expect(result.valid).toBe(true);
-    expect(result.deliveryId).toBe('delivery-123');
-    expect(result.payload.id).toBe(123);
+  it('valid real Chatwoot signature -> PASS', async () => {
+    const body = JSON.stringify({ event: 'message_created' });
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = await generateSignature(body, ts);
+    
+    const req = createRequest(body, sig, String(ts));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(true);
   });
 
-  it('should reject Chatwoot webhook with invalid signature', async () => {
-    const req = new Request('http://localhost/webhooks/chatwoot', {
-      method: 'POST',
-      headers: {
-        'X-Chatwoot-Signature': 'invalid',
-        'X-Chatwoot-Timestamp': Math.floor(Date.now() / 1000).toString(),
-      },
-      body: JSON.stringify({ event: 'message_created', id: 123 })
-    });
-
-    const result = await verifyChatwootWebhook(req, 'test_secret');
-    expect(result.valid).toBe(false);
+  it('wrong body -> FAIL', async () => {
+    const body = JSON.stringify({ event: 'message_created' });
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = await generateSignature(body, ts);
+    
+    const req = createRequest('{"tampered":true}', sig, String(ts));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
   });
 
-  it('should verify Telegram webhook successfully', async () => {
-    const payload = JSON.stringify({
-      update_id: 12345,
-      message: {
-        message_id: 1,
-        chat: { id: -100123456789 },
-        from: { is_bot: false },
-        text: 'hello'
-      }
-    });
-
-    const req = new Request('http://localhost/webhooks/telegram/secret-path', {
-      method: 'POST',
-      headers: {
-        'X-Telegram-Bot-Api-Secret-Token': 'test_token',
-      },
-      body: payload
-    });
-
-    const result = await verifyTelegramWebhook(req, 'test_token', 'secret-path', '-100123456789');
-    expect(result.valid).toBe(true);
-    expect(result.updateId).toBe('12345');
+  it('wrong secret -> FAIL', async () => {
+    const body = JSON.stringify({ event: 'message_created' });
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = await generateSignature(body, ts, 'wrong-secret');
+    
+    const req = createRequest(body, sig, String(ts));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
   });
 
-  it('should reject Telegram webhook with invalid path', async () => {
-    const req = new Request('http://localhost/webhooks/telegram/wrong-path', {
-      method: 'POST',
-      headers: { 'X-Telegram-Bot-Api-Secret-Token': 'test_token' },
-      body: JSON.stringify({})
-    });
+  it('stale timestamp -> FAIL', async () => {
+    const body = JSON.stringify({ event: 'message_created' });
+    const ts = Math.floor(Date.now() / 1000) - 301;
+    const sig = await generateSignature(body, ts);
+    
+    const req = createRequest(body, sig, String(ts));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
+  });
 
-    const result = await verifyTelegramWebhook(req, 'test_token', 'secret-path', '-100123456789');
-    expect(result.valid).toBe(false);
+  it('missing timestamp -> FAIL', async () => {
+    const req = createRequest('{}', 'sha256=abc', null);
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
+  });
+
+  it('malformed signature -> FAIL', async () => {
+    const req = createRequest('{}', 'sha256=xxx', String(Math.floor(Date.now() / 1000)));
+    const res = await verifyChatwootWebhook(req, secret);
+    expect(res.valid).toBe(false);
+  });
+});
+
+describe('Telegram Webhook Auth', () => {
+  const secret = 'tg-secret';
+  const expectedPath = '12345';
+
+  function createRequest(headers: Record<string, string>, pathSegment: string = '12345') {
+    return new Request(`http://localhost/webhooks/telegram/${pathSegment}`, {
+      method: 'POST',
+      headers: new Headers(headers),
+      body: JSON.stringify({ update_id: 1 })
+    });
+  }
+
+  it('valid -> PASS', async () => {
+    const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': secret });
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret);
+    expect(res.valid).toBe(true);
+  });
+
+  it('wrong secret -> FAIL', async () => {
+    const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': 'wrong' });
+    const res = await verifyTelegramWebhook(req, expectedPath, expectedPath, secret);
+    expect(res.valid).toBe(false);
+  });
+
+  it('wrong path -> FAIL', async () => {
+    const req = createRequest({ 'X-Telegram-Bot-Api-Secret-Token': secret }, 'wrong-path');
+    const res = await verifyTelegramWebhook(req, 'wrong-path', expectedPath, secret);
+    expect(res.valid).toBe(false);
   });
 });

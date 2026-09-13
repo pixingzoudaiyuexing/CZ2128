@@ -31,8 +31,9 @@ CREATE TABLE event_receipts (
     source_event_ref TEXT NOT NULL,
     status TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 1,
+    lease_until INTEGER,
     last_error TEXT,
-    processed_at INTEGER NOT NULL,
+    processed_at INTEGER,
     PRIMARY KEY(source, source_event_ref)
 );
 

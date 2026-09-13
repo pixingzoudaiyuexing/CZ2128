@@ -8,27 +8,30 @@ export async function getOrCreateConversation(
   helpdesk_conversation_ref: string,
   customer_ref: string
 ): Promise<Conversation> {
-  let conv = await env.DB.prepare(
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  
+  // Atomic get-or-create using ON CONFLICT DO NOTHING
+  await env.DB.prepare(
+    `INSERT INTO conversations (
+      id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, 
+      customer_ref, operator_channel, created_at, updated_at, version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref) DO NOTHING`
+  ).bind(
+    id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref,
+    customer_ref, 'telegram', now, now, 1
+  ).run();
+
+  const conv = await env.DB.prepare(
     `SELECT * FROM conversations 
      WHERE helpdesk_provider = ? AND helpdesk_account_ref = ? AND helpdesk_conversation_ref = ?`
   ).bind(helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref).first<Conversation>();
 
   if (!conv) {
-    const id = crypto.randomUUID();
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      `INSERT INTO conversations (
-        id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, 
-        customer_ref, operator_channel, created_at, updated_at, version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref,
-      customer_ref, 'telegram', now, now, 1
-    ).run();
-
-    conv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(id).first<Conversation>();
+    throw new Error('Failed to create or retrieve conversation');
   }
-  return conv!;
+  return conv;
 }
 
 export async function updateOperatorThreadRef(
@@ -61,21 +64,4 @@ export async function insertMessage(
   ).bind(
     id, conversationId, provider, providerMessageRef, direction, actorRole, messageType, textContent, now
   ).run();
-}
-
-export async function enqueueOutboundOperation(
-  env: Env,
-  conversationId: string,
-  destinationProvider: string,
-  operationType: string,
-  textContent: string | null
-): Promise<string> {
-  const id = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    `INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, conversationId, destinationProvider, operationType, 'PENDING', now, now).run();
-  
-  return id;
 }

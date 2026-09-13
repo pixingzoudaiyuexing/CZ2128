@@ -2,7 +2,6 @@
   "name": "cz2128",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -15,13 +14,14 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/pixingzoudaiyuexing/CZ2128/issues"
   },
   "homepage": "https://github.com/pixingzoudaiyuexing/CZ2128#readme",
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/node": "^22.20.2",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@typescript-eslint/parser": "^8.70.0",
     "eslint": "^10.10.0",
@@ -30,5 +30,8 @@
     "typescript-eslint": "^8.70.0",
     "vitest": "^5.0.0",
     "wrangler": "^4.131.1"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

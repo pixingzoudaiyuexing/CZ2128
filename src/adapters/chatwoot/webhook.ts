@@ -2,26 +2,33 @@ export async function verifyChatwootWebhook(
   request: Request,
   secret: string
 ): Promise<{ valid: boolean; payload?: any; deliveryId?: string }> {
-  const signature = request.headers.get('X-Chatwoot-Signature');
+  const signatureHeader = request.headers.get('X-Chatwoot-Signature');
   const timestampHeader = request.headers.get('X-Chatwoot-Timestamp');
   const deliveryId = request.headers.get('X-Chatwoot-Delivery') || undefined;
 
-  if (!signature || !secret) {
+  if (!signatureHeader || !timestampHeader || !secret) {
     return { valid: false };
   }
 
-  // Verify timestamp replay window (e.g., 5 minutes)
-  if (timestampHeader) {
-    const timestamp = parseInt(timestampHeader, 10);
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > 300) {
-      return { valid: false };
-    }
+  // Expect signature format: sha256=<hex>
+  if (!signatureHeader.startsWith('sha256=')) {
+    return { valid: false };
+  }
+  const signatureHex = signatureHeader.replace('sha256=', '');
+
+  const timestamp = parseInt(timestampHeader, 10);
+  if (isNaN(timestamp)) {
+    return { valid: false };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - timestamp) > 300) {
+    return { valid: false };
   }
 
   const rawBody = await request.clone().text();
+  const signedPayload = `${timestamp}.${rawBody}`;
 
-  // Calculate HMAC SHA256
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
@@ -34,14 +41,33 @@ export async function verifyChatwootWebhook(
   const signatureBuffer = await crypto.subtle.sign(
     'HMAC',
     key,
-    enc.encode(rawBody)
+    enc.encode(signedPayload)
   );
 
-  // Convert ArrayBuffer to hex string
   const hashArray = Array.from(new Uint8Array(signatureBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  const expectedHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-  if (hashHex !== signature) {
+  // Constant-time string comparison for WebCrypto
+  // By encoding to Uint8Array and using standard comparison logic if timingSafeEqual isn't natively exposed.
+  // Actually crypto.subtle.verify is the correct constant time way:
+  const sigBytes = new Uint8Array(Math.ceil(signatureHex.length / 2));
+  for (let i = 0; i < sigBytes.length; i++) {
+    sigBytes[i] = parseInt(signatureHex.substring(i * 2, i * 2 + 2), 16);
+  }
+
+  try {
+    const isValid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      sigBytes,
+      enc.encode(signedPayload)
+    );
+
+    if (!isValid) {
+      return { valid: false };
+    }
+  } catch (e) {
+    // Malformed hex or crypto error
     return { valid: false };
   }
 

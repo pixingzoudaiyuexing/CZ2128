@@ -27,10 +27,11 @@ export interface Message {
 export interface EventReceipt {
   source: string;
   source_event_ref: string;
-  status: 'PROCESSED' | 'FAILED';
+  status: 'PROCESSING' | 'PROCESSED' | 'FAILED';
   attempt_count: number;
+  lease_until: number | null;
   last_error: string | null;
-  processed_at: number;
+  processed_at: number | null;
 }
 
 export interface OutboundOperation {
@@ -38,7 +39,7 @@ export interface OutboundOperation {
   conversation_id: string;
   destination_provider: string;
   operation_type: 'SEND_MESSAGE' | 'UPDATE_STATUS' | 'CLOSE_TOPIC' | 'REOPEN_TOPIC';
-  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED_RETRYABLE' | 'FAILED_FINAL';
+  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED_RETRYABLE' | 'FAILED_FINAL' | 'AMBIGUOUS';
   provider_message_ref: string | null;
   attempt_count: number;
   lease_until: number | null;

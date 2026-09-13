@@ -1,12 +1,11 @@
 export async function verifyTelegramWebhook(
   request: Request,
-  secretToken: string,
-  secretPath: string,
-  botGroupId: string
+  pathSegment: string,
+  botToken: string,
+  secretToken: string
 ): Promise<{ valid: boolean; payload?: any; updateId?: string }> {
-  const url = new URL(request.url);
-  
-  if (url.pathname !== `/webhooks/telegram/${secretPath}`) {
+  // Use botToken as the path segment for secrecy
+  if (pathSegment !== botToken) {
     return { valid: false };
   }
 
@@ -20,21 +19,6 @@ export async function verifyTelegramWebhook(
     payload = await request.clone().json();
   } catch (e) {
     return { valid: false };
-  }
-
-  // Validate group/chat ID if applicable
-  const chat = payload.message?.chat || payload.edited_message?.chat;
-  if (chat && chat.id.toString() !== botGroupId) {
-    // Optionally reject or ignore updates from other groups
-    return { valid: false };
-  }
-
-  // Reject bot-originated updates
-  const isBot = payload.message?.from?.is_bot || false;
-  if (isBot) {
-    // Return valid but we might want to drop it in processing,
-    // let's say it's valid but payload will be handled in normalize
-    return { valid: true, payload, updateId: payload.update_id?.toString() };
   }
 
   return { valid: true, payload, updateId: payload.update_id?.toString() };
