@@ -21,10 +21,12 @@
 - Generation lease plus persistent `ai_handoff_epoch` cancellation boundary.
 - Durable `ai_runs` keyed by stable customer trigger.
 - Bounded, deterministic recent D1 context.
+- Customer messages map to `user`, AI answers to `assistant`, and human operator replies to labeled `system` context so operator text is never represented as an AI answer.
 - Telegram `/ai_on` and `/ai_off` controls through outbound operations.
 - AI delivery to Chatwoot followed by an optional Telegram mirror.
 
 ## Known Reliability Boundary
 - Third-party staging and real D1/Queue concurrency remain required before production acceptance.
 - `AMBIGUOUS` visible delivery outcomes require Phase 4 reconciliation or manual inspection and are never blindly resent.
+- OpenAI-compatible errors are persisted and logged only as bounded categories; raw provider bodies, exception text and API keys are not recorded.
 - Phase 3 attachments/R2 are not part of this branch.

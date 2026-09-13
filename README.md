@@ -43,3 +43,4 @@ Optional AI configuration:
 - Telegram `/ai_off` sets `PAUSED_MANUAL`; `/ai_on` enables AI for future customer messages.
 - `PAUSED_OPERATOR` can auto-resume only when a new customer event arrives after the configured timeout.
 - Missing AI configuration does not stop the human Chatwoot/Telegram bridge.
+- AI context represents customer text as `user`, generated answers as `assistant`, and human operator replies as labeled `system` messages.

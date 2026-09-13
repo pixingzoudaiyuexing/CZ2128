@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phase 0 complete — Phase 1 approved to start**
+Status: **Phase 1 merged — Phase 2 independent audit in progress**
 
 ## Phase 0 — Architecture Freeze
 
@@ -31,7 +31,7 @@ Frozen outcomes:
 
 ## Phase 1 — Foundation + Chatwoot/Telegram Core
 
-Status: **IN INDEPENDENT AUDIT / PR #1 OPEN**
+Status: **COMPLETE / MERGED**
 
 Goal: establish the new repository structure and reliable human support bridge before introducing AI.
 
@@ -72,6 +72,8 @@ Exit criteria:
 - migrations work on a clean local/test D1 database
 
 ## Phase 2 — AI Handoff + Multi-turn Context
+
+Status: **IN INDEPENDENT AUDIT / PR #2 OPEN**
 
 Goal: restore and improve proven AI behavior from the legacy bot without weakening human support reliability.
 
