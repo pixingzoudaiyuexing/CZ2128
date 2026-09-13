@@ -6,12 +6,17 @@ import { logger } from '../observability/logger';
 import { processAiTrigger } from './ai-handler';
 import { processChatwootEvent } from './chatwoot-handler';
 import { processTelegramEvent } from './telegram-handler';
+import { getAttachmentConfig } from '../config/attachments';
+import { processAttachmentTransfer } from '../attachments/handler';
 
 const NORMAL_EVENT_LEASE_SECONDS = 30;
 const AI_EVENT_SAFETY_MARGIN_SECONDS = 15;
 
-function eventLeaseSeconds(event: SupportEvent, env: Env): number {
-  if (event.source === 'internal') {
+export function eventLeaseSeconds(event: SupportEvent, env: Env): number {
+  if (event.type === 'attachment_transfer') {
+    return getAttachmentConfig(env).eventLeaseSeconds;
+  }
+  if (event.type === 'ai_trigger') {
     return getAIConfig(env).generationLeaseSeconds + AI_EVENT_SAFETY_MARGIN_SECONDS;
   }
   return NORMAL_EVENT_LEASE_SECONDS;
@@ -66,8 +71,10 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
       await processChatwootEvent(event, env);
     } else if (event.source === 'telegram') {
       await processTelegramEvent(event, env);
-    } else {
+    } else if (event.type === 'ai_trigger') {
       await processAiTrigger(event, env);
+    } else {
+      await processAttachmentTransfer(event, env);
     }
 
     const processedResult = await env.DB.prepare(

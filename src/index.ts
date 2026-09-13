@@ -5,6 +5,11 @@ import { RetryableProcessingError } from './core/errors';
 import { SupportEvent } from './core/events';
 import { logger } from './observability/logger';
 import { handleQueueEvent } from './queue/consumer';
+import { getAttachmentConfig } from './config/attachments';
+import { discoverChatwootAttachments, discoverTelegramAttachments } from './attachments/discovery';
+import { handleAttachmentProxy } from './attachments/proxy';
+import { cleanupExpiredAttachments } from './attachments/cleanup';
+import { AttachmentDescriptor } from './core/attachments';
 
 export type { Env } from './config/env';
 
@@ -18,6 +23,20 @@ function hasProviderId(value: unknown): boolean {
   return (typeof value === 'string' && value.length > 0) || typeof value === 'number';
 }
 
+function boundedAttachments(
+  attachments: AttachmentDescriptor[],
+  maxCount: number,
+  source: 'chatwoot' | 'telegram'
+): AttachmentDescriptor[] {
+  if (attachments.length > maxCount) {
+    logger.warn('Attachment count exceeds configured limit', {
+      source,
+      error_category: 'ATTACHMENT_COUNT_LIMIT'
+    });
+  }
+  return attachments.slice(0, maxCount);
+}
+
 function isValidChatwootEvent(payload: Record<string, any>): boolean {
   if (!hasProviderId(payload.account?.id)) return false;
   if (payload.event === 'conversation_status_changed') {
@@ -26,11 +45,15 @@ function isValidChatwootEvent(payload: Record<string, any>): boolean {
   if (payload.event !== 'message_created') return false;
   if (!hasProviderId(payload.id) || !hasProviderId(payload.conversation?.id)) return false;
   if (payload.message_type !== 'incoming' && payload.message_type !== 'outgoing') return false;
-  if (typeof payload.content !== 'string') return false;
+  if (typeof payload.content !== 'string' && !Array.isArray(payload.attachments)) return false;
   return payload.message_type !== 'incoming' || hasProviderId(payload.sender?.id);
 }
 
-function normalizeChatwootEvent(payload: Record<string, any>, eventId: string): SupportEvent | null {
+function normalizeChatwootEvent(
+  payload: Record<string, any>,
+  eventId: string,
+  attachmentConfig: ReturnType<typeof getAttachmentConfig>
+): SupportEvent | null {
   const accountRef = String(payload.account.id);
   if (payload.event === 'conversation_status_changed') {
     if (payload.status !== 'open' && payload.status !== 'resolved') return null;
@@ -49,6 +72,13 @@ function normalizeChatwootEvent(payload: Record<string, any>, eventId: string): 
   const isOutgoing = payload.message_type === 'outgoing';
   const customer = payload.conversation?.meta?.sender || (!isOutgoing ? payload.sender : undefined);
   const conversationRef = String(payload.conversation.id);
+  const attachments = boundedAttachments(
+    discoverChatwootAttachments(payload, attachmentConfig),
+    attachmentConfig.maxCountPerMessage,
+    'chatwoot'
+  );
+  const content = typeof payload.content === 'string' && payload.content.length > 0 ? payload.content : undefined;
+  const customerName = typeof customer?.name === 'string' && customer.name.trim() ? customer.name.trim() : undefined;
   return {
     version: 1,
     source: 'chatwoot',
@@ -58,10 +88,11 @@ function normalizeChatwootEvent(payload: Record<string, any>, eventId: string): 
       accountRef,
       conversationRef,
       customerRef: customer?.id === undefined ? `conversation:${conversationRef}` : String(customer.id),
-      customerName: typeof customer?.name === 'string' && customer.name.trim() ? customer.name.trim() : undefined,
       messageRef: String(payload.id),
-      content: payload.content,
-      actorRole: isOutgoing ? 'OPERATOR' : 'CUSTOMER'
+      actorRole: isOutgoing ? 'OPERATOR' : 'CUSTOMER',
+      ...(customerName ? { customerName } : {}),
+      ...(content ? { content } : {}),
+      ...(attachments.length > 0 ? { attachments } : {})
     }
   };
 }
@@ -69,6 +100,14 @@ function normalizeChatwootEvent(payload: Record<string, any>, eventId: string): 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname.startsWith('/attachments/')) {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response('Method Not Allowed', { status: 405 });
+      }
+      const token = url.pathname.slice('/attachments/'.length);
+      return handleAttachmentProxy(request, env, token);
+    }
 
     if (request.method !== 'POST') {
       return new Response('Method Not Allowed', { status: 405 });
@@ -102,7 +141,7 @@ export default {
       }
 
       const eventId = deliveryId || await chatwootFallbackEventId(payload.event, rawBody);
-      const event = normalizeChatwootEvent(payload, eventId);
+      const event = normalizeChatwootEvent(payload, eventId, getAttachmentConfig(env));
       if (!event) return new Response('Ignored', { status: 200 });
       await env.QUEUE.send(event);
 
@@ -147,8 +186,17 @@ export default {
         return new Response('Ignored', { status: 200 });
       }
 
+      const attachmentConfig = getAttachmentConfig(env);
+      const attachments = boundedAttachments(
+        discoverTelegramAttachments(telegramMessage, attachmentConfig),
+        attachmentConfig.maxCountPerMessage,
+        'telegram'
+      );
       const content = telegramMessage.text || telegramMessage.caption;
-      if (typeof content !== 'string' || content.length === 0 || !hasProviderId(telegramMessage.message_id)) {
+      if ((typeof content !== 'string' || content.length === 0) && attachments.length === 0) {
+        return new Response('Ignored', { status: 200 });
+      }
+      if (!hasProviderId(telegramMessage.message_id)) {
         return new Response('Ignored', { status: 200 });
       }
 
@@ -161,7 +209,8 @@ export default {
           updateRef: updateId,
           messageRef: String(telegramMessage.message_id),
           threadRef: String(telegramMessage.message_thread_id),
-          content
+          ...(typeof content === 'string' && content.length > 0 ? { content } : {}),
+          ...(attachments.length > 0 ? { attachments } : {})
         }
       });
 
@@ -185,5 +234,9 @@ export default {
         }
       }
     }
+  },
+
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(cleanupExpiredAttachments(env));
   }
 };
