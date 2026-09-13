@@ -11,15 +11,19 @@ export interface LogContext {
   eventId?: string;
 }
 
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 export const logger = {
   info(msg: string, context?: LogContext) {
     console.log(JSON.stringify({ level: 'info', msg, ...context }));
   },
-  error(msg: string, error: any, context?: LogContext) {
+  error(msg: string, error: unknown, context?: LogContext) {
     console.error(JSON.stringify({ 
       level: 'error', 
       msg, 
-      error: String(error), 
+      error: errorName(error),
       ...context 
     }));
   },

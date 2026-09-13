@@ -5,7 +5,10 @@ export async function verifyTelegramWebhook(
   secretToken: string,
   botGroupId: string
 ): Promise<{ valid: boolean; payload?: any; updateId?: string }> {
-  
+  if (!secretPath || !secretToken || !botGroupId) {
+    return { valid: false };
+  }
+
   if (pathSegment !== secretPath) {
     return { valid: false };
   }
@@ -22,10 +25,15 @@ export async function verifyTelegramWebhook(
     return { valid: false };
   }
 
-  const chat = payload.message?.chat || payload.edited_message?.chat;
-  if (chat && chat.id.toString() !== botGroupId) {
+  const message = payload.message || payload.edited_message;
+  const chat = message?.chat;
+  if (message && (!chat || String(chat.id) !== botGroupId)) {
     return { valid: false };
   }
 
-  return { valid: true, payload, updateId: payload.update_id?.toString() };
+  const updateId = Number.isSafeInteger(payload.update_id) && payload.update_id >= 0
+    ? String(payload.update_id)
+    : undefined;
+
+  return { valid: true, payload, updateId };
 }

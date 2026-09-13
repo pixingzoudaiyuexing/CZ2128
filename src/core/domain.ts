@@ -30,6 +30,7 @@ export interface EventReceipt {
   status: 'PROCESSING' | 'PROCESSED' | 'FAILED';
   attempt_count: number;
   lease_until: number | null;
+  claim_token: string | null;
   last_error: string | null;
   processed_at: number | null;
 }
@@ -38,11 +39,12 @@ export interface OutboundOperation {
   id: string;
   conversation_id: string;
   destination_provider: string;
-  operation_type: 'SEND_MESSAGE' | 'UPDATE_STATUS' | 'CLOSE_TOPIC' | 'REOPEN_TOPIC';
+  operation_type: 'SEND_MESSAGE' | 'CREATE_TOPIC' | 'CLOSE_TOPIC' | 'REOPEN_TOPIC';
   status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED_RETRYABLE' | 'FAILED_FINAL' | 'AMBIGUOUS';
   provider_message_ref: string | null;
   attempt_count: number;
   lease_until: number | null;
+  lease_token: string | null;
   last_error: string | null;
   created_at: number;
   updated_at: number;

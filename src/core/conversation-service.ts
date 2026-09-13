@@ -1,8 +1,8 @@
-import { Env } from '../index';
+import { DatabaseEnv } from './database';
 import { Conversation } from './domain';
 
 export async function getOrCreateConversation(
-  env: Env,
+  env: DatabaseEnv,
   helpdesk_provider: string,
   helpdesk_account_ref: string,
   helpdesk_conversation_ref: string,
@@ -35,18 +35,30 @@ export async function getOrCreateConversation(
 }
 
 export async function updateOperatorThreadRef(
-  env: Env,
+  env: DatabaseEnv,
   conversationId: string,
   threadRef: string
-): Promise<void> {
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
-    'UPDATE conversations SET operator_thread_ref = ?, updated_at = ?, version = version + 1 WHERE id = ?'
+    `UPDATE conversations SET operator_thread_ref = ?, updated_at = ?, version = version + 1
+     WHERE id = ? AND operator_thread_ref IS NULL`
   ).bind(threadRef, now, conversationId).run();
+
+  const winner = await env.DB.prepare(
+    'SELECT operator_thread_ref FROM conversations WHERE id = ?'
+  ).bind(conversationId).first<{ operator_thread_ref: string | null }>();
+  if (!winner?.operator_thread_ref) {
+    throw new Error('Failed to persist operator thread mapping');
+  }
+  if (winner.operator_thread_ref !== threadRef) {
+    throw new Error('Operator thread mapping conflict');
+  }
+  return winner.operator_thread_ref;
 }
 
 export async function insertMessage(
-  env: Env,
+  env: DatabaseEnv,
   conversationId: string,
   provider: string,
   providerMessageRef: string,

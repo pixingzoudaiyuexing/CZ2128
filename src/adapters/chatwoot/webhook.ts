@@ -1,7 +1,7 @@
 export async function verifyChatwootWebhook(
   request: Request,
   secret: string
-): Promise<{ valid: boolean; payload?: any; deliveryId?: string }> {
+): Promise<{ valid: boolean; payload?: any; deliveryId?: string; rawBody?: string }> {
   const signatureHeader = request.headers.get('X-Chatwoot-Signature');
   const timestampHeader = request.headers.get('X-Chatwoot-Timestamp');
   const deliveryId = request.headers.get('X-Chatwoot-Delivery') || undefined;
@@ -15,11 +15,7 @@ export async function verifyChatwootWebhook(
   }
   const signatureHex = signatureHeader.replace('sha256=', '');
   
-  if (!/^[0-9a-fA-F]+$/.test(signatureHex)) {
-    return { valid: false };
-  }
-  
-  if (signatureHex.length % 2 !== 0) {
+  if (!/^[0-9a-fA-F]{64}$/.test(signatureHex)) {
     return { valid: false };
   }
 
@@ -63,7 +59,7 @@ export async function verifyChatwootWebhook(
     }
 
     const payload = JSON.parse(rawBody);
-    return { valid: true, payload, deliveryId };
+    return { valid: true, payload, deliveryId, rawBody };
   } catch (e) {
     return { valid: false };
   }
