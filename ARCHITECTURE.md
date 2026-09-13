@@ -387,43 +387,44 @@ Recommended policy:
 
 ## 10. Temporary Attachments
 
-### Telegram file/image flow
+### Canonical provider flow
 
 ```text
-Telegram document/photo
-  -> inspect declared size/name/MIME metadata
-  -> reject unsupported oversized downloads early
-  -> obtain Bot API file URL
-  -> fetch as a stream
-  -> write to private R2 bucket without whole-file buffering
-  -> create D1 attachment metadata + expiry
-  -> produce opaque gateway URL
-  -> send image/link through Chatwoot
+Telegram source
+  -> trusted getFile downloader
+  -> private R2
+  -> direct Chatwoot multipart attachments[]
+
+Chatwoot source
+  -> verified-webhook, exact-allowlist downloader
+  -> private R2
+  -> direct Telegram multipart Bot API
 ```
 
-The hosted Telegram Bot API currently limits `getFile` downloads to 20 MB. V1 must enforce that limit and give the operator a clear error. A self-hosted Telegram Bot API server is a later option if larger files become a real requirement.
+The hosted Telegram Bot API currently limits `getFile` downloads to 20 MB. V1 enforces that limit. Both provider paths use direct multipart delivery; neither sends a proxy URL to Telegram or Chatwoot.
 
-### Access URL
+### Secure proxy
 
-Example:
+Implemented routes:
 
 ```text
-GET /a/<opaque-token>
+GET  /attachments/:token
+HEAD /attachments/:token
 ```
 
 Gateway behavior:
 
-- store only a hash of the opaque token where practical
+- store only SHA-256 of the 256-bit opaque token
 - look up attachment metadata
 - verify `expires_at`
 - serve only the bound R2 object; never proxy an arbitrary database/user URL
 - preserve safe filename/content headers
-- support `GET`/`HEAD`; byte-range support is recommended for download ergonomics but is not a Phase 1 blocker
-- return 404/410 after logical expiry
+- support one byte range through the R2 native range read
+- return a uniform 404 for malformed, unknown, expired and missing-object access
 
 R2 lifecycle rules physically remove expired objects later; they are cleanup, not authorization.
 
-For V1, Worker-proxied attachment URLs are preferred over exposing long-lived public R2 URLs. A short-lived redirect/presigned design can be reconsidered later if bandwidth/performance measurements justify it.
+The secure proxy is implemented infrastructure for explicit temporary-download consumers. It is not the primary provider transport, and the current Telegram/Chatwoot channel flow does not surface proxy URLs.
 
 ## 11. Telegram Topic Lifecycle
 
