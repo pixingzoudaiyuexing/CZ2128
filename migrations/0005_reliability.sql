@@ -52,6 +52,7 @@ CREATE TABLE ai_runs_new (
     status TEXT NOT NULL CHECK (status IN (
         'PENDING',
         'SUCCESS',
+        'FAILED',
         'FAILED_RETRYABLE',
         'RETRY_EXHAUSTED',
         'FAILED_FINAL',

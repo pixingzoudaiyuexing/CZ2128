@@ -296,7 +296,7 @@ export async function saveDurableAiRun(
   triggerMessageRef: string,
   generationId: string,
   handoffEpoch: number,
-  status: 'PENDING' | 'SUCCESS' | 'FAILED_RETRYABLE' | 'RETRY_EXHAUSTED' | 'FAILED_FINAL' | 'CANCELLED_BY_HANDOFF' | 'DISCARDED_STALE',
+  status: 'PENDING' | 'SUCCESS' | 'FAILED' | 'CANCELLED_BY_HANDOFF' | 'DISCARDED_STALE',
   providerResponseRef?: string,
   responseText?: string,
   lastError?: SafeErrorCode

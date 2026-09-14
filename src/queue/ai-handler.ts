@@ -110,7 +110,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
           retryAfterSeconds: result.retryAfterSeconds
         });
         logger.error('AI provider failure', providerError, { conversation_id: convId, operation_id: generationId });
-        await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'FAILED_FINAL', undefined, undefined, result.error);
+        await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'FAILED', undefined, undefined, result.error);
         if (result.retryable) {
           throw new RetryableProcessingError(result.error, result.retryAfterSeconds ?? 5, {
             provider: 'AI_PROVIDER',
