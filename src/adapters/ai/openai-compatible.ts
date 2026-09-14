@@ -10,7 +10,8 @@ export interface AICompletionResult {
 
 export async function generateChatCompletion(
   config: AIConfig,
-  messages: AIMessage[]
+  messages: AIMessage[],
+  options: { maxTokens?: number } = {}
 ): Promise<AICompletionResult> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.requestTimeoutMs);
@@ -23,7 +24,11 @@ export async function generateChatCompletion(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`
       },
-      body: JSON.stringify({ model: config.model, messages }),
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        ...(options.maxTokens ? { max_tokens: options.maxTokens } : {})
+      }),
       signal: controller.signal
     });
 

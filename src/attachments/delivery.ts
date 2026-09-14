@@ -60,6 +60,10 @@ export async function deliverAttachmentToChatwoot(
   operationId: string,
   bytes: ArrayBuffer
 ): Promise<{ providerMessageRef: string }> {
+  if (
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
+  ) throw new ProviderDeliveryError('FINAL', 'CHATWOOT_RUNTIME_CONFIG_ERROR');
   const form = new FormData();
   form.set('message_type', 'outgoing');
   form.set('private', 'false');
@@ -105,6 +109,9 @@ export async function deliverAttachmentToTelegram(
   threadRef: string,
   bytes: ArrayBuffer
 ): Promise<{ providerMessageRef: string }> {
+  if (env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE) {
+    throw new ProviderDeliveryError('FINAL', 'TELEGRAM_RUNTIME_CONFIG_ERROR');
+  }
   const target = telegramMethod(row);
   const form = new FormData();
   form.set('chat_id', env.BOT_GROUP_ID);
