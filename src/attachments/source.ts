@@ -1,40 +1,62 @@
 import { AttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
 import { AttachmentRow } from '../core/attachments';
+import { ErrorProvider, SafeErrorCode, getSafeErrorDefinition } from '../core/error-taxonomy';
+import { SafeError, SafeErrorOptions } from '../core/errors';
+import { resolveRetryAfterSeconds, retryAfterHeader } from '../core/retry';
+import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
 
 const R2_PART_BYTES = 5 * 1024 * 1024;
 const MAX_CHATWOOT_REDIRECTS = 3;
 
-export class AttachmentProcessingError extends Error {
+export class AttachmentProcessingError extends SafeError {
+  public readonly retryable: boolean;
+
   constructor(
-    public readonly code: string,
-    public readonly retryable: boolean
+    code: SafeErrorCode,
+    options: SafeErrorOptions = {}
   ) {
-    super(code);
+    super(code, options);
     this.name = 'AttachmentProcessingError';
+    this.retryable = getSafeErrorDefinition(code).retryability === 'AUTOMATIC';
   }
 }
 
-function sourceHttpError(status: number): AttachmentProcessingError {
-  if (status === 408 || status === 429 || status >= 500) {
-    return new AttachmentProcessingError(`SOURCE_HTTP_${status}`, true);
+export function classifyAttachmentSourceHttpFailure(
+  status: number,
+  options: {
+    provider?: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT'>;
+    telegramRetryAfter?: unknown;
+    httpRetryAfter?: string | null;
+  } = {}
+): AttachmentProcessingError {
+  const metadata: SafeErrorOptions = { provider: options.provider, httpStatus: status };
+  if (status === 429) {
+    return new AttachmentProcessingError('ATTACHMENT_SOURCE_RATE_LIMITED', {
+      ...metadata,
+      retryAfterSeconds: resolveRetryAfterSeconds({
+        telegramRetryAfter: options.telegramRetryAfter,
+        httpRetryAfter: options.httpRetryAfter
+      })
+    });
   }
+  if (status === 408 || status >= 500) return new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', metadata);
   if (status === 401 || status === 403) {
-    return new AttachmentProcessingError('SOURCE_AUTH_FAILED', false);
+    return new AttachmentProcessingError('ATTACHMENT_SOURCE_AUTH_FAILED', metadata);
   }
   if (status === 404 || status === 410) {
-    return new AttachmentProcessingError('SOURCE_NOT_FOUND', false);
+    return new AttachmentProcessingError('ATTACHMENT_SOURCE_NOT_FOUND', metadata);
   }
-  return new AttachmentProcessingError(`SOURCE_HTTP_${status}`, false);
+  return new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', metadata);
 }
 
 function parseContentLength(response: Response, maxBytes: number): number | undefined {
   const value = response.headers.get('Content-Length');
   if (value === null) return undefined;
-  if (!/^\d+$/.test(value)) throw new AttachmentProcessingError('INVALID_METADATA', false);
+  if (!/^\d+$/.test(value)) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new AttachmentProcessingError('INVALID_METADATA', false);
-  if (parsed > maxBytes) throw new AttachmentProcessingError('SOURCE_TOO_LARGE', false);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
+  if (parsed > maxBytes) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TOO_LARGE');
   return parsed;
 }
 
@@ -98,20 +120,20 @@ function isDisallowedLiteralAddress(hostname: string): boolean {
 function validateChatwootUrl(url: URL, config: AttachmentConfig, initial: boolean): void {
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (url.protocol !== 'https:' || url.username || url.password) {
-    throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
   }
   if (
     hostname === 'localhost' || hostname.endsWith('.localhost') ||
     hostname === 'metadata.google.internal' || hostname === 'metadata.internal' ||
     isDisallowedLiteralAddress(hostname)
   ) {
-    throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
   }
   if (!config.allowedChatwootAttachmentHosts.has(url.host.toLowerCase())) {
-    throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
   }
   if (initial && config.chatwootOrigin !== url.origin) {
-    throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
   }
 }
 
@@ -127,7 +149,7 @@ async function fetchWithDeadline(
     return { response, finish: () => clearTimeout(timeout) };
   } catch {
     clearTimeout(timeout);
-    throw new AttachmentProcessingError('SOURCE_DOWNLOAD_FAILED', true);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT');
   }
 }
 
@@ -140,12 +162,12 @@ export async function downloadChatwootAttachment(
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
-  ) throw new AttachmentProcessingError('SOURCE_CONFIG_ERROR', false);
+  ) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
   let current: URL;
   try {
     current = new URL(dataUrl);
   } catch {
-    throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
   }
   validateChatwootUrl(current, config, true);
   const deadline = Date.now() + config.sourceTimeoutMs;
@@ -165,25 +187,28 @@ export async function downloadChatwootAttachment(
     if (response.status >= 300 && response.status < 400) {
       fetched.finish();
       if (redirects === MAX_CHATWOOT_REDIRECTS) {
-        throw new AttachmentProcessingError('SOURCE_REDIRECT_LIMIT', false);
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
       }
       const location = response.headers.get('Location');
-      if (!location) throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+      if (!location) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
       try {
         current = new URL(location, current);
       } catch {
-        throw new AttachmentProcessingError('SOURCE_URL_NOT_ALLOWED', false);
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
       }
       validateChatwootUrl(current, config, false);
       continue;
     }
     if (!response.ok) {
       fetched.finish();
-      throw sourceHttpError(response.status);
+      throw classifyAttachmentSourceHttpFailure(response.status, {
+        provider: 'CHATWOOT',
+        httpRetryAfter: retryAfterHeader(response)
+      });
     }
     if (!response.body) {
       fetched.finish();
-      throw new AttachmentProcessingError('SOURCE_DOWNLOAD_FAILED', true);
+      throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'CHATWOOT' });
     }
     try {
       return {
@@ -196,7 +221,7 @@ export async function downloadChatwootAttachment(
       throw error;
     }
   }
-  throw new AttachmentProcessingError('SOURCE_REDIRECT_LIMIT', false);
+  throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
 }
 
 export async function downloadTelegramAttachment(
@@ -209,10 +234,10 @@ export async function downloadTelegramAttachment(
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
   ) {
-    throw new AttachmentProcessingError('SOURCE_CONFIG_ERROR', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'TELEGRAM' });
   }
   if (declaredSize !== null && declaredSize > config.maxBytes) {
-    throw new AttachmentProcessingError('SOURCE_TOO_LARGE', false);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TOO_LARGE', { provider: 'TELEGRAM' });
   }
   const deadline = Date.now() + config.sourceTimeoutMs;
   const metadataRequest = await fetchWithDeadline(
@@ -225,19 +250,33 @@ export async function downloadTelegramAttachment(
     deadline
   );
   const metadata = metadataRequest.response;
+  if (!metadata.ok) {
+    const telegramRetryAfter = metadata.status === 429
+      ? await readTelegramRetryAfterMetadata(metadata)
+      : undefined;
+    metadataRequest.finish();
+    throw classifyAttachmentSourceHttpFailure(metadata.status, {
+      provider: 'TELEGRAM',
+      telegramRetryAfter,
+      httpRetryAfter: retryAfterHeader(metadata)
+    });
+  }
   let payload: any;
   try {
-    if (!metadata.ok) throw sourceHttpError(metadata.status);
     payload = await metadata.json();
   } catch (error) {
     if (error instanceof AttachmentProcessingError) throw error;
-    throw new AttachmentProcessingError('SOURCE_DOWNLOAD_FAILED', true);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'TELEGRAM' });
   } finally {
     metadataRequest.finish();
   }
   if (payload?.ok !== true || typeof payload?.result?.file_path !== 'string') {
     const status = typeof payload?.error_code === 'number' ? payload.error_code : 400;
-    throw sourceHttpError(status);
+    throw classifyAttachmentSourceHttpFailure(status, {
+      provider: 'TELEGRAM',
+      telegramRetryAfter: telegramRetryAfterValue(payload),
+      httpRetryAfter: retryAfterHeader(metadata)
+    });
   }
   const safePath = payload.result.file_path.split('/').map((part: string) => encodeURIComponent(part)).join('/');
   const downloaded = await fetchWithDeadline(
@@ -248,11 +287,14 @@ export async function downloadTelegramAttachment(
   const response = downloaded.response;
   if (!response.ok) {
     downloaded.finish();
-    throw sourceHttpError(response.status);
+    throw classifyAttachmentSourceHttpFailure(response.status, {
+      provider: 'TELEGRAM',
+      httpRetryAfter: retryAfterHeader(response)
+    });
   }
   if (!response.body) {
     downloaded.finish();
-    throw new AttachmentProcessingError('SOURCE_DOWNLOAD_FAILED', true);
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'TELEGRAM' });
   }
   try {
     return {
@@ -290,7 +332,7 @@ export async function storeAttachmentStream(
       try {
         chunk = await reader.read();
       } catch {
-        throw new AttachmentProcessingError('SOURCE_DOWNLOAD_FAILED', true);
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT');
       }
       const { done, value } = chunk;
       if (done) break;
@@ -299,7 +341,7 @@ export async function storeAttachmentStream(
         const length = Math.min(buffer.byteLength - used, value.byteLength - offset);
         if (total + length > maxBytes) {
           await reader.cancel('SOURCE_TOO_LARGE');
-          throw new AttachmentProcessingError('SOURCE_TOO_LARGE', false);
+          throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TOO_LARGE');
         }
         buffer.set(value.subarray(offset, offset + length), used);
         used += length;
@@ -312,7 +354,7 @@ export async function storeAttachmentStream(
         }
       }
     }
-    if (total === 0) throw new AttachmentProcessingError('INVALID_METADATA', false);
+    if (total === 0) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     if (used > 0) parts.push(await upload.uploadPart(partNumber, buffer.slice(0, used)));
     await upload.complete(parts);
     return total;
@@ -321,7 +363,7 @@ export async function storeAttachmentStream(
       try { await upload.abort(); } catch { /* cleanup retries through R2 lifecycle */ }
     }
     if (error instanceof AttachmentProcessingError) throw error;
-    throw new AttachmentProcessingError('R2_STORE_FAILED', true);
+    throw new AttachmentProcessingError('R2_STORE_TRANSIENT', { provider: 'R2' });
   } finally {
     reader.releaseLock();
   }

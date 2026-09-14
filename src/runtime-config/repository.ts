@@ -7,8 +7,10 @@ import {
   RuntimeConfigRow,
   RuntimeValueKind
 } from './types';
+import { SafeErrorCode } from '../core/error-taxonomy';
+import { SafeError } from '../core/errors';
 
-export class RuntimeConfigConflictError extends Error {
+export class RuntimeConfigConflictError extends SafeError {
   constructor() {
     super('RUNTIME_CONFIG_VERSION_CONFLICT');
     this.name = 'RuntimeConfigConflictError';
@@ -221,7 +223,7 @@ export async function completeAdminUpdate(
   env: Env,
   updateId: string,
   action: string,
-  errorCode?: string
+  errorCode?: SafeErrorCode
 ): Promise<void> {
   await env.DB.prepare(
     `UPDATE admin_update_receipts

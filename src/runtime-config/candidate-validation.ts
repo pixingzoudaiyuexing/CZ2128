@@ -2,10 +2,12 @@ import { generateChatCompletion } from '../adapters/ai/openai-compatible';
 import { getAIConfig } from '../config/ai';
 import { Env } from '../config/env';
 import { RuntimeConfigKey } from './types';
+import { SafeErrorCode } from '../core/error-taxonomy';
+import { SafeError } from '../core/errors';
 
-export class CandidateValidationError extends Error {
-  constructor(public readonly code: string) {
-    super(code);
+export class CandidateValidationError extends SafeError {
+  constructor(code: SafeErrorCode, options: ConstructorParameters<typeof SafeError>[1] = {}) {
+    super(code, options);
     this.name = 'CandidateValidationError';
   }
 }
@@ -27,7 +29,13 @@ export async function testAiCandidate(
     [{ role: 'user', content: 'Reply with OK.' }],
     { maxTokens: 1 }
   );
-  if (!result.success) throw new CandidateValidationError(result.error || 'AI_CANDIDATE_FAILED');
+  if (!result.success) {
+    throw new CandidateValidationError(result.error, {
+      provider: 'AI_PROVIDER',
+      httpStatus: result.httpStatus,
+      retryAfterSeconds: result.retryAfterSeconds
+    });
+  }
 }
 
 export async function testChatwootCandidate(
@@ -45,7 +53,12 @@ export async function testChatwootCandidate(
       headers: { 'api_access_token': token },
       signal: controller.signal
     });
-    if (!response.ok) throw new CandidateValidationError(`CHATWOOT_PROFILE_HTTP_${response.status}`);
+    if (!response.ok) {
+      throw new CandidateValidationError('CHATWOOT_PROFILE_REJECTED', {
+        provider: 'CHATWOOT',
+        httpStatus: response.status
+      });
+    }
   } catch (error) {
     if (error instanceof CandidateValidationError) throw error;
     throw new CandidateValidationError(error instanceof Error && error.name === 'AbortError'

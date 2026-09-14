@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4 not started**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 in review**
 
 ## Phase 0 — Architecture Freeze
 
@@ -140,6 +140,13 @@ The Cloudflare R2 account is now enabled, but Phase 3 real R2 staging has not ye
 ## Phase 4 — Reliability Hardening
 
 Goal: make production failure modes explicit and recoverable.
+
+Current status:
+
+- Phase 4A reliability architecture: **COMPLETE / FROZEN**
+- Phase 4B-1 canonical error taxonomy and retry contracts: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-2 and later implementation milestones: **NOT STARTED**
+- Phase 4C concurrency/load validation: **NOT STARTED**
 
 Scope:
 

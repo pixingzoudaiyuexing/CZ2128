@@ -72,8 +72,15 @@ describe('attachment multipart delivery', () => {
   it.each([
     [429, 'RETRYABLE'],
     [400, 'FINAL'],
+    [401, 'FINAL'],
+    [403, 'FINAL'],
+    [404, 'FINAL'],
+    [422, 'FINAL'],
     [408, 'AMBIGUOUS'],
-    [503, 'AMBIGUOUS']
+    [500, 'AMBIGUOUS'],
+    [502, 'AMBIGUOUS'],
+    [503, 'AMBIGUOUS'],
+    [504, 'AMBIGUOUS']
   ] as const)('classifies Chatwoot attachment HTTP %s as %s', async (status, outcome) => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private provider body', { status }));
     const error = await deliverAttachmentToChatwoot(
@@ -88,14 +95,79 @@ describe('attachment multipart delivery', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       ok: false,
       error_code: 429,
+      parameters: { retry_after: 10 },
       description: 'private provider detail'
-    }), { status: 200 }));
+    }), { status: 200, headers: { 'Retry-After': '30' } }));
     const error = await deliverAttachmentToTelegram(
       env, config, attachment(), '7', new Uint8Array([1]).buffer
     ).then(() => null, value => value as ProviderDeliveryError);
 
     expect(error?.outcome).toBe('RETRYABLE');
+    expect(error?.retryAfterSeconds).toBeGreaterThanOrEqual(10);
+    expect(error?.retryAfterSeconds).toBeLessThan(30);
     expect(String(error)).not.toContain('private provider detail');
+  });
+
+  it('keeps the destination timeout active while a Telegram 429 body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      let requestSignal: AbortSignal | null | undefined;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        requestSignal = init?.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => {
+              controller.error(new DOMException('Aborted', 'AbortError'));
+            }, { once: true });
+          }
+        });
+        return new Response(body, { status: 429 });
+      });
+
+      const pending = deliverAttachmentToTelegram(
+        env,
+        { ...config, destinationTimeoutMs: 10 },
+        attachment(),
+        '7',
+        new Uint8Array([1]).buffer
+      ).then(() => null, value => value as ProviderDeliveryError);
+
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(11);
+      await Promise.resolve();
+
+      expect(requestSignal?.aborted).toBe(true);
+      expect(settled).toBe(true);
+      const outcome = await pending;
+      expect(outcome).toMatchObject({
+        outcome: 'RETRYABLE',
+        code: 'OUTBOUND_RATE_LIMITED',
+        retryAfterSeconds: expect.any(Number)
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([408, 500, 502, 503, 504])('keeps Telegram attachment API %s ambiguous', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: status, description: 'private provider detail'
+    }), { status: 200 }));
+    const error = await deliverAttachmentToTelegram(
+      env, config, attachment(), '7', new Uint8Array([1]).buffer
+    ).then(() => null, value => value as ProviderDeliveryError);
+    expect(error).toMatchObject({ outcome: 'AMBIGUOUS', httpStatus: status });
+  });
+
+  it.each([400, 401, 403, 404, 422])('keeps Telegram attachment API %s final', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: status, description: 'private provider detail'
+    }), { status: 200 }));
+    const error = await deliverAttachmentToTelegram(
+      env, config, attachment(), '7', new Uint8Array([1]).buffer
+    ).then(() => null, value => value as ProviderDeliveryError);
+    expect(error).toMatchObject({ outcome: 'FINAL', httpStatus: status });
   });
 
   it('classifies transport loss and invalid success as ambiguous', async () => {
@@ -150,6 +222,6 @@ describe('attachment multipart delivery', () => {
     await expect(loadAttachmentBuffer(oversized as any, attachment(), config.maxBytes)).rejects.toThrow('R2_OBJECT_TOO_LARGE');
 
     const failure = { get: async () => { throw new Error('private R2 detail'); } };
-    await expect(loadAttachmentBuffer(failure as any, attachment(), config.maxBytes)).rejects.toThrow('R2_GET_FAILED');
+    await expect(loadAttachmentBuffer(failure as any, attachment(), config.maxBytes)).rejects.toThrow('R2_READ_TRANSIENT');
   });
 });

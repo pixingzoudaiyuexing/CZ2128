@@ -3,6 +3,7 @@ import { getAttachmentConfig } from '../src/config/attachments';
 import { AttachmentRow } from '../src/core/attachments';
 import {
   AttachmentProcessingError,
+  classifyAttachmentSourceHttpFailure,
   downloadChatwootAttachment,
   downloadTelegramAttachment,
   storeAttachmentStream
@@ -91,7 +92,7 @@ describe('attachment source security', () => {
 
     await expect(
       downloadChatwootAttachment(literalEnv, url, getAttachmentConfig(literalEnv))
-    ).rejects.toMatchObject({ code: 'SOURCE_URL_NOT_ALLOWED', retryable: false });
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_INVALID', retryable: false });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -110,7 +111,7 @@ describe('attachment source security', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     const config = getAttachmentConfig({ ...env, CHATWOOT_ATTACHMENT_ALLOWED_HOSTS: 'cdn.example,127.0.0.1' } as any);
     await expect(downloadChatwootAttachment(env, url, config)).rejects.toMatchObject({
-      code: 'SOURCE_URL_NOT_ALLOWED', retryable: false
+      code: 'ATTACHMENT_SOURCE_INVALID', retryable: false
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -152,7 +153,7 @@ describe('attachment source security', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 302, headers: { Location: 'https://evil.example/file' } }));
     await expect(downloadChatwootAttachment(env, 'https://chatwoot.example/files/1', getAttachmentConfig(env))).rejects.toMatchObject({
-      code: 'SOURCE_URL_NOT_ALLOWED'
+      code: 'ATTACHMENT_SOURCE_INVALID'
     });
 
     fetchMock.mockReset();
@@ -163,7 +164,7 @@ describe('attachment source security', () => {
       }));
     }
     await expect(downloadChatwootAttachment(env, 'https://chatwoot.example/files/1', getAttachmentConfig(env))).rejects.toMatchObject({
-      code: 'SOURCE_REDIRECT_LIMIT'
+      code: 'ATTACHMENT_SOURCE_INVALID'
     });
   });
 
@@ -173,22 +174,39 @@ describe('attachment source security', () => {
       headers: { 'Content-Length': String(20 * 1024 * 1024 + 1) }
     }));
     await expect(downloadChatwootAttachment(env, 'https://chatwoot.example/file', getAttachmentConfig(env))).rejects.toMatchObject({
-      code: 'SOURCE_TOO_LARGE', retryable: false
+      code: 'ATTACHMENT_SOURCE_TOO_LARGE', retryable: false
     });
   });
 
-  it.each([
-    [404, false],
-    [408, true],
-    [429, true],
-    [503, true]
-  ] as const)('classifies source HTTP %s retryable=%s', async (status, retryable) => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private source body', { status }));
+  it.each([408, 429, 500, 502, 503, 504])('classifies source HTTP %s as retryable', status => {
+    expect(classifyAttachmentSourceHttpFailure(status)).toMatchObject({ retryable: true });
+  });
+
+  it.each([400, 401, 403, 404, 410, 422])('classifies source HTTP %s as final', status => {
+    expect(classifyAttachmentSourceHttpFailure(status)).toMatchObject({ retryable: false });
+  });
+
+  it('honors Chatwoot source Retry-After without reading the private body', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private source body', {
+      status: 429, headers: { 'Retry-After': '30' }
+    }));
     const error = await downloadChatwootAttachment(
       env, 'https://chatwoot.example/file', getAttachmentConfig(env)
     ).then(() => null, value => value as AttachmentProcessingError);
-    expect(error).toMatchObject({ retryable });
+    expect(error).toMatchObject({ code: 'ATTACHMENT_SOURCE_RATE_LIMITED', retryable: true });
+    expect(error?.retryAfterSeconds).toBeGreaterThanOrEqual(30);
     expect(String(error)).not.toContain('private source body');
+  });
+
+  it('uses Telegram getFile retry_after before the HTTP header', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: 429, parameters: { retry_after: 10 }, description: 'private'
+    }), { status: 429, headers: { 'Retry-After': '30' } }));
+    const error = await downloadTelegramAttachment(env, 'file-id', 1, getAttachmentConfig(env))
+      .then(() => null, value => value as AttachmentProcessingError);
+    expect(error).toMatchObject({ code: 'ATTACHMENT_SOURCE_RATE_LIMITED', retryable: true });
+    expect(error?.retryAfterSeconds).toBeGreaterThanOrEqual(10);
+    expect(error?.retryAfterSeconds).toBeLessThan(30);
   });
 
   it('classifies source transport failure as retryable without leaking details', async () => {
@@ -196,7 +214,7 @@ describe('attachment source security', () => {
     const error = await downloadChatwootAttachment(
       env, 'https://chatwoot.example/file', getAttachmentConfig(env)
     ).then(() => null, value => value as AttachmentProcessingError);
-    expect(error).toMatchObject({ code: 'SOURCE_DOWNLOAD_FAILED', retryable: true });
+    expect(error).toMatchObject({ code: 'ATTACHMENT_SOURCE_TRANSIENT', retryable: true });
     expect(String(error)).not.toContain('private URL');
   });
 
@@ -219,7 +237,7 @@ describe('attachment source security', () => {
 
       await vi.advanceTimersByTimeAsync(11);
       const error = await pending;
-      expect(error).toMatchObject({ code: 'SOURCE_DOWNLOAD_FAILED', retryable: true });
+      expect(error).toMatchObject({ code: 'ATTACHMENT_SOURCE_TRANSIENT', retryable: true });
     } finally {
       vi.useRealTimers();
     }
@@ -235,7 +253,7 @@ describe('attachment source security', () => {
     ).then(() => null, value => value as AttachmentProcessingError);
     expect(error).not.toBeNull();
     if (!error) throw new Error('Expected Telegram size rejection');
-    expect(error.code).toBe('SOURCE_TOO_LARGE');
+    expect(error.code).toBe('ATTACHMENT_SOURCE_TOO_LARGE');
     expect(String(error)).not.toContain('telegram-secret');
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -252,7 +270,7 @@ describe('attachment source security', () => {
   it('aborts multipart storage when actual streamed bytes exceed the limit', async () => {
     const bucket = new MultipartBucket();
     await expect(storeAttachmentStream(bucket as any, row, stream([1, 2, 3], [4, 5, 6, 7]), 6)).rejects.toMatchObject({
-      code: 'SOURCE_TOO_LARGE', retryable: false
+      code: 'ATTACHMENT_SOURCE_TOO_LARGE', retryable: false
     });
     expect(bucket.completed).toBe(0);
     expect(bucket.aborted).toBe(1);
@@ -262,7 +280,7 @@ describe('attachment source security', () => {
     const bucket = new MultipartBucket();
     bucket.failUpload = true;
     await expect(storeAttachmentStream(bucket as any, row, stream([1, 2, 3]), 6)).rejects.toMatchObject({
-      code: 'R2_STORE_FAILED', retryable: true
+      code: 'R2_STORE_TRANSIENT', retryable: true
     });
     expect(bucket.aborted).toBe(1);
   });
@@ -277,7 +295,7 @@ describe('attachment source security', () => {
     });
     const error = await storeAttachmentStream(bucket as any, row, broken, 6)
       .then(() => null, value => value as AttachmentProcessingError);
-    expect(error).toMatchObject({ code: 'SOURCE_DOWNLOAD_FAILED', retryable: true });
+    expect(error).toMatchObject({ code: 'ATTACHMENT_SOURCE_TRANSIENT', retryable: true });
     expect(String(error)).not.toContain('private source URL');
     expect(bucket.aborted).toBe(1);
   });

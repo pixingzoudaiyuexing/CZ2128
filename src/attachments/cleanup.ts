@@ -21,7 +21,10 @@ export async function cleanupExpiredAttachments(env: Env): Promise<void> {
     } catch {
       logger.warn('Attachment cleanup failed', {
         attachment_id: row.id,
-        error_category: 'R2_DELETE_FAILED'
+        error_category: 'R2_DELETE_FAILED',
+        error_code: 'R2_DELETE_TRANSIENT',
+        provider: 'R2',
+        stage: 'CLEANUP'
       });
     }
   }

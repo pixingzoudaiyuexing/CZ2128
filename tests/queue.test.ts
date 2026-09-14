@@ -392,7 +392,7 @@ describe('Queue Event Processing', () => {
 
   it('rejects unsupported queue envelope versions', async () => {
     const event = { ...chatwootMessageEvent('cw-v2', '63', 'Future'), version: 2 };
-    await expect(handleQueueEvent(event as any, env)).rejects.toThrow('Unsupported queue event version');
+    await expect(handleQueueEvent(event as any, env)).rejects.toThrow('QUEUE_EVENT_VERSION_UNSUPPORTED');
     const db = env.DB as MockD1;
     expect(db.tables.event_receipts).toHaveLength(0);
     expect(global.fetch).toHaveBeenCalledTimes(0);

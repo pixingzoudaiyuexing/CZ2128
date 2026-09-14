@@ -70,7 +70,7 @@ describe('attachment discovery', () => {
     const descriptors = discoverTelegramAttachments({ photo: [
       { file_id: 'large', file_unique_id: 'large-u', file_size: config.maxBytes + 1 }
     ] }, config);
-    expect(descriptors[0].rejectionCode).toBe('SOURCE_TOO_LARGE');
+    expect(descriptors[0].rejectionCode).toBe('ATTACHMENT_SOURCE_TOO_LARGE');
   });
 
   it.each(['document', 'video', 'audio', 'voice'] as const)('discovers Telegram %s metadata', type => {
@@ -139,11 +139,11 @@ describe('attachment discovery', () => {
       'message',
       {
         sourceAttachmentRef: 'too-large', attachmentType: 'document', sizeBytes: config.maxBytes + 1,
-        locator: { provider: 'telegram', fileId: 'file-id' }, rejectionCode: 'SOURCE_TOO_LARGE'
+        locator: { provider: 'telegram', fileId: 'file-id' }, rejectionCode: 'ATTACHMENT_SOURCE_TOO_LARGE'
       }
     );
     expect(discovered.row.status).toBe('FAILED_FINAL');
-    expect(discovered.row.last_error).toBe('SOURCE_TOO_LARGE');
+    expect(discovered.row.last_error).toBe('ATTACHMENT_SOURCE_TOO_LARGE');
     expect(discovered.job).toBeUndefined();
   });
 });

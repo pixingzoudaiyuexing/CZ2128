@@ -1,6 +1,13 @@
 import { DatabaseEnv } from './database';
 import { logger } from '../observability/logger';
-import { CancelledBeforeDeliveryError, ProviderDeliveryError, RetryableProcessingError, safeErrorCode } from './errors';
+import {
+  CancelledBeforeDeliveryError,
+  ProviderDeliveryError,
+  RetryableProcessingError,
+  retryExhaustionSemantic,
+  safeErrorCode
+} from './errors';
+import { SafeErrorCode } from './error-taxonomy';
 
 const OUTBOUND_LEASE_SECONDS = 30;
 const MAX_OUTBOUND_ATTEMPTS = 3;
@@ -46,7 +53,7 @@ export async function executeOutboundOperation(
 
   if (op.status === 'SENDING' && op.lease_until && op.lease_until > now) {
     logger.info('Active outbound lease blocks duplicate send', { operation_id: id });
-    throw new RetryableProcessingError('Outbound operation lease is active', op.lease_until - now);
+    throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', op.lease_until - now);
   }
 
   // Ambiguous delivery checking (expired SENDING)
@@ -58,11 +65,15 @@ export async function executeOutboundOperation(
        WHERE id = ? AND status = 'SENDING' AND lease_until <= ?`
     ).bind(now, id, now).run();
     if (ambiguousResult.meta.changes === 1) return { status: 'AMBIGUOUS' };
-    throw new RetryableProcessingError('Outbound operation changed while expiring lease', OUTBOUND_LEASE_SECONDS);
+    throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
   }
 
   if (op.attempt_count >= MAX_OUTBOUND_ATTEMPTS) {
-    logger.info('Bounded outbound attempts reached', { operation_id: id });
+    logger.info('Bounded outbound attempts reached', {
+      operation_id: id,
+      error_code: 'OUTBOUND_RETRY_EXHAUSTED',
+      retry_exhausted: true
+    });
     await env.DB.prepare(
       `UPDATE outbound_operations 
        SET status = 'FAILED_FINAL', updated_at = ?
@@ -85,7 +96,7 @@ export async function executeOutboundOperation(
 
   if (claimResult.meta.changes !== 1) {
     logger.info('Outbound lease claimed by another worker', { operation_id: id });
-    throw new RetryableProcessingError('Outbound operation lease claimed by another worker', leaseSeconds);
+    throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', leaseSeconds);
   }
 
   const startTime = Date.now();
@@ -99,16 +110,22 @@ export async function executeOutboundOperation(
         ? error.outcome
         : 'AMBIGUOUS';
     const attemptNumber = Number(op.attempt_count) + 1;
-    const nextStatus = outcome === 'RETRYABLE' && attemptNumber < MAX_OUTBOUND_ATTEMPTS
+    const exhaustion = retryExhaustionSemantic(attemptNumber, MAX_OUTBOUND_ATTEMPTS);
+    const nextStatus = outcome === 'RETRYABLE' && exhaustion === 'RETRY_PENDING'
       ? 'FAILED_RETRYABLE'
       : outcome === 'RETRYABLE' || outcome === 'FINAL'
         ? 'FAILED_FINAL'
         : 'AMBIGUOUS';
-    const errorCode = safeErrorCode(error);
+    const errorCode: SafeErrorCode = outcome === 'RETRYABLE' && exhaustion === 'RETRY_EXHAUSTED'
+      ? 'OUTBOUND_RETRY_EXHAUSTED'
+      : error instanceof ProviderDeliveryError || error instanceof CancelledBeforeDeliveryError
+        ? safeErrorCode(error)
+        : 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED';
 
     logger.error('Outbound operation failed', error, {
       operation_id: id,
       error_category: 'PROVIDER_ERROR',
+      retry_exhausted: outcome === 'RETRYABLE' && exhaustion === 'RETRY_EXHAUSTED',
       duration_ms: Date.now() - startTime
     });
     
@@ -119,10 +136,18 @@ export async function executeOutboundOperation(
     ).bind(nextStatus, errorCode, Math.floor(Date.now() / 1000), id, leaseToken).run();
 
     if (failureResult.meta.changes !== 1) {
-      throw new RetryableProcessingError('Could not persist outbound failure state', OUTBOUND_LEASE_SECONDS);
+      throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
     }
     if (nextStatus === 'FAILED_RETRYABLE') {
-      throw new RetryableProcessingError('Outbound provider returned a retryable failure', 1);
+      throw new RetryableProcessingError(
+        errorCode,
+        error instanceof ProviderDeliveryError ? error.retryAfterSeconds ?? 5 : 5,
+        error instanceof ProviderDeliveryError ? {
+          provider: error.provider,
+          stage: error.stage,
+          httpStatus: error.httpStatus
+        } : {}
+      );
     }
     return { status: nextStatus };
   }
@@ -133,7 +158,7 @@ export async function executeOutboundOperation(
      WHERE id = ? AND status = 'SENDING' AND lease_token = ?`
   ).bind(result.providerMessageRef || null, Math.floor(Date.now() / 1000), id, leaseToken).run();
   if (sentResult.meta.changes !== 1) {
-    throw new RetryableProcessingError('Provider succeeded but outbound result was not persisted', OUTBOUND_LEASE_SECONDS);
+    throw new RetryableProcessingError('OUTBOUND_RESULT_PERSIST_AMBIGUOUS', OUTBOUND_LEASE_SECONDS);
   }
 
   logger.info('Outbound operation SENT', {
@@ -148,7 +173,7 @@ export async function executeOutboundOperation(
 export async function markOutboundOperationFinal(
   env: DatabaseEnv,
   operationId: string,
-  reason: string
+  reason: SafeErrorCode
 ): Promise<void> {
   await env.DB.prepare(
     `UPDATE outbound_operations

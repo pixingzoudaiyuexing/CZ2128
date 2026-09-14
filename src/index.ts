@@ -12,6 +12,7 @@ import { cleanupExpiredAttachments } from './attachments/cleanup';
 import { AttachmentDescriptor } from './core/attachments';
 import { handleAdminTelegramWebhook } from './admin/handler';
 import { resolveEffectiveEnv } from './runtime-config/resolver';
+import { boundedQueueRetryDelay } from './core/retry';
 
 export type { Env } from './config/env';
 
@@ -33,7 +34,9 @@ function boundedAttachments(
   if (attachments.length > maxCount) {
     logger.warn('Attachment count exceeds configured limit', {
       source,
-      error_category: 'ATTACHMENT_COUNT_LIMIT'
+      error_category: 'ATTACHMENT_COUNT_LIMIT',
+      error_code: 'ATTACHMENT_COUNT_LIMIT',
+      stage: 'SOURCE_METADATA'
     });
   }
   return attachments.slice(0, maxCount);
@@ -242,7 +245,7 @@ export default {
         if (error instanceof RetryableProcessingError) {
           message.retry({ delaySeconds: error.retryAfterSeconds });
         } else {
-          message.retry();
+          message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });
         }
       }
     }

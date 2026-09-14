@@ -1,17 +1,19 @@
 import { AttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
 import { AttachmentRow } from '../core/attachments';
-import { ProviderDeliveryError } from '../core/errors';
+import { ProviderDeliveryError, SafeError } from '../core/errors';
+import {
+  invalidVisibleSuccessError,
+  visibleHttpDeliveryError,
+  visibleTransportDeliveryError
+} from '../core/provider-retry';
+import { retryAfterHeader } from '../core/retry';
+import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
-function visibleOutcome(status: number): 'RETRYABLE' | 'FINAL' | 'AMBIGUOUS' {
-  if (status === 429) return 'RETRYABLE';
-  if (status === 408 || status >= 500) return 'AMBIGUOUS';
-  return 'FINAL';
-}
-
 async function visibleFetch(
+  provider: 'TELEGRAM' | 'CHATWOOT',
   url: string,
   form: FormData,
   timeoutMs: number,
@@ -24,7 +26,7 @@ async function visibleFetch(
     return { response, finish: () => clearTimeout(timeout) };
   } catch {
     clearTimeout(timeout);
-    throw new ProviderDeliveryError('AMBIGUOUS', 'DESTINATION_TRANSPORT_ERROR');
+    throw visibleTransportDeliveryError(provider);
   }
 }
 
@@ -37,17 +39,17 @@ export async function loadAttachmentBuffer(
   try {
     object = await bucket.get(row.storage_key);
   } catch {
-    throw new Error('R2_GET_FAILED');
+    throw new SafeError('R2_READ_TRANSIENT');
   }
-  if (!object) throw new Error('R2_OBJECT_MISSING');
-  if (object.size > maxBytes) throw new Error('R2_OBJECT_TOO_LARGE');
+  if (!object) throw new SafeError('R2_OBJECT_MISSING');
+  if (object.size > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
   let value: ArrayBuffer;
   try {
     value = await object.arrayBuffer();
   } catch {
-    throw new Error('R2_GET_FAILED');
+    throw new SafeError('R2_READ_TRANSIENT');
   }
-  if (value.byteLength > maxBytes) throw new Error('R2_OBJECT_TOO_LARGE');
+  if (value.byteLength > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
   return value;
 }
 
@@ -64,7 +66,7 @@ export async function deliverAttachmentToChatwoot(
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
-  ) throw new ProviderDeliveryError('FINAL', 'CHATWOOT_RUNTIME_CONFIG_ERROR');
+  ) throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CHATWOOT' });
   const form = new FormData();
   form.set('message_type', 'outgoing');
   form.set('private', 'false');
@@ -72,6 +74,7 @@ export async function deliverAttachmentToChatwoot(
   form.append('attachments[]', new Blob([bytes], { type: row.mime_type }), row.safe_filename);
   const baseUrl = env.CHATWOOT_API_URL.replace(/\/+$/, '');
   const request = await visibleFetch(
+    'CHATWOOT',
     `${baseUrl}/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`,
     form,
     config.destinationTimeoutMs,
@@ -80,14 +83,16 @@ export async function deliverAttachmentToChatwoot(
   const response = request.response;
   if (!response.ok) {
     request.finish();
-    throw new ProviderDeliveryError(visibleOutcome(response.status), `CHATWOOT_ATTACHMENT_HTTP_${response.status}`);
+    throw visibleHttpDeliveryError('CHATWOOT', response.status, {
+      httpRetryAfter: retryAfterHeader(response)
+    });
   }
   try {
     const payload = await response.json() as any;
     if (payload.id === undefined || payload.id === null) throw new Error('missing id');
     return { providerMessageRef: String(payload.id) };
   } catch {
-    throw new ProviderDeliveryError('AMBIGUOUS', 'CHATWOOT_ATTACHMENT_INVALID_SUCCESS');
+    throw invalidVisibleSuccessError('CHATWOOT');
   } finally {
     request.finish();
   }
@@ -114,7 +119,7 @@ export async function deliverAttachmentToTelegram(
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
   ) {
-    throw new ProviderDeliveryError('FINAL', 'TELEGRAM_RUNTIME_CONFIG_ERROR');
+    throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' });
   }
   const target = telegramMethod(row);
   const form = new FormData();
@@ -122,26 +127,41 @@ export async function deliverAttachmentToTelegram(
   form.set('message_thread_id', threadRef);
   form.append(target.field, new Blob([bytes], { type: row.mime_type }), row.safe_filename);
   const request = await visibleFetch(
+    'TELEGRAM',
     `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${target.method}`,
     form,
     config.destinationTimeoutMs
   );
   const response = request.response;
   if (!response.ok) {
-    request.finish();
-    throw new ProviderDeliveryError(visibleOutcome(response.status), `TELEGRAM_ATTACHMENT_HTTP_${response.status}`);
+    try {
+      const telegramRetryAfter = response.status === 429
+        ? await readTelegramRetryAfterMetadata(response)
+        : undefined;
+      throw visibleHttpDeliveryError('TELEGRAM', response.status, {
+        telegramRetryAfter,
+        httpRetryAfter: retryAfterHeader(response)
+      });
+    } finally {
+      request.finish();
+    }
   }
   try {
     const payload = await response.json() as any;
     if (payload?.ok !== true || payload?.result?.message_id === undefined) {
       const status = typeof payload?.error_code === 'number' ? payload.error_code : 200;
-      if (status !== 200) throw new ProviderDeliveryError(visibleOutcome(status), `TELEGRAM_ATTACHMENT_API_${status}`);
+      if (status !== 200) {
+        throw visibleHttpDeliveryError('TELEGRAM', status, {
+          telegramRetryAfter: telegramRetryAfterValue(payload),
+          httpRetryAfter: retryAfterHeader(response)
+        });
+      }
       throw new Error('missing id');
     }
     return { providerMessageRef: String(payload.result.message_id) };
   } catch (error) {
     if (error instanceof ProviderDeliveryError) throw error;
-    throw new ProviderDeliveryError('AMBIGUOUS', 'TELEGRAM_ATTACHMENT_INVALID_SUCCESS');
+    throw invalidVisibleSuccessError('TELEGRAM');
   } finally {
     request.finish();
   }

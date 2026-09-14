@@ -34,7 +34,7 @@ export function discoverTelegramAttachments(message: any, config: AttachmentConf
     if (descriptor) {
       descriptor.originalFilename = 'photo.jpg';
       descriptor.mimeType = descriptor.mimeType || 'image/jpeg';
-      if (eligible.length === 0) descriptor.rejectionCode = 'SOURCE_TOO_LARGE';
+      if (eligible.length === 0) descriptor.rejectionCode = 'ATTACHMENT_SOURCE_TOO_LARGE';
       descriptors.push(descriptor);
     }
   }
@@ -43,7 +43,7 @@ export function discoverTelegramAttachments(message: any, config: AttachmentConf
     const descriptor = telegramDescriptor(message?.[type], type);
     if (!descriptor) continue;
     if (descriptor.sizeBytes !== undefined && descriptor.sizeBytes > config.maxBytes) {
-      descriptor.rejectionCode = 'SOURCE_TOO_LARGE';
+      descriptor.rejectionCode = 'ATTACHMENT_SOURCE_TOO_LARGE';
     }
     descriptors.push(descriptor);
   }
@@ -68,9 +68,9 @@ export function discoverChatwootAttachments(payload: any, config: AttachmentConf
       sizeBytes,
       locator: { provider: 'chatwoot', dataUrl: value.data_url.slice(0, 2048) },
       rejectionCode: value.data_url.length > 2048
-        ? 'INVALID_METADATA'
+        ? 'ATTACHMENT_SOURCE_INVALID'
         : sizeBytes !== undefined && sizeBytes > config.maxBytes
-          ? 'SOURCE_TOO_LARGE'
+          ? 'ATTACHMENT_SOURCE_TOO_LARGE'
           : undefined
     }];
   });

@@ -1,8 +1,10 @@
 import { ATTACHMENT_HARD_MAX_BYTES, ATTACHMENT_HARD_MAX_COUNT } from '../config/attachments';
+import { SafeErrorCode } from '../core/error-taxonomy';
+import { SafeError } from '../core/errors';
 import { RuntimeConfigKey, RuntimeValueKind, TelegramSupportProfile } from './types';
 
-export class RuntimeConfigValidationError extends Error {
-  constructor(public readonly code: string) {
+export class RuntimeConfigValidationError extends SafeError {
+  constructor(code: SafeErrorCode) {
     super(code);
     this.name = 'RuntimeConfigValidationError';
   }
@@ -18,13 +20,13 @@ export interface RuntimeConfigDefinition {
   validate: (value: string) => string;
 }
 
-function boundedText(value: string, min: number, max: number, code: string): string {
+function boundedText(value: string, min: number, max: number, code: SafeErrorCode): string {
   const normalized = value.trim();
   if (normalized.length < min || normalized.length > max) throw new RuntimeConfigValidationError(code);
   return normalized;
 }
 
-function boundedInteger(value: string, min: number, max: number, code: string): string {
+function boundedInteger(value: string, min: number, max: number, code: SafeErrorCode): string {
   const normalized = value.trim();
   if (!/^\d+$/.test(normalized)) throw new RuntimeConfigValidationError(code);
   const number = Number(normalized);

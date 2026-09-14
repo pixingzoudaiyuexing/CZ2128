@@ -1,4 +1,5 @@
 import { ATTACHMENT_TOKEN_BYTES } from '../config/attachments';
+import { SafeErrorCode } from './error-taxonomy';
 
 export type AttachmentProvider = 'telegram' | 'chatwoot';
 export type AttachmentType = 'photo' | 'document' | 'video' | 'audio' | 'voice';
@@ -11,7 +12,7 @@ export interface AttachmentDescriptor {
   mimeType?: string;
   sizeBytes?: number;
   locator: { provider: 'telegram'; fileId: string } | { provider: 'chatwoot'; dataUrl: string };
-  rejectionCode?: 'SOURCE_TOO_LARGE' | 'INVALID_METADATA';
+  rejectionCode?: 'ATTACHMENT_SOURCE_TOO_LARGE' | 'ATTACHMENT_SOURCE_INVALID';
 }
 
 export interface AttachmentRow {
@@ -32,7 +33,7 @@ export interface AttachmentRow {
   destination_message_ref: string | null;
   attempt_count: number;
   expires_at: number | null;
-  last_error: string | null;
+  last_error: SafeErrorCode | null;
   created_at: number;
   updated_at: number;
 }

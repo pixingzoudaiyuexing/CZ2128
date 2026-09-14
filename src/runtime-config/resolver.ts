@@ -8,6 +8,8 @@ import {
   RuntimeConfigSnapshot,
   RuntimeValueSource
 } from './types';
+import { safeErrorCode } from '../core/errors';
+import { SafeErrorCode } from '../core/error-taxonomy';
 
 const ENV_KEY_MAP: Partial<Record<RuntimeConfigKey, keyof Env>> = {
   AI_BASE_URL: 'AI_BASE_URL',
@@ -44,7 +46,7 @@ function envFallback(env: Env, key: RuntimeConfigKey): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function fallbackSnapshot(env: Env, error?: string): RuntimeConfigSnapshot {
+function fallbackSnapshot(env: Env, error?: SafeErrorCode): RuntimeConfigSnapshot {
   const values: Partial<Record<RuntimeConfigKey, string>> = {};
   const sources = {} as Record<RuntimeConfigKey, RuntimeValueSource>;
   for (const key of RUNTIME_CONFIG_KEYS) {
@@ -62,7 +64,7 @@ function fallbackSnapshot(env: Env, error?: string): RuntimeConfigSnapshot {
   };
 }
 
-function failedSnapshot(error: string): RuntimeConfigSnapshot {
+function failedSnapshot(error: SafeErrorCode): RuntimeConfigSnapshot {
   const sources = {} as Record<RuntimeConfigKey, RuntimeValueSource>;
   for (const key of RUNTIME_CONFIG_KEYS) sources[key] = 'D1';
   return {
@@ -99,9 +101,10 @@ export async function loadRuntimeConfigSnapshot(env: Env): Promise<RuntimeConfig
       snapshot.values[row.key] = validateRuntimeValue(row.key, raw);
     } catch (error) {
       delete snapshot.values[row.key];
-      snapshot.errors[row.key] = error instanceof Error && error.message.startsWith('RUNTIME_CONFIG_')
-        ? error.message
-        : 'RUNTIME_CONFIG_VALUE_INVALID';
+      const code = safeErrorCode(error);
+      snapshot.errors[row.key] = code === 'INTERNAL_INVARIANT_VIOLATION'
+        ? 'RUNTIME_CONFIG_VALUE_INVALID'
+        : code;
       snapshot.health = 'ERROR';
     }
   }

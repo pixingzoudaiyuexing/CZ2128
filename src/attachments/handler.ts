@@ -9,7 +9,7 @@ import {
   recordStoredAttachmentError
 } from '../core/attachment-repository';
 import { hashAttachmentToken } from '../core/attachments';
-import { RetryableProcessingError } from '../core/errors';
+import { RetryableProcessingError, SafeError, safeErrorCode } from '../core/errors';
 import { AttachmentTransferEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
 import { deliverAttachmentToChatwoot, deliverAttachmentToTelegram, loadAttachmentBuffer } from './delivery';
@@ -21,7 +21,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
   if (!existing || existing.status === 'DELIVERED' || existing.status === 'FAILED_FINAL') return;
   const tokenHash = await hashAttachmentToken(event.payload.accessToken);
   if (tokenHash !== existing.access_token_hash) {
-    throw new RetryableProcessingError('Attachment job token was superseded', 1);
+    throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', 1);
   }
   let row = existing;
   if (existing.status !== 'STORED') {
@@ -31,7 +31,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         env,
         claim.row.id,
         false,
-        claim.row.last_error || 'ATTACHMENT_ATTEMPTS_EXHAUSTED',
+        'ATTACHMENT_RETRY_EXHAUSTED',
         config
       );
       return;
@@ -39,7 +39,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
     if (claim.outcome === 'NOT_CLAIMED') {
       if (!claim.row || claim.row.status === 'DELIVERED' || claim.row.status === 'FAILED_FINAL') return;
       if (claim.row.status !== 'STORED') {
-        throw new RetryableProcessingError('Attachment source claim was not acquired', 2);
+        throw new RetryableProcessingError('QUEUE_EVENT_CLAIM_CONTENDED', 2);
       }
       row = claim.row;
     } else {
@@ -47,13 +47,13 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
     }
   }
   if (row.expires_at !== null && row.expires_at <= Math.floor(Date.now() / 1000)) {
-    await markAttachmentFailure(env, row.id, false, 'EXPIRED', config);
+    await markAttachmentFailure(env, row.id, false, 'ATTACHMENT_EXPIRED', config);
     return;
   }
   try {
     if (row.status !== 'STORED') {
       if (event.payload.locator.provider !== row.source_provider) {
-        throw new AttachmentProcessingError('INVALID_METADATA', false);
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
       }
       const source = event.payload.locator.provider === 'telegram'
         ? await downloadTelegramAttachment(env, event.payload.locator.fileId, row.size_bytes, config)
@@ -65,21 +65,21 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         source.finish();
       }
       const stored = await markAttachmentStored(env, row.id, size, config);
-      if (!stored) throw new RetryableProcessingError('Attachment storage result was not persisted', 2);
+      if (!stored) throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', 2);
       row = { ...row, status: 'STORED', size_bytes: size };
     }
 
     const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
       .bind(row.conversation_id).first<any>();
-    if (!conversation) throw new AttachmentProcessingError('INVALID_METADATA', false);
+    if (!conversation) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     if (row.destination_provider === 'telegram' && !conversation.operator_thread_ref) {
-      throw new AttachmentProcessingError('INVALID_METADATA', false);
+      throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     }
     if (
       row.destination_provider === 'chatwoot' &&
       (!conversation.helpdesk_account_ref || !conversation.helpdesk_conversation_ref)
     ) {
-      throw new AttachmentProcessingError('INVALID_METADATA', false);
+      throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     }
     const bytes = await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
     const operationId = `attachment_${row.destination_provider}:${row.id}`;
@@ -100,21 +100,31 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
 
     if (result.status === 'SENT') {
       const delivered = await markAttachmentDelivered(env, row.id, result.providerMessageRef);
-      if (!delivered) throw new RetryableProcessingError('Attachment delivery result was not persisted', 2);
+      if (!delivered) throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', 2);
     } else if (result.status === 'AMBIGUOUS' || result.status === 'FAILED_FINAL') {
-      await markAttachmentFailure(env, row.id, false, `DESTINATION_${result.status}`, config);
+      await markAttachmentFailure(
+        env,
+        row.id,
+        false,
+        result.status === 'AMBIGUOUS' ? 'ATTACHMENT_DELIVERY_AMBIGUOUS' : 'ATTACHMENT_DELIVERY_FINAL',
+        config
+      );
     }
   } catch (error) {
     if (error instanceof RetryableProcessingError) throw error;
     if (error instanceof AttachmentProcessingError) {
       const failureStatus = await markAttachmentFailure(env, row.id, error.retryable, error.code, config);
-      if (failureStatus === 'FAILED_RETRYABLE') throw new RetryableProcessingError(error.code, 2);
+      if (failureStatus === 'FAILED_RETRYABLE') {
+        throw new RetryableProcessingError(error.code, error.retryAfterSeconds ?? 2, {
+          provider: error.provider,
+          stage: error.stage,
+          httpStatus: error.httpStatus
+        });
+      }
       return;
     }
-    const code = error instanceof Error && ['R2_GET_FAILED', 'R2_OBJECT_MISSING', 'R2_OBJECT_TOO_LARGE'].includes(error.message)
-      ? error.message
-      : 'ATTACHMENT_PROCESSING_FAILED';
-    if (code === 'R2_GET_FAILED' && row.status === 'STORED') {
+    const code = safeErrorCode(error);
+    if (error instanceof SafeError && code === 'R2_READ_TRANSIENT' && row.status === 'STORED') {
       await recordStoredAttachmentError(env, row.id, code);
       throw new RetryableProcessingError(code, 2);
     }
