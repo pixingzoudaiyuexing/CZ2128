@@ -184,3 +184,5 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Reason:** Provider acceptance cannot be disproved by a bounded cursor search, Chatwoot `source_id` is not database-unique, and Telegram has no trustworthy generic historical lookup in the current architecture. Preserving historical uncertainty prevents incomplete scans from creating false delivery confirmation or becoming a blind resend path.
 
 **Scope:** Phase 4B-2C-1 only. No `0006`, manual retry child, visible redrive, AI durable-state activation, Admin UI or DLQ consumer is introduced.
+
+**Status:** Phase 4B-2C-1 is COMPLETE / FROZEN. Phase 4B-2C-2 and Phase 4B-2C-3 remain NOT STARTED. D-016 legacy AI `FAILED` compatibility remains in force.

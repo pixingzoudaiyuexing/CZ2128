@@ -1,4 +1,4 @@
-# CZ2128 - Phase 4B-2B Complete / Phase 4B-2C-1 Implemented, In Review
+# CZ2128 - Phase 4B-2B Frozen / Phase 4B-2C-1 Complete and Frozen
 
 ## 状态
 - **Current Branch**: `main`
@@ -12,8 +12,8 @@
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
 - **Phase 4B-2A**: COMPLETE
-- **Phase 4B-2B**: COMPLETE / MERGED
-- **Phase 4B-2C-1**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-2B**: COMPLETE / FROZEN / MERGED
+- **Phase 4B-2C-1**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-2**: NOT STARTED
 - **Phase 4B-2C-3**: NOT STARTED
 - **Phase 4B-3**: NOT STARTED
