@@ -82,6 +82,21 @@ async function seedMessage(
   ).bind(`message-${provider}-${providerRef}`, conversationId, provider, providerRef, text).run();
 }
 
+async function seedAiRun(
+  db: SqliteD1,
+  status: string = 'SUCCESS',
+  responseText: string | null = 'AI answer',
+  conversationId = 'conv'
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO ai_runs
+     (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+      provider_response_ref, response_text, status, attempt_count, created_at, updated_at)
+     VALUES ('ai-run-1', ?, 'customer-message-1', 'generation-1', 0,
+             'provider-response-1', ?, ?, 1, 1, 1)`
+  ).bind(conversationId, responseText, status).run();
+}
+
 async function loadOperation(db: SqliteD1, id: string): Promise<OutboundOperation> {
   return (await db.prepare('SELECT * FROM outbound_operations WHERE id = ?').bind(id).first()) as OutboundOperation;
 }
@@ -250,13 +265,13 @@ describe('manual retry child operations', () => {
     db.close();
   });
 
-  it.each(['AI_RUN', 'CONTROL_ACK'] as const)('rejects %s without consuming the parent decision', async subjectType => {
+  it('rejects CONTROL_ACK without consuming the parent decision', async () => {
     const db = new SqliteD1();
     db.migrate();
     await seedConversation(db);
     const env = makeEnv(db);
     await seedParent(db, buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage'), {
-      subjectType, subjectRef: `${subjectType}:1`
+      subjectType: 'CONTROL_ACK', subjectRef: 'CONTROL_ACK:1'
     });
     const fetchMock = vi.spyOn(globalThis, 'fetch');
 
@@ -265,6 +280,143 @@ describe('manual retry child operations', () => {
     )).rejects.toMatchObject({ code: 'OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE' });
     expect(fetchMock).not.toHaveBeenCalled();
     expect((await loadOperation(db, 'parent-op')).reconciliation_status).toBe('PENDING');
+    db.close();
+  });
+
+  it('retries a successful AI_RUN to Chatwoot from exact durable text with child source_id', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    const env = makeEnv(db);
+    const evidence = await buildChatwootTargetEvidence(env, 'account-1', 'conversation-2', 'parent-op');
+    await seedParent(db, evidence, {
+      provider: 'chatwoot', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+    });
+    const exactText = '  durable AI\nanswer  ';
+    await seedAiRun(db, 'SUCCESS', exactText);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 910 }), { status: 200 })
+    );
+
+    const result = await manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    );
+    const childId = await manualRetryChildId('parent-op');
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+
+    expect(result).toMatchObject({ childOperationId: childId, childStatus: 'SENT' });
+    expect(body.content).toBe(exactText);
+    expect(body.source_id).toBe(`cz2128:${childId}`);
+    expect(body.source_id).not.toBe('cz2128:parent-op');
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('retries a successful AI_RUN Telegram mirror with the frozen exact format', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    const env = makeEnv(db);
+    await seedParent(db, buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage'), {
+      provider: 'telegram', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+    });
+    await seedAiRun(db, 'SUCCESS', 'Exact durable answer');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: { message_id: 911 } }), { status: 200 })
+    );
+
+    const result = await manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    );
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+
+    expect(result.childStatus).toBe('SENT');
+    expect(body.text).toBe('🤖 AI\n\nExact durable answer');
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['FAILED_RETRYABLE', 'text'],
+    ['FAILED_FINAL', 'text'],
+    ['SUCCESS', null]
+  ] as const)('rejects %s AI_RUN state without child or provider action', async (status, text) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    const env = makeEnv(db);
+    await seedParent(db, buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage'), {
+      provider: 'telegram', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+    });
+    await seedAiRun(db, status, text);
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await db.prepare('SELECT COUNT(*) AS count FROM outbound_operations WHERE parent_operation_id = ?')
+      .bind('parent-op').first<{ count: number }>()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('keeps the same AI_RUN child across 429 and resumes only after its deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T00:00:00Z'));
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    const env = makeEnv(db);
+    await seedParent(db, buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage'), {
+      provider: 'telegram', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+    });
+    await seedAiRun(db);
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false, error_code: 429, parameters: { retry_after: 1 }
+      }), { status: 429 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true, result: { message_id: 912 }
+      }), { status: 200 }));
+
+    await expect(manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_RATE_LIMITED' });
+    await expect(manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_RATE_LIMITED' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(2_000);
+    await expect(manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    )).resolves.toMatchObject({ childStatus: 'SENT', created: false });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    db.close();
+  });
+
+  it('does not automatically resend an ambiguous AI_RUN child', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    const env = makeEnv(db);
+    await seedParent(db, buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage'), {
+      provider: 'telegram', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+    });
+    await seedAiRun(db);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('transport lost'));
+
+    const first = await manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    );
+    const second = await manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    );
+
+    expect(first.childStatus).toBe('AMBIGUOUS');
+    expect(second).toMatchObject({ childStatus: 'AMBIGUOUS', created: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     db.close();
   });
 

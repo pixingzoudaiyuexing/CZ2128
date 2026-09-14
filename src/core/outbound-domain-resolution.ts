@@ -1,13 +1,14 @@
 import { Env } from '../config/env';
 import { AttachmentRow } from './attachments';
-import { Conversation, OutboundOperation } from './domain';
+import { AiRun, Conversation, Message, OutboundOperation } from './domain';
 import { RetryableProcessingError, SafeError } from './errors';
 import { parseTargetEvidence } from './outbound-evidence';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
+import { ensureAiRunProviderResponseRef } from './ai-state';
 
 export interface DomainResolutionResult {
   changed: boolean;
-  domain: 'NONE' | 'ATTACHMENT' | 'CONVERSATION';
+  domain: 'NONE' | 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION';
 }
 
 async function loadOperation(env: Env, operationId: string): Promise<OutboundOperation> {
@@ -287,6 +288,83 @@ async function resolveConversation(
   return auditConflict(env, operation, 'CONVERSATION_OPERATION_INVALID');
 }
 
+function matchingAiMessage(message: Message, run: AiRun): boolean {
+  return message.conversation_id === run.conversation_id &&
+    message.provider === 'ai' &&
+    message.provider_message_ref === run.provider_response_ref &&
+    message.direction === 'OUTBOUND' &&
+    message.actor_role === 'AI' &&
+    message.message_type === 'TEXT' &&
+    message.text_content === run.response_text;
+}
+
+async function resolveAiMessage(
+  env: Env,
+  operation: OutboundOperation
+): Promise<DomainResolutionResult> {
+  if (
+    operation.destination_provider !== 'chatwoot' ||
+    operation.operation_type !== 'SEND_MESSAGE' ||
+    !operation.subject_ref
+  ) {
+    return { changed: false, domain: 'NONE' };
+  }
+  let run = await env.DB.prepare('SELECT * FROM ai_runs WHERE trigger_event_ref = ?')
+    .bind(operation.subject_ref).first<AiRun>();
+  if (
+    !run || run.status !== 'SUCCESS' || run.conversation_id !== operation.conversation_id ||
+    run.response_text === null
+  ) {
+    return auditConflict(env, operation, 'AI_MESSAGE_DURABLE_RESULT_INVALID');
+  }
+  run = await ensureAiRunProviderResponseRef(env, run);
+  if (!run.provider_response_ref) {
+    return auditConflict(env, operation, 'AI_MESSAGE_DURABLE_RESULT_INVALID');
+  }
+  const existing = await env.DB.prepare(
+    `SELECT * FROM messages WHERE provider = 'ai' AND provider_message_ref = ?`
+  ).bind(run.provider_response_ref).first<Message>();
+  if (existing) {
+    if (!matchingAiMessage(existing, run)) {
+      return auditConflict(env, operation, 'AI_MESSAGE_IDENTITY_CONFLICT');
+    }
+    return { changed: false, domain: 'MESSAGE' };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES (?, ?, 'ai', ?, 'OUTBOUND', 'AI', 'TEXT', ?, ?)
+       ON CONFLICT (provider, provider_message_ref) DO NOTHING`
+    ).bind(crypto.randomUUID(), run.conversation_id, run.provider_response_ref, run.response_text, now),
+    auditAfterPreviousChange(env, {
+      id: await stableAuditId(operation.id, 'AI_MESSAGE_REPAIRED'),
+      entityType: 'OUTBOUND_OPERATION',
+      entityId: operation.id,
+      action: 'DOMAIN_STATE_RESOLVED',
+      actorType: 'SYSTEM',
+      actorRef: 'system:outbound-domain-resolution',
+      oldState: 'AI_MESSAGE_MISSING',
+      newState: 'AI_MESSAGE_PRESENT',
+      reasonCode: 'AI_MESSAGE_EFFECTIVE_DELIVERY',
+      createdAt: now
+    })
+  ]);
+  if (d1Changed(results[0]) !== d1Changed(results[1])) {
+    throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', 5);
+  }
+  const current = await env.DB.prepare(
+    `SELECT * FROM messages WHERE provider = 'ai' AND provider_message_ref = ?`
+  ).bind(run.provider_response_ref).first<Message>();
+  if (!current || !matchingAiMessage(current, run)) {
+    return auditConflict(env, operation, 'AI_MESSAGE_IDENTITY_CONFLICT');
+  }
+  return { changed: d1Changed(results[0]), domain: 'MESSAGE' };
+}
+
 export async function resolveOutboundDomainState(
   env: Env,
   operationId: string
@@ -295,7 +373,8 @@ export async function resolveOutboundDomainState(
   if (!isEffectivelyDelivered(operation)) {
     throw new SafeError('OUTBOUND_RECONCILIATION_NOT_ELIGIBLE');
   }
-  if (operation.subject_type === 'MESSAGE' || operation.subject_type === 'AI_RUN' || operation.subject_type === 'CONTROL_ACK') {
+  if (operation.subject_type === 'AI_RUN') return resolveAiMessage(env, operation);
+  if (operation.subject_type === 'MESSAGE' || operation.subject_type === 'CONTROL_ACK') {
     return { changed: false, domain: 'NONE' };
   }
   if (operation.subject_type === 'ATTACHMENT') return resolveAttachment(env, operation);

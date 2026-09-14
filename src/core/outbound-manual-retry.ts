@@ -14,7 +14,7 @@ import {
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
 import { AttachmentRow } from './attachments';
-import { Conversation, Message, OutboundOperation } from './domain';
+import { AiRun, Conversation, Message, OutboundOperation } from './domain';
 import { RetryableProcessingError, SafeError } from './errors';
 import {
   buildChatwootTargetEvidence,
@@ -28,6 +28,7 @@ import {
 import { resolveOutboundDomainState } from './outbound-domain-resolution';
 import { executeOutboundOperation, OutboundAttemptLifecycle } from './outbound-operations';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
+import { ensureAiRunProviderResponseRef } from './ai-state';
 
 export const MANUAL_RETRY_REASONS = ['OPERATOR_ACCEPTS_DUPLICATE_RISK'] as const;
 export type ManualRetryReason = typeof MANUAL_RETRY_REASONS[number];
@@ -111,15 +112,86 @@ function assertChildIdentity(parent: OutboundOperation, child: OutboundOperation
 }
 
 function assertSupportedParent(parent: OutboundOperation): asserts parent is OutboundOperation & {
-  subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION';
+  subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN';
   subject_ref: string;
 } {
   if (
     parent.status !== 'AMBIGUOUS' || !parent.subject_ref || !parent.target_evidence_json ||
-    !['MESSAGE', 'ATTACHMENT', 'CONVERSATION'].includes(parent.subject_type || '')
+    !['MESSAGE', 'ATTACHMENT', 'CONVERSATION', 'AI_RUN'].includes(parent.subject_type || '')
   ) {
     throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
   }
+}
+
+async function prepareAiRunRetry(
+  env: Env,
+  parent: OutboundOperation & { subject_ref: string },
+  conversation: Conversation,
+  childId: string
+): Promise<RetryPlan> {
+  if (parent.operation_type !== 'SEND_MESSAGE') {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
+  }
+  let run = await env.DB.prepare('SELECT * FROM ai_runs WHERE trigger_event_ref = ?')
+    .bind(parent.subject_ref).first<AiRun>();
+  if (
+    !run || run.status !== 'SUCCESS' || run.conversation_id !== parent.conversation_id ||
+    run.response_text === null
+  ) {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
+  }
+  run = await ensureAiRunProviderResponseRef(env, run);
+  if (!run.provider_response_ref) {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
+  }
+
+  if (parent.destination_provider === 'chatwoot') {
+    const targetEvidence = await buildChatwootTargetEvidence(
+      env,
+      conversation.helpdesk_account_ref,
+      conversation.helpdesk_conversation_ref,
+      childId
+    );
+    return {
+      subject: { type: 'AI_RUN', ref: parent.subject_ref },
+      targetEvidence,
+      action: async (operationId, lifecycle) => {
+        const response = await createChatwootMessage(
+          env,
+          conversation.helpdesk_account_ref,
+          conversation.helpdesk_conversation_ref,
+          run.response_text!,
+          operationId,
+          lifecycle
+        );
+        return { providerMessageRef: response.messageId };
+      }
+    };
+  }
+
+  if (parent.destination_provider !== 'telegram' || !conversation.operator_thread_ref) {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_TARGET_CHANGED');
+  }
+  const targetEvidence = buildTelegramTargetEvidence(
+    env,
+    env.BOT_GROUP_ID,
+    conversation.operator_thread_ref,
+    'sendMessage'
+  );
+  return {
+    subject: { type: 'AI_RUN', ref: parent.subject_ref },
+    targetEvidence,
+    action: async (_operationId, lifecycle) => {
+      const response = await sendTelegramMessage(
+        env,
+        env.BOT_GROUP_ID,
+        conversation.operator_thread_ref!,
+        `🤖 AI\n\n${run.response_text!}`,
+        lifecycle
+      );
+      return { providerMessageRef: response.messageId };
+    }
+  };
 }
 
 function canonicalTopicTitle(conversation: Conversation): string {
@@ -339,7 +411,7 @@ function prepareConversationRetry(
 async function prepareRetry(
   env: Env,
   parent: OutboundOperation & {
-    subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION';
+    subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN';
     subject_ref: string;
   },
   childId: string
@@ -349,7 +421,9 @@ async function prepareRetry(
     ? await prepareMessageRetry(env, parent, conversation, childId)
     : parent.subject_type === 'ATTACHMENT'
       ? await prepareAttachmentRetry(env, parent, conversation, childId)
-      : prepareConversationRetry(env, parent, conversation);
+      : parent.subject_type === 'AI_RUN'
+        ? await prepareAiRunRetry(env, parent, conversation, childId)
+        : prepareConversationRetry(env, parent, conversation);
   if (!manualRetryDestinationMatches(parent.target_evidence_json!, plan.targetEvidence)) {
     throw new SafeError('OUTBOUND_MANUAL_RETRY_TARGET_CHANGED');
   }
@@ -359,7 +433,7 @@ async function prepareRetry(
 async function createChildAtomically(
   env: Env,
   parent: OutboundOperation & {
-    subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION';
+    subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN';
     subject_ref: string;
   },
   childId: string,
@@ -443,7 +517,7 @@ async function createChildAtomically(
 
 function creationGuard(
   parent: OutboundOperation & {
-    subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION';
+    subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN';
     subject_ref: string;
   },
   targetEvidence: OutboundTargetEvidence,
@@ -503,6 +577,15 @@ function creationGuard(
        )`
     );
     params.push(provider, providerMessageRef);
+  } else if (parent.subject_type === 'AI_RUN') {
+    clauses.push(
+      `AND EXISTS (
+         SELECT 1 FROM ai_runs ai
+         WHERE ai.trigger_event_ref = outbound_operations.subject_ref
+           AND ai.conversation_id = outbound_operations.conversation_id
+           AND ai.status = 'SUCCESS' AND ai.response_text IS NOT NULL
+       )`
+    );
   } else {
     clauses.push('AND outbound_operations.subject_ref = outbound_operations.conversation_id');
   }

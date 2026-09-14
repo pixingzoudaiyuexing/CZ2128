@@ -146,12 +146,12 @@ Current status:
 - Phase 4A reliability architecture: **COMPLETE / FROZEN**
 - Phase 4B-1 canonical error taxonomy and retry contracts: **COMPLETE**
 - Phase 4B-2A Reliability Persistence Foundation: **COMPLETE / MERGED**
-  - Note: 0005 expands ai_runs durable status capacity. Legacy FAILED is intentionally preserved during the Phase 4B-1 compatibility window. Phase 4B-2C-3 will activate the new AI durable state machine and retire legacy FAILED only after the runtime understands the new terminal/retry states.
+  - Note: 0005 expands `ai_runs` durable status capacity and remains the final migration. Phase 4B-2C-3 now retires legacy `FAILED` from new runtime writes while retaining schema/read compatibility for rolling deployment.
 - Phase 4B-2A: **COMPLETE**
 - Phase 4B-2B: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C-1 Outbound Reconciliation + Target Evidence: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C-2 Manual Retry Child Operations + Domain Resolution: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **NOT STARTED**
+- Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **IMPLEMENTED / IN REVIEW**
 - Phase 4B-3 reliability control-plane exposure: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
@@ -173,6 +173,8 @@ Durable Objects may be introduced here only if measured correctness/ordering pro
 Phase 4B-2C-1 uses the existing `0005` columns and tables. It persists finite subject identity and versioned sanitized target evidence before visible requests, blocks retries when stored and current target identity differ, preserves historical `AMBIGUOUS`, supports effective-SENT interpretation after confirmed/manual delivery, and provides bounded Chatwoot exact-`source_id` positive reconciliation through five supported `after`-cursor pages of up to 100 messages. Positive confirmation requires observed provider-history exhaustion; reaching the bound never proves uniqueness. Zero/multiple matches, invalid or non-advancing cursors and all Telegram ambiguity remain unresolved. The phase also adds internal manual mark-delivered/cancel persistence with atomic reliability audit. It does not implement manual retry children, visible redrive, AI durable retry activation, Admin UI or DLQ consumption.
 
 Phase 4B-2C-2 adds an internal explicit manual-retry service for `MESSAGE`, `ATTACHMENT` and Telegram conversation operations. It atomically links one deterministic child to one ambiguous parent, gives Chatwoot children a new child-scoped `source_id`, reuses the frozen outbound attempt lifecycle, and never automatically resends an ambiguous or final child. Payloads come only from durable messages, unexpired retrievable R2 objects or durable conversation data. Attachment delivery state and Telegram topic mapping/status are repaired by a separate idempotent CAS service after `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or child `SENT`. No external control plane, DLQ consumer, migration `0006` or AI durable retry behavior is included.
+
+Phase 4B-2C-3 activates the durable AI state machine already provisioned by `0005`: three provider-boundary attempts, persisted retry deadlines, terminal exhaustion/final/handoff/stale states, generation-owned result CAS and lazy legacy `FAILED` normalization. A durable `SUCCESS` is reused for outbound continuation and explicit `AI_RUN` manual retry without regenerating text. Effective Chatwoot delivery repairs the AI message domain idempotently; Telegram mirror delivery remains context-neutral. Phase 4B-3, DLQ consumption, load/concurrency acceptance and production readiness remain outside this phase.
 
 ## Phase 5 — Knowledge / RAG
 

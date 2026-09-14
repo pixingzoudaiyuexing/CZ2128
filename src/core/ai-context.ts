@@ -11,6 +11,7 @@ export async function buildAIContext(
   convId: string,
   config: AIConfig
 ): Promise<AIMessage[]> {
+  if (env.hooks?.beforeAiContextBuild) await env.hooks.beforeAiContextBuild(env, convId);
   // D1 rowid is monotonic for these inserts and breaks same-second timestamp ties.
   const messages = await env.DB.prepare(
     `SELECT actor_role, text_content 

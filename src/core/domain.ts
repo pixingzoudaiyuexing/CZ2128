@@ -32,6 +32,32 @@ export interface Message {
   created_at: number;
 }
 
+export type AiRunStatus =
+  | 'PENDING'
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'FAILED_RETRYABLE'
+  | 'RETRY_EXHAUSTED'
+  | 'FAILED_FINAL'
+  | 'CANCELLED_BY_HANDOFF'
+  | 'DISCARDED_STALE';
+
+export interface AiRun {
+  trigger_event_ref: string;
+  conversation_id: string;
+  trigger_message_ref: string;
+  generation_id: string | null;
+  handoff_epoch: number;
+  provider_response_ref: string | null;
+  response_text: string | null;
+  status: AiRunStatus;
+  attempt_count: number;
+  next_retry_at: number | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface EventReceipt {
   source: string;
   source_event_ref: string;

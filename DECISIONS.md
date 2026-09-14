@@ -158,11 +158,13 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Reason:** Partial bot rotation or reuse of topic IDs across groups can admit stale webhooks, duplicate events or misroute operator messages.
 
-## D-016 — Preserve Legacy FAILED in Phase 4B-2A
+## D-016 — Retire legacy AI FAILED from new runtime writes
 
-**Decision:** 0005 migration expands `ai_runs` durable status capacity but intentionally preserves legacy `FAILED` during the Phase 4B-1 compatibility window. 
+**Decision:** New runtime code must never intentionally write `ai_runs.status='FAILED'`. Migration `0005` continues to accept and read `FAILED` temporarily so old Workers and rows remain compatible during rolling deployment. A new Worker that encounters `FAILED` lazily normalizes it with CAS into `FAILED_RETRYABLE`, `RETRY_EXHAUSTED` or `FAILED_FINAL`.
 
-**Reason:** Unchanged Phase 4B-1 runtime treats `FAILED_FINAL` as a generatable state because it doesn't recognize it. Mapping to `FAILED_FINAL` prematurely causes overlapping deployments to blindly retry already-failed requests. Phase 4B-2C-3 will activate the new AI durable state machine and retire legacy `FAILED` only after the runtime understands the new terminal/retry states.
+**Classification:** Retryable finite AI codes remain retryable only while budget remains. Final codes become `FAILED_FINAL`. Unknown/missing legacy errors fail closed as `FAILED_FINAL`. Legacy rows consume at least one attempt, and missing retry timing receives the bounded fallback rather than an immediate provider retry.
+
+**Reason:** Rolling deployment compatibility requires the schema to accept old writes, while the steady-state runtime needs finite retry/final semantics and must not grant old failed requests extra attempts.
 
 ## Phase 4B-2B
 - v2 lease-token compatibility rule applied for robust boundary handoff
@@ -185,13 +187,13 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-1 only. No `0006`, manual retry child, visible redrive, AI durable-state activation, Admin UI or DLQ consumer is introduced.
 
-**Status:** Phase 4B-2C-1 and Phase 4B-2C-2 are COMPLETE / FROZEN. Phase 4B-2C-3 remains NOT STARTED. D-016 legacy AI `FAILED` compatibility remains in force.
+**Status:** Phase 4B-2C-1 and Phase 4B-2C-2 are COMPLETE / FROZEN. Phase 4B-2C-3 is IMPLEMENTED / IN REVIEW. D-016 rolling compatibility remains in force.
 
 ## D-026 — Manual retry creates one deterministic child and repairs domain state separately
 
 **Decision:** An explicit manual retry never reuses or rewrites the original ambiguous operation. It records the finite reason `OPERATOR_ACCEPTS_DUPLICATE_RISK`, preserves the parent as historical `AMBIGUOUS`, atomically transitions the parent to `MANUAL_RETRY_CREATED`, and creates at most one deterministic direct child through `parent_operation_id`. Further retries form an explicit child-to-grandchild chain rather than another child of the original parent.
 
-**Payload and target rule:** Phase 4B-2C-2 supports only `MESSAGE`, `ATTACHMENT` and Telegram `CONVERSATION` subjects. Payloads are reconstructed only from durable message rows, unexpired retrievable private R2 objects, or durable conversation data. The current destination must match the parent's sanitized target evidence. Chatwoot destination comparison ignores only the operation-scoped `sourceId`; the child receives `source_id=cz2128:<child-operation-id>`. `AI_RUN` is deferred to Phase 4B-2C-3 and `CONTROL_ACK` is not manually retried.
+**Payload and target rule:** Phase 4B-2C-2 supports only `MESSAGE`, `ATTACHMENT` and Telegram `CONVERSATION` subjects. Payloads are reconstructed only from durable message rows, unexpired retrievable private R2 objects, or durable conversation data. The current destination must match the parent's sanitized target evidence. Chatwoot destination comparison ignores only the operation-scoped `sourceId`; the child receives `source_id=cz2128:<child-operation-id>`. `AI_RUN` was deferred by this frozen phase and is activated separately by D-027 in Phase 4B-2C-3. `CONTROL_ACK` is not manually retried.
 
 **Domain rule:** Effective delivery through `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or child `SENT` invokes a provider-free, idempotent D1 CAS service. It may repair an ambiguous attachment to `DELIVERED`, populate a missing topic reference, or apply close/reopen status only when persisted target identity still matches. Every Telegram conversation repair first requires the persisted `groupRef` to equal the current effective `BOT_GROUP_ID`; old-group topic evidence cannot repopulate or mutate routing after support-group migration, even when the thread reference or local status appears compatible. Bot generation equality is not required when the support group is unchanged. Conflicting provider references or newer topic mappings fail closed and are never overwritten.
 
@@ -199,4 +201,18 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-2 only. No migration `0006`, external Admin surface, DLQ consumer, `CONFIRMED_NOT_SENT` activation, AI durable retry state machine or legacy AI `FAILED` retirement.
 
-**Status:** Phase 4B-2C-2 is COMPLETE / FROZEN. Phase 4B-2C-3 remains NOT STARTED. Phase 4B-2B and Phase 4B-2C-1 remain COMPLETE / FROZEN.
+**Status:** Phase 4B-2C-2 is COMPLETE / FROZEN. Phase 4B-2C-3 is IMPLEMENTED / IN REVIEW. Phase 4B-2B and Phase 4B-2C-1 remain COMPLETE / FROZEN.
+
+## D-027 — Bound durable AI generation and reuse successful results
+
+**Decision:** One `trigger_event_ref` has a maximum of three `generateChatCompletion()` invocations. Acquiring a conversation generation lease, creating/reclaiming `PENDING`, receiving a Queue event or reaching a retry deadline does not increment `attempt_count`. A generation-owned CAS increments it immediately before the provider function is invoked. A crash after this CAS but before provider fetch may conservatively consume an attempt; no extra migration is added for that narrow window.
+
+**Retry rule:** Retryable AI errors persist `FAILED_RETRYABLE` plus a bounded `next_retry_at` while attempts remain. AI 429 honors bounded provider `Retry-After`; other retryable classes use the canonical fallback. The third retryable failure becomes terminal `RETRY_EXHAUSTED` with `AI_RETRY_EXHAUSTED`. Non-retryable failures become terminal `FAILED_FINAL`. No fourth attempt is allowed.
+
+**Ownership and handoff rule:** The conversation generation lease remains separate from the durable run. Every result transition is owned by `generation_id`. A late old generation cannot overwrite a newer owner or mark it stale. Human/manual handoff wins before visible AI delivery and uses `CANCELLED_BY_HANDOFF`; non-current generation results use `DISCARDED_STALE` only while still owning their row.
+
+**Outbound rule:** Durable `SUCCESS` text is reused and is never regenerated because Chatwoot or Telegram delivery failed. Explicit manual retry supports `AI_RUN` only when the matching run is `SUCCESS`, belongs to the same conversation and has durable response text. Chatwoot children use child-scoped `source_id`; Telegram mirrors reuse the exact `🤖 AI` format. Effective Chatwoot delivery repairs one durable AI message idempotently and fails closed on identity/content conflict.
+
+**Scope:** Phase 4B-2C-3 only. Migration `0006`, Admin reliability UI/commands, DLQ consumption, `CONFIRMED_NOT_SENT`, Durable Objects and Phase 4C load acceptance remain absent.
+
+**Status:** IMPLEMENTED / IN REVIEW. Phase 4B-3 remains NOT STARTED; the overall 4B-2C sequence is not yet marked complete.

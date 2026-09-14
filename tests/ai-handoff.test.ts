@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleQueueEvent } from '../src/queue/consumer';
 import { pauseOperator, pauseManual, resumeManual } from '../src/core/ai-state';
 import { SupportEvent } from '../src/core/events';
@@ -25,6 +25,11 @@ class MockPreparedStatement {
     }
     if (this.query.includes('FROM ai_runs')) {
       const row = this.db.tables.ai_runs.find(item => item.trigger_event_ref === this.boundParams[0]);
+      return row ? { ...row } : null;
+    }
+    if (this.query.includes("FROM messages WHERE provider = 'ai'")) {
+      const row = this.db.tables.messages.find(item =>
+        item.provider === 'ai' && item.provider_message_ref === this.boundParams[0]);
       return row ? { ...row } : null;
     }
     if (this.query.includes('FROM conversations')) {
@@ -249,6 +254,17 @@ if (this.query.includes('INSERT INTO conversations')) {
     } else if (this.query.includes("ai_generation_id = NULL") && this.query.includes("AND ai_generation_id = ?")) {
       const row = this.db.tables.conversations.find(item => item.id === this.boundParams[1] && item.ai_generation_id === this.boundParams[2]);
       if (row) { row.ai_generation_id = null; meta.changes = 1; }
+    } else if (this.query.includes("INSERT INTO messages") && this.query.includes("VALUES (?, ?, 'ai', ?")) {
+      this.db.messageSeq = (this.db.messageSeq || 0) + 1;
+      const [id, conversationId, providerRef, textContent, createdAt] = this.boundParams;
+      if (!this.db.tables.messages.some(row => row.provider === 'ai' && row.provider_message_ref === providerRef)) {
+        this.db.tables.messages.push({
+          id, conversation_id: conversationId, provider: 'ai', provider_message_ref: providerRef,
+          direction: 'OUTBOUND', actor_role: 'AI', message_type: 'TEXT', text_content: textContent,
+          created_at: createdAt, _rowid: this.db.messageSeq
+        });
+        meta.changes = 1;
+      }
     } else if (this.query.includes('INSERT INTO messages')) {
       this.db.messageSeq = (this.db.messageSeq || 0) + 1;
       const provider = this.boundParams[2];
@@ -330,43 +346,130 @@ if (this.query.includes('INSERT INTO conversations')) {
       const row = this.db.tables.outbound_operations.find(item => item.id === this.boundParams[1]);
       if (row?.status === 'SENDING') { row.status = 'AMBIGUOUS'; meta.changes = 1; }
     } else if (this.query.includes("UPDATE ai_runs") && this.query.includes("SET status = 'SUCCESS'")) {
-      const [providerRef, responseText, updatedAt, eventRef, generationId, convId, currentGenerationId, epoch] = this.boundParams;
+      const [providerRef, responseText, updatedAt, eventRef, generationId, epoch, convId, currentGenerationId, currentEpoch] = this.boundParams;
       const run = this.db.tables.ai_runs.find(row =>
-        row.trigger_event_ref === eventRef && row.generation_id === generationId && row.status === 'PENDING');
+        row.trigger_event_ref === eventRef && row.generation_id === generationId &&
+        Number(row.handoff_epoch) === Number(epoch) && row.status === 'PENDING');
       const conv = this.db.tables.conversations.find(row =>
         row.id === convId && row.ai_mode === 'ENABLED' &&
-        row.ai_generation_id === currentGenerationId && Number(row.ai_handoff_epoch) === Number(epoch));
+        row.ai_generation_id === currentGenerationId && Number(row.ai_handoff_epoch) === Number(currentEpoch));
       if (run && conv) {
         run.status = 'SUCCESS'; run.provider_response_ref = providerRef;
         run.response_text = responseText; run.updated_at = updatedAt; meta.changes = 1;
       }
+    } else if (this.query.includes('UPDATE ai_runs') && this.query.includes('attempt_count = attempt_count + 1')) {
+      const [, eventRef, convId, generationId, epoch] = this.boundParams;
+      const run = this.db.tables.ai_runs.find(row =>
+        row.trigger_event_ref === eventRef && row.conversation_id === convId &&
+        row.generation_id === generationId && Number(row.handoff_epoch) === Number(epoch) &&
+        row.status === 'PENDING' && Number(row.attempt_count || 0) < 3);
+      const conv = this.db.tables.conversations.find(row =>
+        row.id === convId && row.ai_mode === 'ENABLED' && row.ai_generation_id === generationId &&
+        Number(row.ai_handoff_epoch) === Number(epoch));
+      if (run && conv) {
+        run.attempt_count = Number(run.attempt_count || 0) + 1;
+        meta.changes = 1;
+      }
+    } else if (this.query.includes('UPDATE ai_runs') && this.query.includes("THEN 'RETRY_EXHAUSTED'")) {
+      const error = this.boundParams[4];
+      const eventRef = this.boundParams[6];
+      const generationId = this.boundParams[7];
+      const epoch = this.boundParams[8];
+      const convId = this.boundParams[9];
+      const run = this.db.tables.ai_runs.find(row =>
+        row.trigger_event_ref === eventRef && row.generation_id === generationId &&
+        Number(row.handoff_epoch) === Number(epoch) && row.status === 'PENDING');
+      const conv = this.db.tables.conversations.find(row =>
+        row.id === convId && row.ai_mode === 'ENABLED' && row.ai_generation_id === generationId &&
+        Number(row.ai_handoff_epoch) === Number(epoch));
+      if (run && conv) {
+        const exhausted = Number(run.attempt_count || 0) >= 3;
+        run.status = exhausted ? 'RETRY_EXHAUSTED' : 'FAILED_RETRYABLE';
+        run.next_retry_at = exhausted ? null : this.boundParams[2];
+        run.last_error = exhausted ? 'AI_RETRY_EXHAUSTED' : error;
+        meta.changes = 1;
+      }
+    } else if (this.query.includes('UPDATE ai_runs') && this.query.includes("SET status = 'FAILED_FINAL'")) {
+      const [error, , eventRef, generationId, epoch, convId] = this.boundParams;
+      const run = this.db.tables.ai_runs.find(row =>
+        row.trigger_event_ref === eventRef && row.generation_id === generationId &&
+        Number(row.handoff_epoch) === Number(epoch) && row.status === 'PENDING');
+      const conv = this.db.tables.conversations.find(row =>
+        row.id === convId && row.ai_mode === 'ENABLED' && row.ai_generation_id === generationId &&
+        Number(row.ai_handoff_epoch) === Number(epoch));
+      if (run && conv) { run.status = 'FAILED_FINAL'; run.last_error = error; run.next_retry_at = null; meta.changes = 1; }
+    } else if (this.query.includes('UPDATE ai_runs') && this.query.includes("SET status = 'RETRY_EXHAUSTED'")) {
+      const [, eventRef] = this.boundParams;
+      const run = this.db.tables.ai_runs.find(row => row.trigger_event_ref === eventRef && Number(row.attempt_count || 0) >= 3);
+      if (run && ['PENDING', 'FAILED_RETRYABLE'].includes(run.status)) {
+        run.status = 'RETRY_EXHAUSTED'; run.last_error = 'AI_RETRY_EXHAUSTED'; run.next_retry_at = null; meta.changes = 1;
+      }
+    } else if (this.query.includes('UPDATE ai_runs') && this.query.includes("SET status = 'CANCELLED_BY_HANDOFF'")) {
+      const eventRef = this.boundParams[1];
+      const generationId = this.boundParams[2];
+      const run = this.db.tables.ai_runs.find(row => row.trigger_event_ref === eventRef);
+      if (run && run.generation_id === generationId && ['PENDING', 'SUCCESS'].includes(run.status)) {
+        run.status = 'CANCELLED_BY_HANDOFF'; meta.changes = 1;
+      }
+    } else if (this.query.includes('UPDATE ai_runs') && this.query.includes("SET status = 'DISCARDED_STALE'")) {
+      const eventRef = this.boundParams[1];
+      const generationId = this.boundParams[2];
+      const run = this.db.tables.ai_runs.find(row =>
+        row.trigger_event_ref === eventRef && row.generation_id === generationId && row.status === 'PENDING');
+      if (run) { run.status = 'DISCARDED_STALE'; meta.changes = 1; }
     } else if (this.query.includes('INSERT INTO ai_runs')) {
       const existing = this.db.tables.ai_runs.find(row => row.trigger_event_ref === this.boundParams[0]);
-      if (existing) {
-        const updateStatus = this.boundParams[11];
-        const updateGenerationId = this.boundParams[15];
-        if (
-          !['CANCELLED_BY_HANDOFF', 'DISCARDED_STALE'].includes(existing.status) &&
-          (updateStatus === 'PENDING' || existing.generation_id === updateGenerationId)
-        ) {
-          existing.status = this.boundParams[11]; existing.provider_response_ref = this.boundParams[12]; existing.response_text = this.boundParams[13]; existing.generation_id = this.boundParams[15]; existing.handoff_epoch = this.boundParams[16];
-          meta.changes = 1;
-        }
-      } else {
+      const cancelled = this.query.includes("'CANCELLED_BY_HANDOFF'");
+      const activeConversation = cancelled ? null : this.db.tables.conversations.find(row =>
+        row.id === this.boundParams[7] && row.ai_mode === 'ENABLED' &&
+        row.ai_generation_id === this.boundParams[8] &&
+        Number(row.ai_handoff_epoch) === Number(this.boundParams[9]));
+      if (!existing && (cancelled || activeConversation)) {
         this.db.tables.ai_runs.push({
           trigger_event_ref: this.boundParams[0], conversation_id: this.boundParams[1],
           trigger_message_ref: this.boundParams[2], generation_id: this.boundParams[3],
-          handoff_epoch: this.boundParams[4], provider_response_ref: this.boundParams[5],
-          response_text: this.boundParams[6], status: this.boundParams[7]
+          handoff_epoch: this.boundParams[4], provider_response_ref: null,
+          response_text: null, status: cancelled ? 'CANCELLED_BY_HANDOFF' : 'PENDING',
+          attempt_count: 0, next_retry_at: null, last_error: null
         });
         meta.changes = 1;
+      } else if (cancelled) {
+        if (['PENDING', 'FAILED_RETRYABLE'].includes(existing.status)) {
+          existing.status = 'CANCELLED_BY_HANDOFF'; meta.changes = 1;
+        }
+      } else if (activeConversation &&
+        existing.conversation_id === this.boundParams[1] &&
+        existing.trigger_message_ref === this.boundParams[2] &&
+        Number(existing.attempt_count || 0) < 3 &&
+        (existing.status === 'PENDING' ||
+          (existing.status === 'FAILED_RETRYABLE' && Number(existing.next_retry_at) <= Number(this.boundParams[12])))
+      ) {
+        existing.generation_id = this.boundParams[3]; existing.handoff_epoch = this.boundParams[4];
+        existing.status = 'PENDING'; existing.provider_response_ref = null; existing.response_text = null;
+        existing.next_retry_at = null; existing.last_error = null; meta.changes = 1;
       }
+    } else if (this.query.includes('INSERT INTO reliability_audit') && this.db.lastChanges === 1) {
+      meta.changes = 1;
     }
     return { meta };
   }
 }
 
-class MockD1 { tables: Record<string, any[]> = { conversations: [], messages: [], event_receipts: [], outbound_operations: [], ai_runs: [] }; messageSeq = 0; prepare(query: string) { return new MockPreparedStatement(this, query); } }
+class MockD1 {
+  tables: Record<string, any[]> = { conversations: [], messages: [], event_receipts: [], outbound_operations: [], ai_runs: [], reliability_audit: [] };
+  messageSeq = 0;
+  lastChanges = 0;
+  prepare(query: string) { return new MockPreparedStatement(this, query); }
+  async batch(statements: MockPreparedStatement[]) {
+    const results = [];
+    for (const statement of statements) {
+      const result = await statement.run();
+      this.lastChanges = result.meta.changes;
+      results.push(result);
+    }
+    return results;
+  }
+}
 
 describe('Phase 2 AI Handoff', () => {
   let env: any;
@@ -395,6 +498,8 @@ describe('Phase 2 AI Handoff', () => {
       return Promise.resolve({ ok: true, json: async () => ({ id: 100 }) });
     });
   });
+
+  afterEach(() => vi.useRealTimers());
 
   function resolveAi(content: string) {
     if (fetchResolver) {
@@ -518,7 +623,7 @@ describe('Phase 2 AI Handoff', () => {
     resolveAi('Resp');
     try { await p; } catch(e){} 
     
-    expect(env.DB.tables.ai_runs[0].status).toBe('DISCARDED_STALE');
+    expect(env.DB.tables.ai_runs[0].status).toBe('CANCELLED_BY_HANDOFF');
     expect(counts.chatwoot).toBe(0);
     expect(counts.telegram).toBe(0);
   });
@@ -946,6 +1051,8 @@ describe('Phase 2 AI Handoff', () => {
   });
 
   it('assigns a new generation id to a retry after AI provider failure', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T00:00:00Z'));
     env.DB.tables.conversations.push({
       id: 'c25', ai_mode: 'ENABLED', ai_handoff_epoch: 0,
       helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
@@ -968,6 +1075,9 @@ describe('Phase 2 AI Handoff', () => {
       }
       return { ok: true, json: async () => ({ id: 250 }) } as Response;
     });
+    await expect(handleQueueEvent(event, env)).rejects.toThrow('AI_PROVIDER_5XX');
+    expect(counts.ai).toBe(0);
+    vi.advanceTimersByTime(6_000);
     await handleQueueEvent(event, env);
 
     expect(env.DB.tables.ai_runs[0].generation_id).not.toBe(firstGenerationId);
@@ -1066,9 +1176,9 @@ describe('Phase 2 AI Handoff', () => {
     }, env);
     await new Promise(resolve => setTimeout(resolve, 10));
     resolveAi('Stale answer');
-    await expect(processing).rejects.toThrow('DISCARDED_STALE');
+    await processing;
 
-    expect(env.DB.tables.ai_runs[0].status).toBe('DISCARDED_STALE');
+    expect(env.DB.tables.ai_runs[0].status).toBe('CANCELLED_BY_HANDOFF');
     expect(counts.chatwoot).toBe(0);
     expect(counts.telegram).toBe(0);
   });
