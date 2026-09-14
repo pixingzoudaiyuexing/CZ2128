@@ -12,7 +12,7 @@
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
 - **Phase 4B-2A**: COMPLETE
-- **Phase 4B-2B**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-2B**: COMPLETE / MERGED
 - **Phase 4B-2C**: NOT STARTED
 - **Final HEAD / CI**: 以 Phase 3.5 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 

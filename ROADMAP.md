@@ -148,7 +148,7 @@ Current status:
 - Phase 4B-2A Reliability Persistence Foundation: **COMPLETE / MERGED**
   - Note: 0005 expands ai_runs durable status capacity. Legacy FAILED is intentionally preserved during the Phase 4B-1 compatibility window. Phase 4B-2C will activate the new AI durable state machine and retire legacy FAILED only after the runtime understands the new terminal/retry states.
 - Phase 4B-2A: **COMPLETE**
-- Phase 4B-2B: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-2B: **COMPLETE / MERGED**
 - Phase 4B-2C: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
