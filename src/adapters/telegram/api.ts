@@ -2,7 +2,10 @@ import { Env } from '../../config/env';
 import { ProviderDeliveryError } from '../../core/errors';
 
 async function callTelegram(env: Env, method: string, body: Record<string, unknown>): Promise<any> {
-  if (env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE) {
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
+  ) {
     throw new ProviderDeliveryError('FINAL', 'TELEGRAM_RUNTIME_CONFIG_ERROR');
   }
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;

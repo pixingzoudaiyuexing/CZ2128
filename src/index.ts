@@ -208,13 +208,15 @@ export default {
       if (!hasProviderId(telegramMessage.message_id)) {
         return new Response('Ignored', { status: 200 });
       }
+      const supportProfileVersion = effectiveEnv.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;
 
       await env.QUEUE.send({
         version: 1,
         source: 'telegram',
         type: 'message_created',
-        eventId: `tg_${updateId}`,
+        eventId: `tg:${supportProfileVersion}:${updateId}`,
         payload: {
+          supportProfileVersion,
           updateRef: updateId,
           messageRef: String(telegramMessage.message_id),
           threadRef: String(telegramMessage.message_thread_id),

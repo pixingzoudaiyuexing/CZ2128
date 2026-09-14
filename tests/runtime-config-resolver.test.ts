@@ -12,6 +12,8 @@ import { resolveEffectiveEnv } from '../src/runtime-config/resolver';
 import { RuntimeConfigRow } from '../src/runtime-config/types';
 import { restoreEnvOverride, setPlainOverride } from '../src/runtime-config/service';
 import { RuntimeDb, masterKey } from './helpers/runtime-db';
+import Worker from '../src/index';
+import { processAiTrigger } from '../src/queue/ai-handler';
 
 function env(db = new RuntimeDb()) {
   return {
@@ -78,15 +80,51 @@ describe('runtime config resolver', () => {
     expect(effective.runtimeConfigSnapshot?.health).toBe('ERROR');
   });
 
-  it('keeps env compatibility and reports health when the runtime table cannot be read', async () => {
+  it('fails closed for all runtime-controlled providers when the runtime table cannot be read', async () => {
     const testEnv = env();
     testEnv.DB = { prepare: () => { throw new Error('D1 unavailable'); } };
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
     const effective = await resolveEffectiveEnv(testEnv);
-    expect(effective.AI_MODEL).toBe('env-model');
-    expect(effective.TELEGRAM_BOT_TOKEN).toBe('env-tg-token');
+    expect(effective.AI_BASE_URL).toBe('');
+    expect(effective.AI_MODEL).toBe('');
+    expect(effective.AI_API_KEY).toBe('');
+    expect(effective.TELEGRAM_BOT_TOKEN).toBe('');
+    expect(effective.TELEGRAM_WEBHOOK_SECRET).toBe('');
+    expect(effective.TELEGRAM_SECRET_PATH).toBe('');
+    expect(effective.BOT_GROUP_ID).toBe('');
+    expect(effective.CHATWOOT_API_URL).toBe('');
+    expect(effective.CHATWOOT_API_TOKEN).toBe('');
+    expect(getAIConfig(effective).enabled).toBe(false);
+    await processAiTrigger({
+      version: 1, source: 'internal', type: 'ai_trigger', eventId: 'read-failure',
+      payload: { convId: 'conv', messageId: 'message' }
+    }, effective);
+    await expect(sendTelegramMessage(effective, '-1001', null, 'test')).rejects.toMatchObject({
+      message: 'TELEGRAM_RUNTIME_CONFIG_ERROR'
+    });
+    await expect(createChatwootMessage(effective, '1', '2', 'test', 'op')).rejects.toMatchObject({
+      message: 'CHATWOOT_RUNTIME_CONFIG_ERROR'
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(effective.runtimeConfigSnapshot).toMatchObject({
       health: 'ERROR', errors: { RUNTIME_CONFIG: 'RUNTIME_CONFIG_READ_FAILED' }
     });
+  });
+
+  it('rejects the stale env Support webhook when runtime config cannot be read', async () => {
+    const testEnv = env();
+    testEnv.DB = { prepare: () => { throw new Error('D1 unavailable'); } };
+    testEnv.QUEUE = { send: vi.fn() };
+    const response = await Worker.fetch(new Request('https://worker.example/webhooks/telegram/env-path', {
+      method: 'POST',
+      headers: { 'X-Telegram-Bot-Api-Secret-Token': 'env-secret' },
+      body: JSON.stringify({
+        update_id: 1,
+        message: { message_id: 1, message_thread_id: 7, chat: { id: -1001 }, from: { id: 1, is_bot: false }, text: 'late' }
+      })
+    }), testEnv, {} as any);
+    expect(response.status).toBe(500);
+    expect(testEnv.QUEUE.send).not.toHaveBeenCalled();
   });
 
   it('does not expose env Telegram or Chatwoot credentials after malformed secret overrides', async () => {

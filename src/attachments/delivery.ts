@@ -61,6 +61,7 @@ export async function deliverAttachmentToChatwoot(
   bytes: ArrayBuffer
 ): Promise<{ providerMessageRef: string }> {
   if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
   ) throw new ProviderDeliveryError('FINAL', 'CHATWOOT_RUNTIME_CONFIG_ERROR');
@@ -109,7 +110,10 @@ export async function deliverAttachmentToTelegram(
   threadRef: string,
   bytes: ArrayBuffer
 ): Promise<{ providerMessageRef: string }> {
-  if (env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE) {
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
+  ) {
     throw new ProviderDeliveryError('FINAL', 'TELEGRAM_RUNTIME_CONFIG_ERROR');
   }
   const target = telegramMethod(row);

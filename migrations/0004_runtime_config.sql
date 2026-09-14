@@ -1,3 +1,6 @@
+ALTER TABLE conversations ADD COLUMN last_telegram_operator_profile_version INTEGER NOT NULL DEFAULT 0
+    CHECK (last_telegram_operator_profile_version >= 0);
+
 CREATE TABLE runtime_config (
     key TEXT PRIMARY KEY,
     value_kind TEXT NOT NULL CHECK (value_kind IN ('PLAIN', 'SECRET')),

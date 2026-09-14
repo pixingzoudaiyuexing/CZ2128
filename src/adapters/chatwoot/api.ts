@@ -9,6 +9,7 @@ export async function createChatwootMessage(
   outboundOperationId: string
 ): Promise<{ messageId: string }> {
   if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
   ) {

@@ -14,6 +14,7 @@ export interface Conversation {
   ai_generation_message_id: string | null;
   ai_handoff_epoch: number;
   last_telegram_operator_update_id: number | null;
+  last_telegram_operator_profile_version: number;
   created_at: number;
   updated_at: number;
   version: number;

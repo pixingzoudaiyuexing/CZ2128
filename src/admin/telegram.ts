@@ -97,7 +97,8 @@ export async function setSupportWebhook(
   await telegramCall(token, 'setWebhook', {
     url,
     secret_token: secretToken,
-    allowed_updates: ['message', 'edited_message']
+    allowed_updates: ['message', 'edited_message'],
+    drop_pending_updates: true
   });
 }
 

@@ -80,14 +80,19 @@ class MockPreparedStatement {
       }
     } else if (this.query.includes('last_telegram_operator_update_id = ?')) {
       const isHumanReply = this.query.includes('last_operator_reply_at = ?');
-      const [operatorReplyAt, updateId, updatedAt, id, expectedUpdateId] = isHumanReply
+      const [operatorReplyAt, profileVersion, updateId, updatedAt, id, expectedProfileVersion, _sameProfileVersion, expectedUpdateId] = isHumanReply
         ? this.boundParams
         : [undefined, ...this.boundParams];
       const row = this.db.tables.conversations.find(item => item.id === id);
+      const storedProfileVersion = Number(row?.last_telegram_operator_profile_version || 0);
       if (
         row &&
-        (row.last_telegram_operator_update_id === undefined || row.last_telegram_operator_update_id === null ||
-          Number(row.last_telegram_operator_update_id) < Number(expectedUpdateId))
+        (
+          storedProfileVersion < Number(expectedProfileVersion) ||
+          (storedProfileVersion === Number(expectedProfileVersion) &&
+            (row.last_telegram_operator_update_id === undefined || row.last_telegram_operator_update_id === null ||
+              Number(row.last_telegram_operator_update_id) < Number(expectedUpdateId)))
+        )
       ) {
         if (isHumanReply) {
           if (row.ai_mode !== 'PAUSED_MANUAL') row.ai_mode = 'PAUSED_OPERATOR';
@@ -102,6 +107,7 @@ class MockPreparedStatement {
         row.ai_generation_id = null;
         row.ai_generation_started_at = null;
         row.ai_generation_message_id = null;
+        row.last_telegram_operator_profile_version = profileVersion;
         row.last_telegram_operator_update_id = updateId;
         row.updated_at = updatedAt;
         meta.changes = 1;
@@ -727,8 +733,8 @@ describe('Phase 2 AI Handoff', () => {
       version: 1,
       source: 'telegram',
       type: 'message_created',
-      eventId: 'tg_20',
-      payload: { updateRef: '20', messageRef: '20', threadRef: '20', content: 'Human reply' }
+      eventId: 'tg:0:20',
+      payload: { supportProfileVersion: 0, updateRef: '20', messageRef: '20', threadRef: '20', content: 'Human reply' }
     }, env);
 
     const conv = env.DB.tables.conversations[0];
@@ -749,20 +755,20 @@ describe('Phase 2 AI Handoff', () => {
       version: 1,
       source: 'telegram',
       type: 'message_created',
-      eventId: 'tg_21_off',
-      payload: { updateRef: '21', messageRef: '21', threadRef: '21', content: '/ai_off' }
+      eventId: 'tg:0:21-off',
+      payload: { supportProfileVersion: 0, updateRef: '21', messageRef: '21', threadRef: '21', content: '/ai_off' }
     }, env);
     await handleQueueEvent({
       version: 1,
       source: 'telegram',
       type: 'message_created',
-      eventId: 'tg_22_on',
-      payload: { updateRef: '22', messageRef: '22', threadRef: '21', content: '/ai_on' }
+      eventId: 'tg:0:22-on',
+      payload: { supportProfileVersion: 0, updateRef: '22', messageRef: '22', threadRef: '21', content: '/ai_on' }
     }, env);
 
     expect(env.DB.tables.conversations[0].ai_mode).toBe('ENABLED');
-    expect(env.DB.tables.outbound_operations.find((row: any) => row.id === 'ai_off_ack:21')?.status).toBe('SENT');
-    expect(env.DB.tables.outbound_operations.find((row: any) => row.id === 'ai_on_ack:22')?.status).toBe('SENT');
+    expect(env.DB.tables.outbound_operations.find((row: any) => row.id === 'ai_off_ack:0:21')?.status).toBe('SENT');
+    expect(env.DB.tables.outbound_operations.find((row: any) => row.id === 'ai_on_ack:0:22')?.status).toBe('SENT');
     expect(counts.telegram).toBe(2);
   });
 
@@ -901,8 +907,8 @@ describe('Phase 2 AI Handoff', () => {
       version: 1,
       source: 'telegram',
       type: 'message_created',
-      eventId: 'tg_27',
-      payload: { updateRef: '27', messageRef: '27', threadRef: '27', content: 'Human recovery' }
+      eventId: 'tg:0:27',
+      payload: { supportProfileVersion: 0, updateRef: '27', messageRef: '27', threadRef: '27', content: 'Human recovery' }
     }, env);
 
     expect(counts.chatwoot).toBe(1);
@@ -969,11 +975,11 @@ describe('Phase 2 AI Handoff', () => {
     });
     const off = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_30', payload: { updateRef: '30', messageRef: '30', threadRef: '30', content: '/ai_off' }
+      eventId: 'tg:0:30', payload: { supportProfileVersion: 0, updateRef: '30', messageRef: '30', threadRef: '30', content: '/ai_off' }
     };
     const on = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_31', payload: { updateRef: '31', messageRef: '31', threadRef: '30', content: '/ai_on' }
+      eventId: 'tg:0:31', payload: { supportProfileVersion: 0, updateRef: '31', messageRef: '31', threadRef: '30', content: '/ai_on' }
     };
 
     await expect(handleQueueEvent(off, env)).rejects.toBeInstanceOf(RetryableProcessingError);
@@ -992,11 +998,11 @@ describe('Phase 2 AI Handoff', () => {
     });
     const aiOn = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_100', payload: { updateRef: '100', messageRef: '100', threadRef: '31', content: '/ai_on' }
+      eventId: 'tg:0:100', payload: { supportProfileVersion: 0, updateRef: '100', messageRef: '100', threadRef: '31', content: '/ai_on' }
     };
     const human = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_101', payload: { updateRef: '101', messageRef: '101', threadRef: '31', content: 'Human reply' }
+      eventId: 'tg:0:101', payload: { supportProfileVersion: 0, updateRef: '101', messageRef: '101', threadRef: '31', content: 'Human reply' }
     };
 
     await handleQueueEvent(human, env);
@@ -1017,11 +1023,11 @@ describe('Phase 2 AI Handoff', () => {
     });
     const human = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_100_human', payload: { updateRef: '100', messageRef: '100', threadRef: '32', content: 'Earlier human reply' }
+      eventId: 'tg:0:100-human', payload: { supportProfileVersion: 0, updateRef: '100', messageRef: '100', threadRef: '32', content: 'Earlier human reply' }
     };
     const aiOn = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_101_on', payload: { updateRef: '101', messageRef: '101', threadRef: '32', content: '/ai_on' }
+      eventId: 'tg:0:101-on', payload: { supportProfileVersion: 0, updateRef: '101', messageRef: '101', threadRef: '32', content: '/ai_on' }
     };
 
     await handleQueueEvent(aiOn, env);
@@ -1043,13 +1049,13 @@ describe('Phase 2 AI Handoff', () => {
       helpdesk_account_ref: '1', helpdesk_conversation_ref: '2'
     });
     await handleQueueEvent({
-      version: 1, source: 'telegram', type: 'message_created', eventId: 'tg_100_off',
-      payload: { updateRef: '100', messageRef: '100', threadRef: '33', content: '/ai_off' }
+      version: 1, source: 'telegram', type: 'message_created', eventId: 'tg:0:100-off',
+      payload: { supportProfileVersion: 0, updateRef: '100', messageRef: '100', threadRef: '33', content: '/ai_off' }
     }, env);
     env.DB.tables.conversations[0].ai_generation_id = 'generation-after-command';
     await handleQueueEvent({
-      version: 1, source: 'telegram', type: 'message_created', eventId: 'tg_101_human',
-      payload: { updateRef: '101', messageRef: '101', threadRef: '33', content: 'Manual takeover reply' }
+      version: 1, source: 'telegram', type: 'message_created', eventId: 'tg:0:101-human',
+      payload: { supportProfileVersion: 0, updateRef: '101', messageRef: '101', threadRef: '33', content: 'Manual takeover reply' }
     }, env);
 
     const conv = env.DB.tables.conversations[0];
@@ -1069,11 +1075,11 @@ describe('Phase 2 AI Handoff', () => {
     });
     const human = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_200', payload: { updateRef: '200', messageRef: '200', threadRef: '34', content: 'Human once' }
+      eventId: 'tg:0:200', payload: { supportProfileVersion: 0, updateRef: '200', messageRef: '200', threadRef: '34', content: 'Human once' }
     };
     const aiOff = {
       version: 1 as const, source: 'telegram' as const, type: 'message_created' as const,
-      eventId: 'tg_201', payload: { updateRef: '201', messageRef: '201', threadRef: '34', content: '/ai_off' }
+      eventId: 'tg:0:201', payload: { supportProfileVersion: 0, updateRef: '201', messageRef: '201', threadRef: '34', content: '/ai_off' }
     };
 
     await handleQueueEvent(human, env);

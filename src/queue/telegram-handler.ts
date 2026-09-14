@@ -11,6 +11,8 @@ import { enqueueAttachmentJobs } from '../core/attachment-repository';
 
 export async function processTelegramEvent(event: TelegramMessageEvent, env: Env): Promise<void> {
   const payload = event.payload;
+  const supportProfileVersion = payload.supportProfileVersion ?? 0;
+  const scopedMessageRef = `${supportProfileVersion}:${payload.messageRef}`;
   const content = payload.content || '';
   const conv = await env.DB.prepare(
     'SELECT * FROM conversations WHERE operator_channel = ? AND operator_thread_ref = ?'
@@ -21,14 +23,15 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
   const command = content.trim();
   const attachments = payload.attachments || [];
   if (attachments.length === 0 && (command === '/ai_off' || command === '/ai_on')) {
-    const operationId = `${command === '/ai_off' ? 'ai_off' : 'ai_on'}_ack:${payload.messageRef}`;
+    const operationId = `${command === '/ai_off' ? 'ai_off' : 'ai_on'}_ack:${scopedMessageRef}`;
     const commandState = await applyTelegramOperatorAction(
       env,
       conv.id,
+      supportProfileVersion,
       payload.updateRef,
       command === '/ai_off' ? 'AI_OFF' : 'AI_ON'
     );
-    if (commandState === 'STALE') {
+    if (commandState === 'STALE' || commandState === 'STALE_PROFILE') {
       await markOutboundOperationFinal(env, operationId, 'STALE_AI_COMMAND');
       return;
     }
@@ -52,13 +55,16 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     return;
   }
 
-  await applyTelegramOperatorAction(env, conv.id, payload.updateRef, 'HUMAN_REPLY');
+  const humanAction = await applyTelegramOperatorAction(
+    env, conv.id, supportProfileVersion, payload.updateRef, 'HUMAN_REPLY'
+  );
+  if (humanAction === 'STALE_PROFILE') return;
   if (content) {
     await insertMessage(
       env,
       conv.id,
       'telegram',
-      payload.messageRef,
+      scopedMessageRef,
       'INBOUND',
       'OPERATOR',
       'TEXT',
@@ -80,7 +86,7 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
         );
         return { providerMessageRef: res.messageId };
       },
-      `send_chatwoot_${payload.messageRef}`
+      `send_chatwoot_${scopedMessageRef}`
     );
   }
 
@@ -89,7 +95,7 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     getAttachmentConfig(env),
     conv.id,
     'telegram',
-    payload.messageRef,
+    scopedMessageRef,
     attachments
   );
 }

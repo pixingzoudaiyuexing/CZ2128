@@ -8,6 +8,7 @@ describe('runtime config migration contract', () => {
     for (const table of ['runtime_config', 'runtime_config_history', 'admin_sessions', 'admin_update_receipts']) {
       expect(migration).toContain(`CREATE TABLE ${table}`);
     }
+    expect(migration).toContain('last_telegram_operator_profile_version INTEGER NOT NULL DEFAULT 0');
   });
 
   it('enforces mutually exclusive plain and encrypted secret storage', () => {

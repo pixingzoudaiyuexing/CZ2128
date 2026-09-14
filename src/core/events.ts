@@ -34,6 +34,7 @@ export interface TelegramMessageEvent extends QueueEventBase {
   source: 'telegram';
   type: 'message_created';
   payload: {
+    supportProfileVersion: number;
     updateRef: string;
     messageRef: string;
     threadRef: string;

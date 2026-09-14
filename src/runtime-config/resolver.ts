@@ -62,13 +62,26 @@ function fallbackSnapshot(env: Env, error?: string): RuntimeConfigSnapshot {
   };
 }
 
+function failedSnapshot(error: string): RuntimeConfigSnapshot {
+  const sources = {} as Record<RuntimeConfigKey, RuntimeValueSource>;
+  for (const key of RUNTIME_CONFIG_KEYS) sources[key] = 'D1';
+  return {
+    values: {},
+    sources,
+    versions: {},
+    errors: { RUNTIME_CONFIG: error },
+    overrideCount: 0,
+    health: 'ERROR'
+  };
+}
+
 export async function loadRuntimeConfigSnapshot(env: Env): Promise<RuntimeConfigSnapshot> {
   const snapshot = fallbackSnapshot(env);
   let rows;
   try {
     rows = await listRuntimeConfig(env);
   } catch {
-    return fallbackSnapshot(env, 'RUNTIME_CONFIG_READ_FAILED');
+    return failedSnapshot('RUNTIME_CONFIG_READ_FAILED');
   }
 
   snapshot.overrideCount = rows.length;

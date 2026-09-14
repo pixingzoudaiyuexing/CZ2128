@@ -335,6 +335,9 @@ describe('Telegram admin control plane', () => {
     expect(testEnv.DB.history.filter((row: any) => row.key === 'TELEGRAM_SUPPORT_PROFILE')).toHaveLength(1);
     expect(vi.mocked(globalThis.fetch).mock.calls
       .filter(call => String(call[0]).includes(`${newToken}/setWebhook`))).toHaveLength(1);
+    const setWebhookCall = vi.mocked(globalThis.fetch).mock.calls
+      .find(call => String(call[0]).includes(`${newToken}/setWebhook`));
+    expect(JSON.parse(String(setWebhookCall?.[1]?.body))).toMatchObject({ drop_pending_updates: true });
 
     testEnv.QUEUE = { send: vi.fn(async () => undefined) };
     const update = {
@@ -351,6 +354,10 @@ describe('Telegram admin control plane', () => {
     expect(oldResponse.status).toBe(401);
     expect(newResponse.status).toBe(200);
     expect(testEnv.QUEUE.send).toHaveBeenCalledTimes(1);
+    expect(testEnv.QUEUE.send.mock.calls[0][0]).toMatchObject({
+      eventId: 'tg:1:500',
+      payload: { supportProfileVersion: 1 }
+    });
   });
 
   it('requires confirmation and atomically resets topics for group migration', async () => {
