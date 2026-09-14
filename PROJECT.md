@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2A In Review**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2A Complete**
 
 ## Purpose
 

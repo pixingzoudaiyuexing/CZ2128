@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2A in review**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2A complete**
 
 ## Phase 0 — Architecture Freeze
 
@@ -145,7 +145,7 @@ Current status:
 
 - Phase 4A reliability architecture: **COMPLETE / FROZEN**
 - Phase 4B-1 canonical error taxonomy and retry contracts: **COMPLETE**
-- Phase 4B-2A Reliability Persistence Foundation: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-2A Reliability Persistence Foundation: **COMPLETE / MERGED**
   - Note: 0005 expands ai_runs durable status capacity. Legacy FAILED is intentionally preserved during the Phase 4B-1 compatibility window. Phase 4B-2C will activate the new AI durable state machine and retire legacy FAILED only after the runtime understands the new terminal/retry states.
 - Phase 4B-2B and later implementation milestones: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
