@@ -1,3 +1,6 @@
+import { SafeErrorCode } from '../core/error-taxonomy';
+import { safeErrorMetadata } from '../core/errors';
+
 export interface LogContext {
   trace_id?: string;
   source?: string;
@@ -14,10 +17,12 @@ export interface LogContext {
   destination_provider?: string;
   size_bytes?: number;
   mime_type?: string;
-}
-
-function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : 'UnknownError';
+  error_code?: SafeErrorCode;
+  provider?: string;
+  stage?: string;
+  http_status?: number;
+  retry_after_seconds?: number;
+  retry_exhausted?: boolean;
 }
 
 export const logger = {
@@ -28,7 +33,7 @@ export const logger = {
     console.error(JSON.stringify({
       level: 'error',
       msg,
-      error: errorName(error),
+      ...safeErrorMetadata(error),
       ...context
     }));
   },

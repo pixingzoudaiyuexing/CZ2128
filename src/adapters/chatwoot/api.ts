@@ -1,5 +1,11 @@
 import { Env } from '../../config/env';
 import { ProviderDeliveryError } from '../../core/errors';
+import {
+  invalidVisibleSuccessError,
+  visibleHttpDeliveryError,
+  visibleTransportDeliveryError
+} from '../../core/provider-retry';
+import { retryAfterHeader } from '../../core/retry';
 
 export async function createChatwootMessage(
   env: Env,
@@ -13,7 +19,7 @@ export async function createChatwootMessage(
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
   ) {
-    throw new ProviderDeliveryError('FINAL', 'CHATWOOT_RUNTIME_CONFIG_ERROR');
+    throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CHATWOOT' });
   }
   const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
   
@@ -35,16 +41,13 @@ export async function createChatwootMessage(
       body: JSON.stringify(body),
     });
   } catch {
-    throw new ProviderDeliveryError('AMBIGUOUS', 'CHATWOOT_TRANSPORT_ERROR');
+    throw visibleTransportDeliveryError('CHATWOOT');
   }
 
   if (!response.ok) {
-    const outcome = response.status === 429
-      ? 'RETRYABLE'
-      : response.status === 408 || response.status >= 500
-        ? 'AMBIGUOUS'
-        : 'FINAL';
-    throw new ProviderDeliveryError(outcome, `CHATWOOT_HTTP_${response.status}`);
+    throw visibleHttpDeliveryError('CHATWOOT', response.status, {
+      httpRetryAfter: retryAfterHeader(response)
+    });
   }
 
   try {
@@ -52,6 +55,6 @@ export async function createChatwootMessage(
     if (data.id === undefined || data.id === null) throw new Error('Missing message id');
     return { messageId: String(data.id) };
   } catch {
-    throw new ProviderDeliveryError('AMBIGUOUS', 'CHATWOOT_INVALID_SUCCESS_RESPONSE');
+    throw invalidVisibleSuccessError('CHATWOOT');
   }
 }

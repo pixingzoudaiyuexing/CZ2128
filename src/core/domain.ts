@@ -39,7 +39,7 @@ export interface EventReceipt {
   attempt_count: number;
   lease_until: number | null;
   claim_token: string | null;
-  last_error: string | null;
+  last_error: SafeErrorCode | null;
   processed_at: number | null;
 }
 
@@ -53,7 +53,8 @@ export interface OutboundOperation {
   attempt_count: number;
   lease_until: number | null;
   lease_token: string | null;
-  last_error: string | null;
+  last_error: SafeErrorCode | null;
   created_at: number;
   updated_at: number;
 }
+import { SafeErrorCode } from './error-taxonomy';

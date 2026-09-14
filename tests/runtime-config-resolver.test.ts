@@ -100,10 +100,10 @@ describe('runtime config resolver', () => {
       payload: { convId: 'conv', messageId: 'message' }
     }, effective);
     await expect(sendTelegramMessage(effective, '-1001', null, 'test')).rejects.toMatchObject({
-      message: 'TELEGRAM_RUNTIME_CONFIG_ERROR'
+      message: 'OUTBOUND_PRECONDITION_FAILED'
     });
     await expect(createChatwootMessage(effective, '1', '2', 'test', 'op')).rejects.toMatchObject({
-      message: 'CHATWOOT_RUNTIME_CONFIG_ERROR'
+      message: 'OUTBOUND_PRECONDITION_FAILED'
     });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(effective.runtimeConfigSnapshot).toMatchObject({
@@ -143,10 +143,10 @@ describe('runtime config resolver', () => {
     expect(effective.TELEGRAM_BOT_TOKEN).toBe('');
     expect(effective.CHATWOOT_API_TOKEN).toBe('');
     await expect(sendTelegramMessage(effective, '-1001', null, 'test')).rejects.toMatchObject({
-      message: 'TELEGRAM_RUNTIME_CONFIG_ERROR'
+      message: 'OUTBOUND_PRECONDITION_FAILED'
     });
     await expect(createChatwootMessage(effective, '1', '2', 'test', 'op')).rejects.toMatchObject({
-      message: 'CHATWOOT_RUNTIME_CONFIG_ERROR'
+      message: 'OUTBOUND_PRECONDITION_FAILED'
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });

@@ -238,7 +238,7 @@ describe('attachment transfer ledger', () => {
 
     await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
     expect(fixture.db.attachments[0].status).toBe('FAILED_RETRYABLE');
-    expect(fixture.db.attachments[0].last_error).toBe('R2_STORE_FAILED');
+    expect(fixture.db.attachments[0].last_error).toBe('R2_STORE_TRANSIENT');
     expect(JSON.stringify(fixture.db.attachments[0])).not.toContain('token-path');
     expect(JSON.stringify(fixture.db.attachments[0])).not.toContain('private R2');
   });
@@ -250,7 +250,7 @@ describe('attachment transfer ledger', () => {
 
     await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
     expect(fixture.db.attachments[0].status).toBe('STORED');
-    expect(fixture.db.attachments[0].last_error).toBe('R2_GET_FAILED');
+    expect(fixture.db.attachments[0].last_error).toBe('R2_READ_TRANSIENT');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -267,7 +267,7 @@ describe('attachment transfer ledger', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(createMultipartUpload).not.toHaveBeenCalled();
     expect(fixture.db.attachments[0].status).toBe('FAILED_FINAL');
-    expect(fixture.db.attachments[0].last_error).toBe('ATTACHMENT_ATTEMPTS_EXHAUSTED');
+    expect(fixture.db.attachments[0].last_error).toBe('ATTACHMENT_RETRY_EXHAUSTED');
   });
 
   it('bounds retries when R2 completes but the STORED transition is not persisted', async () => {

@@ -13,6 +13,7 @@ import {
 } from './attachments';
 import { AttachmentTransferEvent } from './events';
 import { logger } from '../observability/logger';
+import { SafeErrorCode } from './error-taxonomy';
 
 export interface DiscoveredAttachment {
   row: AttachmentRow;
@@ -95,7 +96,9 @@ export async function enqueueAttachmentJobs(
     logger.warn('Attachment count exceeds configured limit', {
       conversation_id: conversationId,
       source: sourceProvider,
-      error_category: 'ATTACHMENT_COUNT_LIMIT'
+      error_category: 'ATTACHMENT_COUNT_LIMIT',
+      error_code: 'ATTACHMENT_COUNT_LIMIT',
+      stage: 'SOURCE_METADATA'
     });
   }
   for (const descriptor of descriptors.slice(0, config.maxCountPerMessage)) {
@@ -152,7 +155,7 @@ export async function markAttachmentFailure(
   env: Env,
   attachmentId: string,
   retryable: boolean,
-  errorCode: string,
+  errorCode: SafeErrorCode,
   config: AttachmentConfig
 ): Promise<'FAILED_RETRYABLE' | 'FAILED_FINAL'> {
   const row = await env.DB.prepare('SELECT attempt_count FROM attachments WHERE id = ?').bind(attachmentId).first<{ attempt_count: number }>();
@@ -169,7 +172,7 @@ export async function markAttachmentFailure(
   return status;
 }
 
-export async function recordStoredAttachmentError(env: Env, attachmentId: string, errorCode: string): Promise<void> {
+export async function recordStoredAttachmentError(env: Env, attachmentId: string, errorCode: SafeErrorCode): Promise<void> {
   await env.DB.prepare(
     `UPDATE attachments SET last_error = ?, updated_at = ? WHERE id = ? AND status = 'STORED'`
   ).bind(errorCode, Math.floor(Date.now() / 1000), attachmentId).run();

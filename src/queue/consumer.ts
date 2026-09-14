@@ -1,6 +1,6 @@
 import { Env } from '../config/env';
 import { getAIConfig } from '../config/ai';
-import { RetryableProcessingError, safeErrorCode } from '../core/errors';
+import { RetryableProcessingError, SafeError, safeErrorCode } from '../core/errors';
 import { SupportEvent } from '../core/events';
 import { logger } from '../observability/logger';
 import { processAiTrigger } from './ai-handler';
@@ -24,27 +24,30 @@ export function eventLeaseSeconds(event: SupportEvent, env: Env): number {
 
 export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<void> {
   if (event.version !== 1) {
-    throw new Error('Unsupported queue event version');
+    throw new SafeError('QUEUE_EVENT_VERSION_UNSUPPORTED');
   }
   if (env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG) {
-    throw new RetryableProcessingError('Runtime config store is unavailable', 5);
+    throw new RetryableProcessingError('RUNTIME_CONFIG_READ_FAILED', 5);
   }
   if (event.source === 'telegram') {
     const eventProfileVersion = event.payload.supportProfileVersion ?? 0;
     if (!Number.isSafeInteger(eventProfileVersion) || eventProfileVersion < 0) {
-      throw new Error('Invalid Telegram support profile version');
+      throw new SafeError('INGRESS_PAYLOAD_INVALID', { provider: 'TELEGRAM' });
     }
     const currentProfileVersion = env.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;
     if (eventProfileVersion < currentProfileVersion) {
       logger.info('Dropping event from stale Telegram support profile', {
         source: event.source,
         source_event_ref: event.eventId,
-        error_category: 'STALE_TELEGRAM_SUPPORT_PROFILE'
+        error_category: 'STALE_TELEGRAM_SUPPORT_PROFILE',
+        error_code: 'SUPPORT_PROFILE_STALE',
+        provider: 'TELEGRAM',
+        stage: 'VALIDATE'
       });
       return;
     }
     if (eventProfileVersion > currentProfileVersion) {
-      throw new RetryableProcessingError('Telegram support profile version is ahead of runtime config', 5);
+      throw new RetryableProcessingError('SUPPORT_PROFILE_FUTURE', 5, { provider: 'TELEGRAM' });
     }
   }
 
@@ -82,7 +85,7 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
         ? receipt.lease_until - now
         : leaseSeconds;
       logger.info('Event claim held by another worker', { source: event.source, source_event_ref: event.eventId });
-      throw new RetryableProcessingError('Event receipt lease is active', retryAfter);
+      throw new RetryableProcessingError('QUEUE_EVENT_CLAIM_CONTENDED', retryAfter);
     }
   }
 
@@ -103,7 +106,7 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
        WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSING' AND claim_token = ?`
     ).bind(Math.floor(Date.now() / 1000), event.source, event.eventId, claimToken).run();
     if (processedResult.meta.changes !== 1) {
-      throw new RetryableProcessingError('Event receipt ownership was lost before completion', leaseSeconds);
+      throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', leaseSeconds);
     }
 
     logger.info('Event processed successfully', {

@@ -160,13 +160,21 @@ describe('outbound operation safety', () => {
   it('bounds retryable provider failures and then marks them final', async () => {
     const db = new OperationDb();
     const action = vi.fn(async () => {
-      throw new ProviderDeliveryError('RETRYABLE', 'TELEGRAM_API_429');
+      throw new ProviderDeliveryError('RETRYABLE', 'OUTBOUND_RATE_LIMITED', {
+        provider: 'TELEGRAM', retryAfterSeconds: 30, httpStatus: 429
+      });
     });
 
-    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4')).rejects.toBeInstanceOf(RetryableProcessingError);
+    const first = await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4'
+    ).catch(error => error as RetryableProcessingError);
+    expect(first).toBeInstanceOf(RetryableProcessingError);
+    if (!(first instanceof RetryableProcessingError)) throw new Error('Expected retryable processing error');
+    expect(first.retryAfterSeconds).toBe(30);
     await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4')).rejects.toBeInstanceOf(RetryableProcessingError);
     await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4')).resolves.toEqual({ status: 'FAILED_FINAL' });
     expect(db.rows.get('op-4')?.attempt_count).toBe(3);
+    expect(db.rows.get('op-4')?.last_error).toBe('OUTBOUND_RETRY_EXHAUSTED');
     expect(action).toHaveBeenCalledTimes(3);
   });
 

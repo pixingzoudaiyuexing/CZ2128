@@ -10,7 +10,7 @@ import { executeOutboundOperation } from '../core/outbound-operations';
 import { insertMessage } from '../core/conversation-service';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
-import { CancelledBeforeDeliveryError } from '../core/errors';
+import { CancelledBeforeDeliveryError, RetryableProcessingError, SafeError } from '../core/errors';
 
 export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise<void> {
   const config = getAIConfig(env);
@@ -104,9 +104,20 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       const result = await generateChatCompletion(config, messages);
 
       if (!result.success) {
-        logger.error('AI provider failure', result.error, { conversation_id: convId, operation_id: generationId });
+        const providerError = new SafeError(result.error, {
+          provider: 'AI_PROVIDER',
+          httpStatus: result.httpStatus,
+          retryAfterSeconds: result.retryAfterSeconds
+        });
+        logger.error('AI provider failure', providerError, { conversation_id: convId, operation_id: generationId });
         await saveDurableAiRun(env, stableAiJobId, convId, messageId, generationId, handoffEpoch, 'FAILED', undefined, undefined, result.error);
-        throw new Error(`AI Provider Failed: ${result.error}`);
+        if (result.retryable) {
+          throw new RetryableProcessingError(result.error, result.retryAfterSeconds ?? 5, {
+            provider: 'AI_PROVIDER',
+            httpStatus: result.httpStatus
+          });
+        }
+        return;
       }
 
       const isValid = await verifyGenerationLease(env, convId, generationId);

@@ -61,7 +61,7 @@ export interface RuntimeConfigSnapshot {
   values: Partial<Record<RuntimeConfigKey, string>>;
   sources: Record<RuntimeConfigKey, RuntimeValueSource>;
   versions: Partial<Record<RuntimeConfigKey, number>>;
-  errors: Partial<Record<RuntimeConfigKey | 'RUNTIME_CONFIG', string>>;
+  errors: Partial<Record<RuntimeConfigKey | 'RUNTIME_CONFIG', SafeErrorCode>>;
   overrideCount: number;
   health: 'AVAILABLE' | 'ERROR';
 }
@@ -78,3 +78,4 @@ export interface AdminSessionRow {
   expires_at: number;
   updated_at: number;
 }
+import { SafeErrorCode } from '../core/error-taxonomy';

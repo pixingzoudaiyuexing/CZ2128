@@ -843,7 +843,7 @@ describe('Phase 2 AI Handoff', () => {
     };
 
     vi.mocked(global.fetch).mockResolvedValueOnce({ ok: false, status: 503 } as Response);
-    await expect(handleQueueEvent(event, env)).rejects.toThrow('AI Provider Failed');
+    await expect(handleQueueEvent(event, env)).rejects.toThrow('AI_PROVIDER_5XX');
     const firstGenerationId = env.DB.tables.ai_runs[0].generation_id;
 
     vi.mocked(global.fetch).mockImplementation(async (url: any) => {
@@ -896,7 +896,7 @@ describe('Phase 2 AI Handoff', () => {
       type: 'ai_trigger',
       eventId: 'ai_provider_failure',
       payload: { convId: 'c27', messageId: 'm27' }
-    }, env)).rejects.toThrow('AI Provider Failed');
+    }, env)).rejects.toThrow('AI_PROVIDER_5XX');
     expect(env.DB.tables.conversations[0].ai_generation_id).toBeNull();
 
     vi.mocked(global.fetch).mockImplementation(async (url: any) => {

@@ -289,7 +289,7 @@ describe('Worker Integration', () => {
   });
 
   it('uses the canonical delayed retry error', async () => {
-    vi.mocked(consumer.handleQueueEvent).mockRejectedValueOnce(new RetryableProcessingError('Locked', 37));
+    vi.mocked(consumer.handleQueueEvent).mockRejectedValueOnce(new RetryableProcessingError('CONCURRENCY_LEASE_HELD', 37));
     const message = {
       body: { version: 1, source: 'internal', type: 'ai_trigger', eventId: '1', payload: { convId: 'c1', messageId: 'm1' } },
       ack: vi.fn(),
@@ -301,6 +301,18 @@ describe('Worker Integration', () => {
     }
 
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 37 });
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+
+  it('uses a bounded infrastructure-safe delay for unknown Queue exceptions', async () => {
+    vi.mocked(consumer.handleQueueEvent).mockRejectedValueOnce(new Error('private deterministic detail'));
+    const message = {
+      body: { version: 1, source: 'internal', type: 'ai_trigger', eventId: 'unknown', payload: { convId: 'c1', messageId: 'm1' } },
+      ack: vi.fn(),
+      retry: vi.fn()
+    };
+    if (Worker.queue) await Worker.queue({ messages: [message] } as any, env, ctx);
+    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
     expect(message.ack).not.toHaveBeenCalled();
   });
 

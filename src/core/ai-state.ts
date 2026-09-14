@@ -3,6 +3,7 @@ import { Conversation } from './domain';
 import { logger } from '../observability/logger';
 import { getAIConfig } from '../config/ai';
 import { RetryableProcessingError } from './errors';
+import { SafeErrorCode } from './error-taxonomy';
 
 export async function pauseOperator(env: Env, convId: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
@@ -198,7 +199,7 @@ export async function acquireGenerationLease(
   if (conv.ai_generation_id && conv.ai_generation_started_at && conv.ai_generation_started_at >= leaseExpiryThreshold) {
     const expiresAt = conv.ai_generation_started_at + config.generationLeaseSeconds;
     const delaySeconds = expiresAt - now + 2;
-    throw new RetryableProcessingError('AI generation lease is active', Math.max(delaySeconds, 2));
+    throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', Math.max(delaySeconds, 2));
   }
 
   if (env.hooks && env.hooks.beforeGenerationLeaseClaim) await env.hooks.beforeGenerationLeaseClaim(env, convId);
@@ -234,9 +235,9 @@ export async function acquireGenerationLease(
 
   if (current.ai_generation_id && current.ai_generation_started_at >= leaseExpiryThreshold) {
     const expiresAt = Number(current.ai_generation_started_at) + config.generationLeaseSeconds;
-    throw new RetryableProcessingError('AI generation lease is active', Math.max(expiresAt - now + 2, 2));
+    throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', Math.max(expiresAt - now + 2, 2));
   }
-  throw new RetryableProcessingError('AI generation lease claim was contended', 2);
+  throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', 2);
 }
 
 export async function releaseGenerationLease(
@@ -298,7 +299,7 @@ export async function saveDurableAiRun(
   status: 'PENDING' | 'SUCCESS' | 'FAILED' | 'CANCELLED_BY_HANDOFF' | 'DISCARDED_STALE',
   providerResponseRef?: string,
   responseText?: string,
-  lastError?: string
+  lastError?: SafeErrorCode
 ): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);
   const result = await env.DB.prepare(

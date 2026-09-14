@@ -31,6 +31,7 @@ import {
 } from './telegram';
 import { AdminBootstrap, AdminContext } from './types';
 import { reply, showMain, showPage } from './ui';
+import { safeErrorCode } from '../core/errors';
 
 function adminBootstrap(env: Env): AdminBootstrap | null {
   const token = env.ADMIN_TELEGRAM_BOT_TOKEN?.trim() || '';
@@ -75,15 +76,6 @@ function parseAdminContext(payload: any): AdminContext | null {
     text: typeof message.text === 'string' && message.text.length <= 20000 ? message.text : undefined
   };
 }
-
-function safeErrorCode(error: unknown): string {
-  if (
-    error instanceof AdminProviderError ||
-    (error instanceof Error && /^[A-Z][A-Z0-9_]*(?:_\d+)?$/.test(error.message))
-  ) return error.message.slice(0, 128);
-  return 'ADMIN_OPERATION_FAILED';
-}
-
 
 async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string): Promise<string> {
   if (code === 'tbot') {
@@ -182,7 +174,7 @@ async function processSetInput(
     try {
       await testAiCandidate(env, { [key]: normalized });
     } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'AI_CONFIG_INCOMPLETE') throw error;
+      if (safeErrorCode(error) !== 'AI_CONFIG_INCOMPLETE') throw error;
       validationNote = '\nProvider test not performed: AI_CONFIG_INCOMPLETE. AI remains disabled until the provider profile is complete.';
     }
   }

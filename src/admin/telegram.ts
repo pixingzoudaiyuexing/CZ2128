@@ -1,8 +1,31 @@
-export class AdminProviderError extends Error {
-  constructor(public readonly code: string) {
-    super(code);
+import { SafeErrorCode } from '../core/error-taxonomy';
+import { SafeError, SafeErrorOptions } from '../core/errors';
+import { resolveRetryAfterSeconds, retryAfterHeader } from '../core/retry';
+import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
+
+export class AdminProviderError extends SafeError {
+  constructor(code: SafeErrorCode, options: SafeErrorOptions = {}) {
+    super(code, { provider: 'TELEGRAM', ...options });
     this.name = 'AdminProviderError';
   }
+}
+
+function adminTelegramHttpError(
+  status: number,
+  options: { telegramRetryAfter?: unknown; httpRetryAfter?: string | null } = {}
+): AdminProviderError {
+  if (status === 429) {
+    return new AdminProviderError('ADMIN_PROVIDER_RATE_LIMITED', {
+      httpStatus: status,
+      retryAfterSeconds: resolveRetryAfterSeconds({
+        telegramRetryAfter: options.telegramRetryAfter,
+        httpRetryAfter: options.httpRetryAfter
+      })
+    });
+  }
+  if (status === 408) return new AdminProviderError('ADMIN_PROVIDER_TIMEOUT', { httpStatus: status });
+  if (status >= 500) return new AdminProviderError('ADMIN_PROVIDER_TRANSIENT', { httpStatus: status });
+  return new AdminProviderError('ADMIN_PROVIDER_REJECTED', { httpStatus: status });
 }
 
 async function telegramCall(
@@ -21,23 +44,34 @@ async function telegramCall(
       body: JSON.stringify(body),
       signal: controller.signal
     });
-    if (!response.ok) throw new AdminProviderError(`TELEGRAM_HTTP_${response.status}`);
+    if (!response.ok) {
+      const telegramRetryAfter = response.status === 429
+        ? await readTelegramRetryAfterMetadata(response)
+        : undefined;
+      throw adminTelegramHttpError(response.status, {
+        telegramRetryAfter,
+        httpRetryAfter: retryAfterHeader(response)
+      });
+    }
     let payload: any;
     try {
       payload = await response.json();
     } catch {
-      throw new AdminProviderError('TELEGRAM_INVALID_RESPONSE');
+      throw new AdminProviderError('ADMIN_PROVIDER_INVALID_RESPONSE', { stage: 'PARSE_RESPONSE' });
     }
     if (payload?.ok !== true) {
       const status = typeof payload?.error_code === 'number' ? payload.error_code : 400;
-      throw new AdminProviderError(`TELEGRAM_API_${status}`);
+      throw adminTelegramHttpError(status, {
+        telegramRetryAfter: telegramRetryAfterValue(payload),
+        httpRetryAfter: retryAfterHeader(response)
+      });
     }
     return payload.result;
   } catch (error) {
     if (error instanceof AdminProviderError) throw error;
     throw new AdminProviderError(error instanceof Error && error.name === 'AbortError'
-      ? 'TELEGRAM_TIMEOUT'
-      : 'TELEGRAM_TRANSPORT_ERROR');
+      ? 'ADMIN_PROVIDER_TIMEOUT'
+      : 'ADMIN_PROVIDER_TRANSPORT_ERROR');
   } finally {
     clearTimeout(timeout);
   }

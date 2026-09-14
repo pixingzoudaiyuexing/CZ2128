@@ -1,12 +1,19 @@
 import { Env } from '../../config/env';
 import { ProviderDeliveryError } from '../../core/errors';
+import {
+  invalidVisibleSuccessError,
+  visibleHttpDeliveryError,
+  visibleTransportDeliveryError
+} from '../../core/provider-retry';
+import { retryAfterHeader } from '../../core/retry';
+import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from './error-metadata';
 
 async function callTelegram(env: Env, method: string, body: Record<string, unknown>): Promise<any> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
   ) {
-    throw new ProviderDeliveryError('FINAL', 'TELEGRAM_RUNTIME_CONFIG_ERROR');
+    throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' });
   }
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
   let response: Response;
@@ -17,33 +24,32 @@ async function callTelegram(env: Env, method: string, body: Record<string, unkno
       body: JSON.stringify(body),
     });
   } catch {
-    throw new ProviderDeliveryError('AMBIGUOUS', 'TELEGRAM_TRANSPORT_ERROR');
+    throw visibleTransportDeliveryError('TELEGRAM');
   }
 
   if (!response.ok) {
-    const outcome = response.status === 429
-      ? 'RETRYABLE'
-      : response.status === 408 || response.status >= 500
-        ? 'AMBIGUOUS'
-        : 'FINAL';
-    throw new ProviderDeliveryError(outcome, `TELEGRAM_HTTP_${response.status}`);
+    const telegramRetryAfter = response.status === 429
+      ? await readTelegramRetryAfterMetadata(response)
+      : undefined;
+    throw visibleHttpDeliveryError('TELEGRAM', response.status, {
+      telegramRetryAfter,
+      httpRetryAfter: retryAfterHeader(response)
+    });
   }
 
   try {
     const data = await response.json() as any;
     if (data?.ok !== true) {
       const status = typeof data?.error_code === 'number' ? data.error_code : response.status;
-      const outcome = status === 429
-        ? 'RETRYABLE'
-        : status === 408 || status >= 500
-          ? 'AMBIGUOUS'
-          : 'FINAL';
-      throw new ProviderDeliveryError(outcome, `TELEGRAM_API_${status}`);
+      throw visibleHttpDeliveryError('TELEGRAM', status, {
+        telegramRetryAfter: telegramRetryAfterValue(data),
+        httpRetryAfter: retryAfterHeader(response)
+      });
     }
     return data;
   } catch (error) {
     if (error instanceof ProviderDeliveryError) throw error;
-    throw new ProviderDeliveryError('AMBIGUOUS', 'TELEGRAM_INVALID_SUCCESS_RESPONSE');
+    throw invalidVisibleSuccessError('TELEGRAM');
   }
 }
 
@@ -63,7 +69,7 @@ export async function sendTelegramMessage(
 
   const data = await callTelegram(env, 'sendMessage', body);
   if (data.result?.message_id === undefined || data.result?.message_id === null) {
-    throw new ProviderDeliveryError('AMBIGUOUS', 'TELEGRAM_MISSING_MESSAGE_ID');
+    throw invalidVisibleSuccessError('TELEGRAM');
   }
   return { messageId: String(data.result.message_id) };
 }
@@ -80,7 +86,7 @@ export async function createTelegramTopic(
 
   const data = await callTelegram(env, 'createForumTopic', body);
   if (data.result?.message_thread_id === undefined || data.result?.message_thread_id === null) {
-    throw new ProviderDeliveryError('AMBIGUOUS', 'TELEGRAM_MISSING_TOPIC_ID');
+    throw invalidVisibleSuccessError('TELEGRAM');
   }
   return { messageThreadId: String(data.result.message_thread_id) };
 }

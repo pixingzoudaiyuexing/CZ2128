@@ -54,19 +54,26 @@ describe('provider API contracts', () => {
   });
 
   it('classifies Chatwoot HTTP 429 as retryable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('rate limited', { status: 429 }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('rate limited', {
+      status: 429, headers: { 'Retry-After': '30' }
+    }));
 
     const error = await createChatwootMessage(env, '1', '2', 'Reply', 'op-93').catch(value => value);
     expect(error).toBeInstanceOf(ProviderDeliveryError);
     expect(error.outcome).toBe('RETRYABLE');
+    expect(error.retryAfterSeconds).toBeGreaterThanOrEqual(30);
   });
 
   it('classifies Telegram ok=false error_code=429 as retryable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: false, error_code: 429 }), { status: 200 }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: 429, parameters: { retry_after: 10 }
+    }), { status: 200, headers: { 'Retry-After': '30' } }));
 
     const error = await sendTelegramMessage(env, '-100', '7', 'Hello').catch(value => value);
     expect(error).toBeInstanceOf(ProviderDeliveryError);
     expect(error.outcome).toBe('RETRYABLE');
+    expect(error.retryAfterSeconds).toBeGreaterThanOrEqual(10);
+    expect(error.retryAfterSeconds).toBeLessThan(30);
   });
 
   it('classifies explicit HTTP 400 as final', async () => {
@@ -99,6 +106,23 @@ describe('provider API contracts', () => {
     expect(String(error)).not.toContain('secret material');
   });
 
+  it('classifies a lost Chatwoot response as ambiguous', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('socket closed with private URL'));
+    const error = await createChatwootMessage(env, '1', '2', 'Reply', 'lost-cw').catch(value => value);
+    expect(error).toMatchObject({ outcome: 'AMBIGUOUS', code: 'OUTBOUND_TRANSPORT_AMBIGUOUS' });
+    expect(String(error)).not.toContain('private URL');
+  });
+
+  it('honors Telegram HTTP 429 metadata before its header', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: 429, parameters: { retry_after: 10 }, description: 'private'
+    }), { status: 429, headers: { 'Retry-After': '30' } }));
+    const error = await sendTelegramMessage(env, '-100', '7', 'Hello').catch(value => value);
+    expect(error).toMatchObject({ outcome: 'RETRYABLE', code: 'OUTBOUND_RATE_LIMITED', httpStatus: 429 });
+    expect(error.retryAfterSeconds).toBeGreaterThanOrEqual(10);
+    expect(error.retryAfterSeconds).toBeLessThan(30);
+  });
+
   it('does not accept a Telegram ok=false body as lifecycle success', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: false, error_code: 400, description: 'private detail' }), { status: 200 }));
 
@@ -114,5 +138,57 @@ describe('provider API contracts', () => {
     const error = await createChatwootMessage(env, '1', '2', 'Reply', 'op-96').catch(value => value);
     expect(error).toBeInstanceOf(ProviderDeliveryError);
     expect(error.outcome).toBe('AMBIGUOUS');
+  });
+
+  it.each([408, 500, 502, 503, 504])('keeps Chatwoot visible HTTP %s ambiguous', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private body', { status }));
+    const error = await createChatwootMessage(env, '1', '2', 'Reply', `cw-${status}`).catch(value => value);
+    expect(error).toMatchObject({
+      outcome: 'AMBIGUOUS',
+      httpStatus: status,
+      code: status === 408 ? 'OUTBOUND_TIMEOUT_AMBIGUOUS' : 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS'
+    });
+  });
+
+  it.each([408, 500, 502, 503, 504])('keeps Telegram visible API %s ambiguous', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: status, description: 'private body'
+    }), { status: 200 }));
+    const error = await sendTelegramMessage(env, '-100', '7', 'Hello').catch(value => value);
+    expect(error).toMatchObject({
+      outcome: 'AMBIGUOUS',
+      httpStatus: status,
+      code: status === 408 ? 'OUTBOUND_TIMEOUT_AMBIGUOUS' : 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS'
+    });
+  });
+
+  it.each([408, 500, 502, 503, 504])('keeps Telegram visible HTTP %s ambiguous', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private body', { status }));
+    const error = await sendTelegramMessage(env, '-100', '7', 'Hello').catch(value => value);
+    expect(error).toMatchObject({
+      outcome: 'AMBIGUOUS',
+      httpStatus: status,
+      code: status === 408 ? 'OUTBOUND_TIMEOUT_AMBIGUOUS' : 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS'
+    });
+  });
+
+  it.each([400, 401, 403, 404, 422])('keeps Chatwoot visible HTTP %s final', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private body', { status }));
+    const error = await createChatwootMessage(env, '1', '2', 'Reply', `cw-${status}`).catch(value => value);
+    expect(error).toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: status });
+  });
+
+  it.each([400, 401, 403, 404, 422])('keeps Telegram visible API %s final', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error_code: status, description: 'private body'
+    }), { status: 200 }));
+    const error = await sendTelegramMessage(env, '-100', '7', 'Hello').catch(value => value);
+    expect(error).toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: status });
+  });
+
+  it.each([400, 401, 403, 404, 422])('keeps Telegram visible HTTP %s final', async status => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private body', { status }));
+    const error = await sendTelegramMessage(env, '-100', '7', 'Hello').catch(value => value);
+    expect(error).toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: status });
   });
 });
