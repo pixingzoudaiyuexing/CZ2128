@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { executeOutboundOperation } from '../src/core/outbound-operations';
+import {
+  executeOutboundOperation as executeOutboundOperationCore,
+  ExecuteOutboundOperationOptions,
+  OutboundAttemptLifecycle
+} from '../src/core/outbound-operations';
 import { ProviderDeliveryError, RetryableProcessingError } from '../src/core/errors';
+import { buildChatwootTargetEvidence } from '../src/core/outbound-evidence';
 
 interface OperationRow {
   id: string;
@@ -21,12 +26,31 @@ interface OperationRow {
   reconciliation_status?: string | null;
   retry_after_seconds?: number | null;
   next_retry_at?: number | null;
+  subject_type?: string | null;
+  subject_ref?: string | null;
+  target_evidence_json?: string | null;
 }
 
 class OperationDb {
   rows = new Map<string, OperationRow>();
+  auditRows: any[] = [];
   failSentUpdates = false;
   failResponseObservedUpdates = false;
+  private previousChanges = 0;
+
+  async batch(statements: Array<{ run(): Promise<any> }>) {
+    const snapshot = structuredClone({ rows: [...this.rows.entries()], auditRows: this.auditRows });
+    this.previousChanges = 0;
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    } catch (error) {
+      this.rows = new Map(snapshot.rows);
+      this.auditRows = snapshot.auditRows;
+      throw error;
+    }
+  }
 
   prepare(query: string) {
     let params: unknown[] = [];
@@ -40,15 +64,22 @@ class OperationDb {
         const row = this.rows.get(String(params[0]));
         return row ? { ...row } : null;
       },
-      run: async () => this.run(query, params)
+      run: async () => {
+        const result = this.run(query, params, this.previousChanges);
+        this.previousChanges = Number(result.meta.changes || 0);
+        return result;
+      }
     };
     return statement;
   }
 
-  private run(query: string, params: unknown[]) {
+  private run(query: string, params: unknown[], previousChanges: number) {
     let changes = 0;
     if (query.includes('INSERT INTO outbound_operations')) {
-      const [id, conversationId, destinationProvider, operationType, , createdAt, updatedAt] = params;
+      const [
+        id, conversationId, destinationProvider, operationType, , createdAt, updatedAt,
+        subjectType, subjectRef, targetEvidenceJson
+      ] = params;
       const key = String(id);
       if (!this.rows.has(key)) {
         this.rows.set(key, {
@@ -69,7 +100,42 @@ class OperationDb {
           response_http_status: null,
           reconciliation_status: null,
           retry_after_seconds: null,
-          next_retry_at: null
+          next_retry_at: null,
+          subject_type: String(subjectType),
+          subject_ref: String(subjectRef),
+          target_evidence_json: String(targetEvidenceJson)
+        });
+        changes = 1;
+      }
+    } else if (query.includes('SET subject_type = ?, subject_ref = ?, target_evidence_json = ?')) {
+      const [subjectType, subjectRef, targetEvidenceJson, updatedAt, id] = params;
+      const row = this.rows.get(String(id));
+      if (
+        row && row.attempt_count === 0 && row.request_started_at == null &&
+        (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE') &&
+        row.subject_type == null && row.subject_ref == null && row.target_evidence_json == null
+      ) {
+        row.subject_type = String(subjectType);
+        row.subject_ref = String(subjectRef);
+        row.target_evidence_json = String(targetEvidenceJson);
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
+    } else if (query.includes("SET status = 'FAILED_FINAL', last_error = 'TARGET_IDENTITY_CHANGED'")) {
+      const [updatedAt, id] = params;
+      const row = this.rows.get(String(id));
+      if (row && (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE')) {
+        row.status = 'FAILED_FINAL';
+        row.last_error = 'TARGET_IDENTITY_CHANGED';
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
+    } else if (query.includes('INSERT INTO reliability_audit')) {
+      if (previousChanges === 1) {
+        this.auditRows.push({
+          id: params[0], entity_type: params[1], entity_id: params[2], action: params[3],
+          actor_type: params[4], actor_ref: params[5], old_state: params[6], new_state: params[7],
+          reason_code: params[8], created_at: params[9]
         });
         changes = 1;
       }
@@ -205,6 +271,56 @@ class OperationDb {
 
 function makeEnv(db: OperationDb) {
   return { DB: db } as any;
+}
+
+function testOptions(
+  destinationProvider: string,
+  operationId: string,
+  overrides: Partial<ExecuteOutboundOperationOptions> = {}
+): ExecuteOutboundOperationOptions {
+  return {
+    subject: { type: 'MESSAGE', ref: `test:${operationId}` },
+    targetEvidence: destinationProvider === 'chatwoot'
+      ? {
+          version: 1,
+          provider: 'chatwoot',
+          accountRef: 'account',
+          conversationRef: 'conversation',
+          sourceId: `cz2128:${operationId}`,
+          apiUrlSource: 'ENV',
+          apiBaseFingerprint: 'a'.repeat(64)
+        }
+      : {
+          version: 1,
+          provider: 'telegram',
+          supportProfileSource: 'ENV',
+          botGroupIdSource: 'ENV',
+          groupRef: '-1001',
+          threadRef: '7',
+          method: 'sendMessage'
+        },
+    ...overrides
+  };
+}
+
+function executeOutboundOperation(
+  env: any,
+  conversationId: string,
+  destinationProvider: string,
+  operationType: string,
+  action: (operationId: string, lifecycle: OutboundAttemptLifecycle) => Promise<{ providerMessageRef?: string }>,
+  deterministicOperationId: string,
+  options = testOptions(destinationProvider, deterministicOperationId)
+) {
+  return executeOutboundOperationCore(
+    env,
+    conversationId,
+    destinationProvider,
+    operationType,
+    action,
+    deterministicOperationId,
+    options
+  );
 }
 
 // Add our tests here
@@ -591,7 +707,18 @@ describe('outbound operation attempt lifecycle', () => {
       updated_at: 1000,
       retry_after_seconds: 30,
       next_retry_at: 999, // ready for retry
-      reconciliation_status: 'NOT_REQUIRED'
+      reconciliation_status: 'NOT_REQUIRED',
+      subject_type: 'MESSAGE',
+      subject_ref: 'test:op-clear-err',
+      target_evidence_json: JSON.stringify({
+        version: 1,
+        provider: 'telegram',
+        supportProfileSource: 'ENV',
+        botGroupIdSource: 'ENV',
+        groupRef: '-1001',
+        threadRef: '7',
+        method: 'sendMessage'
+      })
     });
 
     let observedLastErrorBefore = undefined;
@@ -890,5 +1017,213 @@ it('Response Evidence Tests: invalid 2xx', async () => {
     const row = db.rows.get('op-pre-fail')!;
     expect(row.status).toBe('FAILED_FINAL');
     expect(row.attempt_count).toBe(0); // Attempt count was not incremented
+  });
+
+  it('persists immutable subject and target evidence before the visible request', async () => {
+    const db = new OperationDb();
+    const action = vi.fn(async (_opId, lifecycle) => {
+      const row = db.rows.get('op-evidence')!;
+      expect(row.subject_type).toBe('MESSAGE');
+      expect(row.subject_ref).toBe('test:op-evidence');
+      expect(row.target_evidence_json).toContain('"provider":"telegram"');
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'message-1' };
+    });
+
+    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-evidence');
+    const duplicateAction = vi.fn();
+    await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', duplicateAction, 'op-evidence'
+    );
+
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(duplicateAction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a subject collision before provider action', async () => {
+    const db = new OperationDb();
+    const action = async (_opId: string, lifecycle: OutboundAttemptLifecycle) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'message-1' };
+    };
+    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-subject');
+    const duplicateAction = vi.fn();
+
+    await expect(executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', duplicateAction, 'op-subject',
+      testOptions('telegram', 'op-subject', { subject: { type: 'MESSAGE', ref: 'different' } })
+    )).rejects.toThrow(/subject identity collision/i);
+    expect(duplicateAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Chatwoot conversation', 'chatwoot', {
+      version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'changed',
+      sourceId: 'cz2128:op-target', apiUrlSource: 'ENV', apiBaseFingerprint: 'a'.repeat(64)
+    }],
+    ['Chatwoot API origin', 'chatwoot', {
+      version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'conversation',
+      sourceId: 'cz2128:op-target', apiUrlSource: 'ENV', apiBaseFingerprint: 'b'.repeat(64)
+    }],
+    ['Telegram group', 'telegram', {
+      version: 1, provider: 'telegram', supportProfileSource: 'ENV', botGroupIdSource: 'ENV',
+      groupRef: '-1002', threadRef: '7', method: 'sendMessage'
+    }],
+    ['Telegram thread', 'telegram', {
+      version: 1, provider: 'telegram', supportProfileSource: 'ENV', botGroupIdSource: 'ENV',
+      groupRef: '-1001', threadRef: '8', method: 'sendMessage'
+    }],
+    ['Telegram support profile version', 'telegram', {
+      version: 1, provider: 'telegram', supportProfileSource: 'D1', supportProfileVersion: 2,
+      botGroupIdSource: 'ENV', groupRef: '-1001', threadRef: '7', method: 'sendMessage'
+    }]
+  ] as const)('blocks changed %s identity without provider action', async (_label, provider, changedTarget) => {
+    const db = new OperationDb();
+    const initial = testOptions(provider, 'op-target');
+    db.rows.set('op-target', {
+      id: 'op-target', conversation_id: 'conv-1', destination_provider: provider,
+      operation_type: 'SEND_MESSAGE', status: 'FAILED_RETRYABLE', provider_message_ref: null,
+      attempt_count: 1, lease_until: null, lease_token: null, last_error: 'OUTBOUND_RATE_LIMITED',
+      created_at: 1, updated_at: 1, request_started_at: 1, response_observed_at: 1,
+      response_http_status: 429, reconciliation_status: 'NOT_REQUIRED', retry_after_seconds: 1,
+      next_retry_at: 0, subject_type: initial.subject.type, subject_ref: initial.subject.ref,
+      target_evidence_json: JSON.stringify(initial.targetEvidence)
+    });
+    const action = vi.fn();
+    const response = await executeOutboundOperation(
+      makeEnv(db), 'conv-1', provider, 'SEND_MESSAGE', action, 'op-target',
+      { ...initial, targetEvidence: changedTarget as any }
+    );
+
+    expect(response.status).toBe('FAILED_FINAL');
+    expect(action).not.toHaveBeenCalled();
+    expect(db.auditRows).toHaveLength(1);
+    expect(db.auditRows[0].reason_code).toBe('TARGET_IDENTITY_CHANGED');
+  });
+
+  it('blocks a same-origin Chatwoot base-path retry before requestStarted or provider action', async () => {
+    const db = new OperationDb();
+    const operationId = 'op-path-drift';
+    const subject = { type: 'MESSAGE' as const, ref: `test:${operationId}` };
+    const storedEvidence = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,
+      'account', 'conversation', operationId
+    );
+    const currentEvidence = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-b' } as any,
+      'account', 'conversation', operationId
+    );
+    db.rows.set(operationId, {
+      id: operationId, conversation_id: 'conv-1', destination_provider: 'chatwoot',
+      operation_type: 'SEND_MESSAGE', status: 'FAILED_RETRYABLE', provider_message_ref: null,
+      attempt_count: 1, lease_until: null, lease_token: null, last_error: 'OUTBOUND_RATE_LIMITED',
+      created_at: 1, updated_at: 1, request_started_at: 1, reconciliation_status: 'NOT_REQUIRED',
+      next_retry_at: 0, subject_type: subject.type, subject_ref: subject.ref,
+      target_evidence_json: JSON.stringify(storedEvidence)
+    });
+    const requestStarted = vi.fn();
+    const providerAction = vi.fn(async () => {
+      requestStarted();
+      return { providerMessageRef: 'unexpected' };
+    });
+
+    const response = await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'chatwoot', 'SEND_MESSAGE', providerAction, operationId,
+      { subject, targetEvidence: currentEvidence }
+    );
+
+    expect(response.status).toBe('FAILED_FINAL');
+    expect(requestStarted).not.toHaveBeenCalled();
+    expect(providerAction).not.toHaveBeenCalled();
+    expect(db.rows.get(operationId)?.last_error).toBe('TARGET_IDENTITY_CHANGED');
+  });
+
+  it('CAS-backfills a safely unsent legacy row and permits its first request', async () => {
+    const db = new OperationDb();
+    db.rows.set('op-legacy-safe', {
+      id: 'op-legacy-safe', conversation_id: 'conv-1', destination_provider: 'telegram',
+      operation_type: 'SEND_MESSAGE', status: 'PENDING', provider_message_ref: null,
+      attempt_count: 0, lease_until: null, lease_token: null, last_error: null,
+      created_at: 1, updated_at: 1, request_started_at: null, reconciliation_status: 'NOT_REQUIRED',
+      subject_type: null, subject_ref: null, target_evidence_json: null
+    });
+    const action = vi.fn(async (_opId, lifecycle) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'message-1' };
+    });
+
+    await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-legacy-safe'
+    );
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(db.rows.get('op-legacy-safe')).toMatchObject({
+      subject_type: 'MESSAGE', subject_ref: 'test:op-legacy-safe', status: 'SENT'
+    });
+  });
+
+  it('never invents target evidence for an attempted legacy retry', async () => {
+    const db = new OperationDb();
+    db.rows.set('op-legacy-unsafe', {
+      id: 'op-legacy-unsafe', conversation_id: 'conv-1', destination_provider: 'telegram',
+      operation_type: 'SEND_MESSAGE', status: 'FAILED_RETRYABLE', provider_message_ref: null,
+      attempt_count: 1, lease_until: null, lease_token: null, last_error: 'OUTBOUND_RATE_LIMITED',
+      created_at: 1, updated_at: 1, request_started_at: 1, reconciliation_status: 'NOT_REQUIRED',
+      retry_after_seconds: 1, next_retry_at: 0, subject_type: null, subject_ref: null,
+      target_evidence_json: null
+    });
+    const action = vi.fn();
+
+    const response = await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-legacy-unsafe'
+    );
+    expect(response.status).toBe('FAILED_FINAL');
+    expect(action).not.toHaveBeenCalled();
+    expect(db.rows.get('op-legacy-unsafe')?.target_evidence_json).toBeNull();
+    expect(db.auditRows[0].reason_code).toBe('TARGET_EVIDENCE_MISSING_UNSAFE');
+  });
+
+  it.each(['CONFIRMED_SENT', 'MANUAL_MARK_DELIVERED'] as const)(
+    'returns effective SENT for AMBIGUOUS + %s without provider action',
+    async reconciliationStatus => {
+      const db = new OperationDb();
+      const options = testOptions('telegram', 'op-effective');
+      db.rows.set('op-effective', {
+        id: 'op-effective', conversation_id: 'conv-1', destination_provider: 'telegram',
+        operation_type: 'SEND_MESSAGE', status: 'AMBIGUOUS', provider_message_ref: '123',
+        attempt_count: 1, lease_until: null, lease_token: null, last_error: null,
+        created_at: 1, updated_at: 1, request_started_at: 1,
+        reconciliation_status: reconciliationStatus, subject_type: options.subject.type,
+        subject_ref: options.subject.ref, target_evidence_json: JSON.stringify(options.targetEvidence)
+      });
+      const action = vi.fn();
+      const response = await executeOutboundOperation(
+        makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-effective'
+      );
+      expect(response).toEqual({ status: 'SENT', providerMessageRef: '123' });
+      expect(action).not.toHaveBeenCalled();
+      expect(db.rows.get('op-effective')?.status).toBe('AMBIGUOUS');
+    }
+  );
+
+  it('keeps MANUAL_CANCELLED historically AMBIGUOUS and never sends', async () => {
+    const db = new OperationDb();
+    const options = testOptions('telegram', 'op-cancelled');
+    db.rows.set('op-cancelled', {
+      id: 'op-cancelled', conversation_id: 'conv-1', destination_provider: 'telegram',
+      operation_type: 'SEND_MESSAGE', status: 'AMBIGUOUS', provider_message_ref: null,
+      attempt_count: 1, lease_until: null, lease_token: null, last_error: null,
+      created_at: 1, updated_at: 1, request_started_at: 1,
+      reconciliation_status: 'MANUAL_CANCELLED', subject_type: options.subject.type,
+      subject_ref: options.subject.ref, target_evidence_json: JSON.stringify(options.targetEvidence)
+    });
+    const action = vi.fn();
+    const response = await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-cancelled'
+    );
+    expect(response.status).toBe('AMBIGUOUS');
+    expect(action).not.toHaveBeenCalled();
   });
 });

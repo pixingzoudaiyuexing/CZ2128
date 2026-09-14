@@ -35,7 +35,8 @@ describe('attachment bridge orchestration', () => {
       DB: { prepare: () => ({ bind: () => ({ first: async () => ({
         id: 'conv', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2', operator_thread_ref: '7'
       }) }) }) },
-      CHATWOOT_API_URL: 'https://chatwoot.example'
+      CHATWOOT_API_URL: 'https://chatwoot.example',
+      BOT_GROUP_ID: '-1001'
     };
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValue({
       id: 'conv', operator_thread_ref: '7'

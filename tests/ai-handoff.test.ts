@@ -10,6 +10,11 @@ class MockPreparedStatement {
   private boundParams: any[] = [];
   bind(...params: any[]) { this.boundParams = params; return this; }
   async first<T = any>(): Promise<T | null> {
+    const conversation = (row: any) => row ? {
+      helpdesk_account_ref: 'account',
+      helpdesk_conversation_ref: row.id,
+      ...row
+    } : null;
     if (this.query.includes('FROM event_receipts')) {
       const row = this.db.tables.event_receipts.find(item => item.source === this.boundParams[0] && item.source_event_ref === this.boundParams[1]);
       return row ? { ...row } : null;
@@ -27,15 +32,15 @@ class MockPreparedStatement {
         const row = this.db.tables.conversations.find(row =>
           String(row.helpdesk_account_ref) === String(this.boundParams[1]) &&
           String(row.helpdesk_conversation_ref) === String(this.boundParams[2]));
-        return row ? { ...row } : null;
+        return conversation(row);
       }
       if (this.query.includes('operator_channel = ?')) {
         const row = this.db.tables.conversations.find(row =>
           row.operator_channel === this.boundParams[0] && row.operator_thread_ref === this.boundParams[1]);
-        return row ? { ...row } : null;
+        return conversation(row);
       }
       const row = this.db.tables.conversations.find(row => row.id === this.boundParams[0]);
-      return row ? { ...row } : null;
+      return conversation(row);
     }
     return null;
   }
@@ -289,7 +294,10 @@ if (this.query.includes('INSERT INTO conversations')) {
         this.db.tables.outbound_operations.push({
           id: this.boundParams[0], conversation_id: this.boundParams[1], destination_provider: this.boundParams[2],
           operation_type: this.boundParams[3], status: this.boundParams[4], attempt_count: 0,
-          created_at: this.boundParams[5], updated_at: this.boundParams[6]
+          created_at: this.boundParams[5], updated_at: this.boundParams[6],
+          subject_type: this.boundParams[7], subject_ref: this.boundParams[8],
+          target_evidence_json: this.boundParams[9], reconciliation_status: 'NOT_REQUIRED',
+          request_started_at: null
         });
         meta.changes = 1;
       }
@@ -766,7 +774,13 @@ describe('Phase 2 AI Handoff', () => {
       await executeOutboundOperation(env, 'c17', 'chatwoot', 'SEND_MESSAGE', async () => {
         callCount++;
         throw new CancelledBeforeDeliveryError();
-      }, 'op17');
+      }, 'op17', {
+        subject: { type: 'AI_RUN', ref: 'ai-run:op17' },
+        targetEvidence: {
+          version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'conversation',
+          sourceId: 'cz2128:op17', apiUrlSource: 'ENV', apiBaseFingerprint: 'a'.repeat(64)
+        }
+      });
     } catch (e) {}
 
     expect(env.DB.tables.outbound_operations.find((x: any) => x.id === 'op17').status).toBe('FAILED_FINAL');
@@ -777,7 +791,13 @@ describe('Phase 2 AI Handoff', () => {
       await executeOutboundOperation(env, 'c17', 'chatwoot', 'SEND_MESSAGE', async () => {
         callCount++;
         return { providerMessageRef: '123' };
-      }, 'op17');
+      }, 'op17', {
+        subject: { type: 'AI_RUN', ref: 'ai-run:op17' },
+        targetEvidence: {
+          version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'conversation',
+          sourceId: 'cz2128:op17', apiUrlSource: 'ENV', apiBaseFingerprint: 'a'.repeat(64)
+        }
+      });
     } catch (e) {}
 
     expect(callCount).toBe(1); // Not called again!

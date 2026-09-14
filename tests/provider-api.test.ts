@@ -12,6 +12,19 @@ const env = {
 describe('provider API contracts', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it.each([
+    ['https://chatwoot.example', 'https://chatwoot.example/api/v1/accounts/1/conversations/2/messages'],
+    ['https://chatwoot.example/', 'https://chatwoot.example/api/v1/accounts/1/conversations/2/messages'],
+    ['https://chatwoot.example/tenant-a', 'https://chatwoot.example/tenant-a/api/v1/accounts/1/conversations/2/messages'],
+    ['https://chatwoot.example/tenant-a/', 'https://chatwoot.example/tenant-a/api/v1/accounts/1/conversations/2/messages']
+  ])('uses one canonical Chatwoot URL contract for %s', async (baseUrl, expected) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 91 }), { status: 200 })
+    );
+    await createChatwootMessage({ ...env, CHATWOOT_API_URL: baseUrl }, '1', '2', 'Reply', 'op-url');
+    expect(fetchMock.mock.calls[0][0]).toBe(expected);
+  });
+
   it('stamps Chatwoot messages with the deterministic outbound operation id', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 91 }), { status: 200 }));
 

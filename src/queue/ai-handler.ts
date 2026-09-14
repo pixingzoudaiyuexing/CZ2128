@@ -11,6 +11,7 @@ import { insertMessage } from '../core/conversation-service';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { CancelledBeforeDeliveryError, RetryableProcessingError, SafeError } from '../core/errors';
+import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 
 export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise<void> {
   const config = getAIConfig(env);
@@ -157,6 +158,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   // Check if generation returned successfully, or if it was thrown above (e.g. DISCARDED_STALE or FAILED)
   if (!aiContent!) return;
 
+  const chatwootOperationId = `ai_reply:${stableAiJobId}`;
   const chatwootDelivery = await executeOutboundOperation(
     env,
     convId,
@@ -183,7 +185,13 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
       return { providerMessageRef: String((res as any).messageId || (res as any).message_id || (res as any).id) };
     },
-    `ai_reply:${stableAiJobId}`
+    chatwootOperationId,
+    {
+      subject: { type: 'AI_RUN', ref: stableAiJobId },
+      targetEvidence: await buildChatwootTargetEvidence(
+        env, conv!.helpdesk_account_ref, conv!.helpdesk_conversation_ref, chatwootOperationId
+      )
+    }
   );
 
   if (conv!.operator_thread_ref) {
@@ -199,6 +207,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       return;
     }
 
+    const telegramOperationId = `ai_tg_mirror:${stableAiJobId}`;
     await executeOutboundOperation(
       env,
       convId,
@@ -208,7 +217,13 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, conv!.operator_thread_ref!, `🤖 AI\n\n${aiContent}`, lifecycle);
         return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
       },
-      `ai_tg_mirror:${stableAiJobId}`
+      telegramOperationId,
+      {
+        subject: { type: 'AI_RUN', ref: stableAiJobId },
+        targetEvidence: buildTelegramTargetEvidence(
+          env, env.BOT_GROUP_ID, conv!.operator_thread_ref!, 'sendMessage'
+        )
+      }
     );
   }
 }

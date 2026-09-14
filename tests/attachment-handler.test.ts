@@ -150,7 +150,9 @@ class HandlerDb {
         this.outbound.push({
           id: params[0], conversation_id: params[1], destination_provider: params[2],
           operation_type: params[3], status: params[4], attempt_count: 0,
-          created_at: params[5], updated_at: params[6]
+          created_at: params[5], updated_at: params[6],
+          subject_type: params[7], subject_ref: params[8], target_evidence_json: params[9],
+          reconciliation_status: 'NOT_REQUIRED', request_started_at: null
         });
         changes = 1;
       }

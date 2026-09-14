@@ -233,11 +233,13 @@ if (this.query.includes('INSERT INTO conversations')) {
       }
     }
     if (this.query.includes('INSERT INTO outbound_operations')) {
-      const [id, cid, dp, ot, st, cat, uat] = this.boundParams;
+      const [id, cid, dp, ot, st, cat, uat, subjectType, subjectRef, targetEvidenceJson] = this.boundParams;
       if (!this.db.tables.outbound_operations.find(x => x.id === id)) {
         this.db.tables.outbound_operations.push({
           id, conversation_id: cid, destination_provider: dp, operation_type: ot,
-          status: st, attempt_count: 0, created_at: cat, updated_at: uat
+          status: st, attempt_count: 0, created_at: cat, updated_at: uat,
+          subject_type: subjectType, subject_ref: subjectRef, target_evidence_json: targetEvidenceJson,
+          reconciliation_status: 'NOT_REQUIRED', request_started_at: null
         });
         meta.changes = 1;
       }

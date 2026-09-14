@@ -4,6 +4,7 @@ import { Env } from '../config/env';
 import { RuntimeConfigKey } from './types';
 import { SafeErrorCode } from '../core/error-taxonomy';
 import { SafeError } from '../core/errors';
+import { buildChatwootApiUrl, canonicalChatwootBaseUrl } from '../adapters/chatwoot/url';
 
 export class CandidateValidationError extends SafeError {
   constructor(code: SafeErrorCode, options: ConstructorParameters<typeof SafeError>[1] = {}) {
@@ -42,13 +43,20 @@ export async function testChatwootCandidate(
   env: Env,
   candidate: Partial<Record<RuntimeConfigKey, string>> = {}
 ): Promise<void> {
-  const baseUrl = (candidate.CHATWOOT_API_URL ?? env.CHATWOOT_API_URL ?? '').replace(/\/+$/, '');
+  const rawBaseUrl = candidate.CHATWOOT_API_URL ?? env.CHATWOOT_API_URL ?? '';
   const token = candidate.CHATWOOT_API_TOKEN ?? env.CHATWOOT_API_TOKEN ?? '';
-  if (!baseUrl || !token) throw new CandidateValidationError('CHATWOOT_CONFIG_INCOMPLETE');
+  if (!rawBaseUrl || !token) throw new CandidateValidationError('CHATWOOT_CONFIG_INCOMPLETE');
+  let profileUrl: string;
+  try {
+    canonicalChatwootBaseUrl(rawBaseUrl);
+    profileUrl = buildChatwootApiUrl(rawBaseUrl, '/api/v1/profile');
+  } catch {
+    throw new CandidateValidationError('CHATWOOT_CONFIG_INCOMPLETE');
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(`${baseUrl}/api/v1/profile`, {
+    const response = await fetch(profileUrl, {
       method: 'GET',
       headers: { 'api_access_token': token },
       signal: controller.signal

@@ -9,6 +9,7 @@ import {
 } from '../core/conversation-service';
 import { ChatwootEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
+import { buildTelegramTargetEvidence } from '../core/outbound-evidence';
 import { logger } from '../observability/logger';
 import { getAttachmentConfig } from '../config/attachments';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
@@ -45,6 +46,7 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
 
     let threadRef = conv.operator_thread_ref;
     if (!threadRef) {
+      const operationId = `create_topic_${conv.id}`;
       const topicRes = await executeOutboundOperation(
         env,
         conv.id,
@@ -56,7 +58,11 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
           const res = await createTelegramTopic(env, env.BOT_GROUP_ID, topicName, lifecycle);
           return { providerMessageRef: res.messageThreadId };
         },
-        `create_topic_${conv.id}`
+        operationId,
+        {
+          subject: { type: 'CONVERSATION', ref: conv.id },
+          targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, null, 'createForumTopic')
+        }
       );
 
       if (topicRes.status === 'SENT' && topicRes.providerMessageRef) {
@@ -77,6 +83,7 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
     );
 
     if (content) {
+      const operationId = `send_tg_${payload.messageRef}`;
       await executeOutboundOperation(
         env,
         conv.id,
@@ -86,7 +93,11 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
           const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle);
           return { providerMessageRef: res.messageId };
         },
-        `send_tg_${payload.messageRef}`
+        operationId,
+        {
+          subject: { type: 'MESSAGE', ref: `chatwoot:${payload.messageRef}` },
+          targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage')
+        }
       );
     }
 
@@ -126,7 +137,13 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
         await closeTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref, lifecycle);
         return {};
       },
-      operationId
+      operationId,
+      {
+        subject: { type: 'CONVERSATION', ref: conv.id },
+        targetEvidence: buildTelegramTargetEvidence(
+          env, env.BOT_GROUP_ID, conv.operator_thread_ref, 'closeForumTopic'
+        )
+      }
     );
     if (result.status === 'SENT') {
       await updateOperatorThreadStatus(env, conv.id, conv.version, 'OPEN', 'CLOSED');
@@ -141,7 +158,13 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
         await reopenTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref, lifecycle);
         return {};
       },
-      operationId
+      operationId,
+      {
+        subject: { type: 'CONVERSATION', ref: conv.id },
+        targetEvidence: buildTelegramTargetEvidence(
+          env, env.BOT_GROUP_ID, conv.operator_thread_ref, 'reopenForumTopic'
+        )
+      }
     );
     if (result.status === 'SENT') {
       await updateOperatorThreadStatus(env, conv.id, conv.version, 'CLOSED', 'OPEN');

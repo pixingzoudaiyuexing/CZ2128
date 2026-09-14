@@ -16,7 +16,7 @@ If code and documentation conflict, stop and verify ground truth before changing
 
 ## Current Phase
 
-Phases 1, 2, 3 and 3.5 are complete and merged. Phase 4A reliability architecture is frozen. Phase 4B-1 error-taxonomy and retry-contract implementation is complete; Phase 4B-2A COMPLETE; Phase 4B-2B COMPLETE; Phase 4B-2C NOT STARTED.
+Phases 1, 2, 3 and 3.5 are complete and merged. Phase 4A reliability architecture is frozen. Phase 4B-1 error-taxonomy and retry-contract implementation is complete; Phase 4B-2A COMPLETE; Phase 4B-2B COMPLETE; Phase 4B-2C-1 IMPLEMENTED / IN REVIEW; Phase 4B-2C-2 and Phase 4B-2C-3 NOT STARTED.
 
 `ARCHITECTURE.md` and `DECISIONS.md` remain the approved V1 baseline. Phase 3 preserves the hardened webhook, Queue, outbound ambiguity and AI handoff contracts from Phases 1 and 2. Real provider, R2, proxy, cleanup, Queue/D1 concurrency and load validation remain pre-production requirements rather than completed production validation.
 
@@ -47,6 +47,9 @@ Runtime provider settings must be resolved as one D1 snapshot per HTTP request o
 - Never blindly repeat a visible external side effect because a Queue message was retried.
 - AI human handoff mode is separate from the transient generation lease.
 - An operator pause must win even if an AI request is already in flight; stale AI output must be discarded.
+- Outbound subject identity and versioned target evidence must be persisted before a provider-visible request and remain immutable for a deterministic operation ID.
+- Historical `AMBIGUOUS` remains `AMBIGUOUS`; reconciliation status supplies effective delivery semantics without creating a resend path.
+- Phase 4B-2C-1 may confirm Chatwoot delivery only through an exact unique `source_id`; zero or multiple bounded-search matches remain ambiguous.
 
 ## Telegram Topic Rule
 

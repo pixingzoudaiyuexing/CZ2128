@@ -10,6 +10,8 @@ import {
 import { retryAfterHeader } from '../core/retry';
 import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
 import { OutboundAttemptLifecycle } from '../core/outbound-operations';
+import { TelegramMethod } from '../core/outbound-evidence';
+import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -82,10 +84,12 @@ export async function deliverAttachmentToChatwoot(
   form.set('private', 'false');
   form.set('source_id', `cz2128:${operationId}`);
   form.append('attachments[]', new Blob([bytes], { type: row.mime_type }), row.safe_filename);
-  const baseUrl = env.CHATWOOT_API_URL.replace(/\/+$/, '');
   const request = await visibleFetch(
     'CHATWOOT',
-    `${baseUrl}/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`,
+    buildChatwootApiUrl(
+      env.CHATWOOT_API_URL,
+      `/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`
+    ),
     form,
     config.destinationTimeoutMs,
     { 'api_access_token': env.CHATWOOT_API_TOKEN },
@@ -109,7 +113,7 @@ export async function deliverAttachmentToChatwoot(
   }
 }
 
-function telegramMethod(row: AttachmentRow): { method: string; field: string } {
+export function telegramAttachmentMethod(row: AttachmentRow): { method: TelegramMethod; field: string } {
   if (row.attachment_type === 'photo' && Number(row.size_bytes || 0) <= TELEGRAM_PHOTO_MAX_BYTES && row.mime_type.startsWith('image/')) {
     return { method: 'sendPhoto', field: 'photo' };
   }
@@ -133,7 +137,7 @@ export async function deliverAttachmentToTelegram(
   ) {
     throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' });
   }
-  const target = telegramMethod(row);
+  const target = telegramAttachmentMethod(row);
   const form = new FormData();
   form.set('chat_id', env.BOT_GROUP_ID);
   form.set('message_thread_id', threadRef);

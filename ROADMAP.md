@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2A complete**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete / Phase 4B-2C-1 implemented, in review**
 
 ## Phase 0 — Architecture Freeze
 
@@ -146,10 +146,13 @@ Current status:
 - Phase 4A reliability architecture: **COMPLETE / FROZEN**
 - Phase 4B-1 canonical error taxonomy and retry contracts: **COMPLETE**
 - Phase 4B-2A Reliability Persistence Foundation: **COMPLETE / MERGED**
-  - Note: 0005 expands ai_runs durable status capacity. Legacy FAILED is intentionally preserved during the Phase 4B-1 compatibility window. Phase 4B-2C will activate the new AI durable state machine and retire legacy FAILED only after the runtime understands the new terminal/retry states.
+  - Note: 0005 expands ai_runs durable status capacity. Legacy FAILED is intentionally preserved during the Phase 4B-1 compatibility window. Phase 4B-2C-3 will activate the new AI durable state machine and retire legacy FAILED only after the runtime understands the new terminal/retry states.
 - Phase 4B-2A: **COMPLETE**
 - Phase 4B-2B: **COMPLETE / MERGED**
-- Phase 4B-2C: **NOT STARTED**
+- Phase 4B-2C-1 Outbound Reconciliation + Target Evidence: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-2C-2 Manual Retry Child Operations + Domain Resolution: **NOT STARTED**
+- Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **NOT STARTED**
+- Phase 4B-3 reliability control-plane exposure: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
 Scope:
@@ -166,6 +169,8 @@ Scope:
 - concurrency/load tests to decide whether per-conversation Durable Objects are actually needed
 
 Durable Objects may be introduced here only if measured correctness/ordering problems justify them.
+
+Phase 4B-2C-1 uses the existing `0005` columns and tables. It persists finite subject identity and versioned sanitized target evidence before visible requests, blocks retries when stored and current target identity differ, preserves historical `AMBIGUOUS`, supports effective-SENT interpretation after confirmed/manual delivery, and provides bounded Chatwoot exact-`source_id` positive reconciliation through five supported `after`-cursor pages of up to 100 messages. Positive confirmation requires observed provider-history exhaustion; reaching the bound never proves uniqueness. Zero/multiple matches, invalid or non-advancing cursors and all Telegram ambiguity remain unresolved. The phase also adds internal manual mark-delivered/cancel persistence with atomic reliability audit. It does not implement manual retry children, visible redrive, AI durable retry activation, Admin UI or DLQ consumption.
 
 ## Phase 5 — Knowledge / RAG
 

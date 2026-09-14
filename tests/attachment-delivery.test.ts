@@ -70,6 +70,24 @@ describe('attachment multipart delivery', () => {
     expect((form.get('attachments[]') as File).size).toBe(3);
   });
 
+  it('uses the canonical Chatwoot base path for attachment delivery', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 44 }), { status: 200 })
+    );
+    await deliverAttachmentToChatwoot(
+      { ...env, CHATWOOT_API_URL: 'https://chatwoot.example/tenant-a/' },
+      config,
+      attachment(),
+      '1',
+      '2',
+      'attachment_chatwoot:att_1',
+      new Uint8Array([1, 2, 3]).buffer
+    );
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://chatwoot.example/tenant-a/api/v1/accounts/1/conversations/2/messages'
+    );
+  });
+
   it.each([
     ['photo', 'image/jpeg', 10 * 1024 * 1024, 'sendPhoto', 'photo'],
     ['photo', 'image/jpeg', 10 * 1024 * 1024 + 1, 'sendDocument', 'document'],

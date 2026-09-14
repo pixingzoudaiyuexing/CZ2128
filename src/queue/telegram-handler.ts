@@ -8,6 +8,7 @@ import { insertMessage } from '../core/conversation-service';
 import { TelegramMessageEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
+import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 
 export async function processTelegramEvent(event: TelegramMessageEvent, env: Env): Promise<void> {
   const payload = event.payload;
@@ -50,7 +51,13 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
         const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, payload.threadRef, acknowledgement, lifecycle);
         return { providerMessageRef: res.messageId };
       },
-      operationId
+      operationId,
+      {
+        subject: { type: 'CONTROL_ACK', ref: `telegram:${supportProfileVersion}:${payload.updateRef}` },
+        targetEvidence: buildTelegramTargetEvidence(
+          env, env.BOT_GROUP_ID, payload.threadRef, 'sendMessage'
+        )
+      }
     );
     return;
   }
@@ -60,6 +67,7 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
   );
   if (humanAction === 'STALE_PROFILE') return;
   if (content) {
+    const operationId = `send_chatwoot_${scopedMessageRef}`;
     await insertMessage(
       env,
       conv.id,
@@ -87,7 +95,13 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
         );
         return { providerMessageRef: res.messageId };
       },
-      `send_chatwoot_${scopedMessageRef}`
+      operationId,
+      {
+        subject: { type: 'MESSAGE', ref: `telegram:${scopedMessageRef}` },
+        targetEvidence: await buildChatwootTargetEvidence(
+          env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, operationId
+        )
+      }
     );
   }
 
