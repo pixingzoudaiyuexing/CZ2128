@@ -49,6 +49,7 @@
 - Child creation, parent transition and the sanitized creation audit use one D1 batch. Duplicate callers locate the same child, while the existing outbound lease prevents two visible provider effects.
 - Payload reconstruction is durable-state-only. Message text comes from `messages`; attachment bytes must be unexpired and retrievable from private R2 before the decision is consumed; topic creation uses the durable canonical fallback title.
 - A dedicated domain-resolution service repairs attachment delivery and Telegram topic mapping/status after effective delivery. It is idempotent, CAS-safe and never invokes a provider action.
+- Telegram conversation domain repair is fenced by the current effective support-group identity. Historical evidence for an old `BOT_GROUP_ID` cannot restore a cleared topic mapping or mutate close/reopen state after group migration; a same-group Support Bot rotation remains repair-compatible.
 - `AI_RUN` and `CONTROL_ACK` manual retry remain rejected. Phase 4B-2C-3, Admin reliability exposure, DLQ consumption and `CONFIRMED_NOT_SENT` activation remain not started.
 
 ## Phase 3 Attachment Contract

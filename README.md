@@ -10,6 +10,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C-1 ar
 - Message content is reconstructed from durable `messages`, attachment bytes from unexpired private R2 state, and topic creation from a durable canonical title. Payload content is not copied into target evidence or reliability audit.
 - Target drift blocks child creation. Chatwoot children use a new child-scoped `source_id`; Telegram group, thread, method and runtime generation must remain compatible.
 - Effective delivery repairs attachment/topic domain state through idempotent D1 CAS without another provider action.
+- Telegram topic repair additionally requires the operation's persisted group identity to match the current effective `BOT_GROUP_ID`, preventing old-group topic references from returning after support-group migration.
 - No Admin endpoint/command exposes this service yet. AI durable retry, DLQ consumption and reliability UI remain later phases.
 
 ## Setup

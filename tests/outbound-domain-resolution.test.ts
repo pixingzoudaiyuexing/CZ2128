@@ -4,6 +4,7 @@ import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../src
 import { resolveOutboundDomainState } from '../src/core/outbound-domain-resolution';
 import { manualCancel, manualMarkDelivered, reconcileOutboundOperation } from '../src/core/outbound-reconciliation';
 import { manualRetryOutboundOperation } from '../src/core/outbound-manual-retry';
+import { migrateTelegramGroup } from '../src/runtime-config/service';
 import { SqliteD1 } from './helpers/sqlite-d1';
 
 function makeEnv(db: SqliteD1, bucketGet = vi.fn()): Env {
@@ -352,6 +353,109 @@ describe('resolved outbound domain state', () => {
     db.close();
   });
 
+  it('blocks old-group CREATE_TOPIC repair after the actual support-group migration flow', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'old-topic');
+    const oldEnv = { ...makeEnv(db), BOT_GROUP_ID: '-100111' };
+    await seedOperation(db, buildTelegramTargetEvidence(
+      oldEnv, '-100111', null, 'createForumTopic'
+    ), {
+      operationType: 'CREATE_TOPIC', subjectType: 'CONVERSATION', subjectRef: 'conv'
+    });
+    await migrateTelegramGroup(oldEnv, '-100222', 0, '42', 'migration-update');
+    const currentEnv = { ...oldEnv, BOT_GROUP_ID: '-100222' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(manualMarkDelivered(
+      currentEnv, 'op-1', { type: 'ADMIN', ref: '42' },
+      'OPERATOR_CONFIRMED_DELIVERY', 'old-topic-702'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_DOMAIN_STATE_CONFLICT' });
+    await expect(manualMarkDelivered(
+      currentEnv, 'op-1', { type: 'ADMIN', ref: '42' },
+      'OPERATOR_CONFIRMED_DELIVERY', 'old-topic-702'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_DOMAIN_STATE_CONFLICT' });
+
+    const conversation = await db.prepare(
+      'SELECT operator_thread_ref, operator_thread_status FROM conversations WHERE id = ?'
+    ).bind('conv').first<any>();
+    const operation = await db.prepare(
+      'SELECT status, reconciliation_status FROM outbound_operations WHERE id = ?'
+    ).bind('op-1').first<any>();
+    expect(conversation).toEqual({ operator_thread_ref: null, operator_thread_status: 'OPEN' });
+    expect(operation).toEqual({ status: 'AMBIGUOUS', reconciliation_status: 'MANUAL_MARK_DELIVERED' });
+    expect(await db.prepare(
+      "SELECT COUNT(*) AS count FROM reliability_audit WHERE action = 'MANUAL_MARK_DELIVERED'"
+    ).first<{ count: number }>()).toEqual({ count: 1 });
+    expect(await db.prepare(
+      "SELECT COUNT(*) AS count FROM reliability_audit WHERE action = 'DOMAIN_STATE_CONFLICT'"
+    ).first<{ count: number }>()).toEqual({ count: 1 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('blocks old-group CREATE_TOPIC domain repair even when the mapping is empty', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, null);
+    const currentEnv = makeEnv(db);
+    const oldEnv = { ...currentEnv, BOT_GROUP_ID: '-100222' };
+    await seedOperation(db, buildTelegramTargetEvidence(
+      oldEnv, '-100222', null, 'createForumTopic'
+    ), {
+      operationType: 'CREATE_TOPIC', status: 'SENT', reconciliation: 'NOT_REQUIRED',
+      providerRef: '702', subjectType: 'CONVERSATION', subjectRef: 'conv'
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(resolveOutboundDomainState(currentEnv, 'op-1')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+    expect((await db.prepare('SELECT operator_thread_ref FROM conversations WHERE id = ?')
+      .bind('conv').first<any>()).operator_thread_ref).toBeNull();
+    expect(await db.prepare(
+      "SELECT action, reason_code FROM reliability_audit WHERE action = 'DOMAIN_STATE_CONFLICT'"
+    ).first()).toEqual({
+      action: 'DOMAIN_STATE_CONFLICT', reason_code: 'CONVERSATION_GROUP_TARGET_CONFLICT'
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('allows same-group CREATE_TOPIC repair after a normal support bot rotation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, null);
+    const storedEnv = {
+      ...makeEnv(db),
+      runtimeConfigSnapshot: {
+        sources: { TELEGRAM_SUPPORT_PROFILE: 'D1', BOT_GROUP_ID: 'D1' },
+        versions: { TELEGRAM_SUPPORT_PROFILE: 7, BOT_GROUP_ID: 4 },
+        errors: {}
+      }
+    } as Env;
+    await seedOperation(db, buildTelegramTargetEvidence(
+      storedEnv, '-1001', null, 'createForumTopic'
+    ), {
+      operationType: 'CREATE_TOPIC', status: 'SENT', reconciliation: 'NOT_REQUIRED',
+      providerRef: '704', subjectType: 'CONVERSATION', subjectRef: 'conv'
+    });
+    const rotatedEnv = {
+      ...storedEnv,
+      runtimeConfigSnapshot: {
+        ...storedEnv.runtimeConfigSnapshot!,
+        versions: { TELEGRAM_SUPPORT_PROFILE: 8, BOT_GROUP_ID: 4 }
+      }
+    } as Env;
+
+    await expect(resolveOutboundDomainState(rotatedEnv, 'op-1')).resolves.toEqual({
+      changed: true, domain: 'CONVERSATION'
+    });
+    expect((await db.prepare('SELECT operator_thread_ref FROM conversations WHERE id = ?')
+      .bind('conv').first<any>()).operator_thread_ref).toBe('704');
+    db.close();
+  });
+
   it('does not overwrite a conflicting CREATE_TOPIC thread reference', async () => {
     const db = new SqliteD1();
     db.migrate();
@@ -408,6 +512,83 @@ describe('resolved outbound domain state', () => {
     );
     expect((await db.prepare('SELECT operator_thread_status FROM conversations WHERE id = ?')
       .bind('conv').first<any>()).operator_thread_status).toBe(expected);
+    db.close();
+  });
+
+  it.each([
+    ['CLOSE_TOPIC', 'CLOSED', 'closeForumTopic'],
+    ['REOPEN_TOPIC', 'OPEN', 'reopenForumTopic']
+  ] as const)('does not treat stale-group %s as idempotent success', async (operationType, status, method) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, '77', status);
+    const currentEnv = makeEnv(db);
+    const oldEnv = { ...currentEnv, BOT_GROUP_ID: '-100222' };
+    await seedOperation(db, buildTelegramTargetEvidence(oldEnv, '-100222', '77', method), {
+      operationType, status: 'SENT', reconciliation: 'NOT_REQUIRED',
+      subjectType: 'CONVERSATION', subjectRef: 'conv'
+    });
+
+    await expect(resolveOutboundDomainState(currentEnv, 'op-1')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+    expect((await db.prepare('SELECT operator_thread_status FROM conversations WHERE id = ?')
+      .bind('conv').first<any>()).operator_thread_status).toBe(status);
+    db.close();
+  });
+
+  it.each([
+    ['CLOSE_TOPIC', 'OPEN', 'closeForumTopic'],
+    ['REOPEN_TOPIC', 'CLOSED', 'reopenForumTopic']
+  ] as const)('blocks old-group %s with the same thread reference', async (operationType, status, method) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, '77', status);
+    const currentEnv = makeEnv(db);
+    const oldEnv = { ...currentEnv, BOT_GROUP_ID: '-100222' };
+    await seedOperation(db, buildTelegramTargetEvidence(oldEnv, '-100222', '77', method), {
+      operationType, status: 'SENT', reconciliation: 'NOT_REQUIRED',
+      subjectType: 'CONVERSATION', subjectRef: 'conv'
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(resolveOutboundDomainState(currentEnv, 'op-1')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+    expect((await db.prepare('SELECT operator_thread_status FROM conversations WHERE id = ?')
+      .bind('conv').first<any>()).operator_thread_status).toBe(status);
+    expect(fetchMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it.each([
+    ['missing', '', undefined],
+    ['invalid', '-99', undefined],
+    ['runtime-config unavailable', '-1001', {
+      errors: { BOT_GROUP_ID: 'RUNTIME_CONFIG_VALUE_INVALID' }
+    }]
+  ] as const)('fails closed when the current effective Telegram group is %s', async (_label, groupId, snapshot) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, null);
+    const storedEnv = makeEnv(db);
+    await seedOperation(db, buildTelegramTargetEvidence(
+      storedEnv, '-1001', null, 'createForumTopic'
+    ), {
+      operationType: 'CREATE_TOPIC', status: 'SENT', reconciliation: 'NOT_REQUIRED',
+      providerRef: '703', subjectType: 'CONVERSATION', subjectRef: 'conv'
+    });
+    const unavailableEnv = {
+      ...storedEnv,
+      BOT_GROUP_ID: groupId,
+      ...(snapshot ? { runtimeConfigSnapshot: snapshot as any } : {})
+    };
+
+    await expect(resolveOutboundDomainState(unavailableEnv, 'op-1')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+    expect((await db.prepare('SELECT operator_thread_ref FROM conversations WHERE id = ?')
+      .bind('conv').first<any>()).operator_thread_ref).toBeNull();
     db.close();
   });
 

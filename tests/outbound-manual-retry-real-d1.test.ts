@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { resolveOutboundDomainState } from '../src/core/outbound-domain-resolution';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,9 +20,14 @@ describe('real D1 manual retry and domain CAS', () => {
   }
 
   function runFile(file: string, json = false): string {
-    return execFileSync('npx', args(file, json), {
-      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-    });
+    try {
+      return execFileSync('npx', args(file, json), {
+        encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (error) {
+      const failure = error as { stdout?: string; stderr?: string };
+      throw new Error(`${failure.stdout || ''}\n${failure.stderr || ''}`.trim());
+    }
   }
 
   function runSql(sql: string): any[] {
@@ -29,6 +35,48 @@ describe('real D1 manual retry and domain CAS', () => {
     writeFileSync(file, sql);
     return JSON.parse(runFile(file, true).trim().replace(/^[\s\S]*?(?=\[)/, ''));
   }
+
+  function sqlValue(value: unknown): string {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+    if (typeof value !== 'string') throw new Error('Unsupported real D1 test binding');
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+
+  function bindSql(query: string, values: unknown[]): string {
+    let index = 0;
+    const bound = query.replace(/\?/g, () => {
+      if (index >= values.length) throw new Error('Missing real D1 test binding');
+      return sqlValue(values[index++]);
+    });
+    if (index !== values.length) throw new Error('Unused real D1 test binding');
+    return bound;
+  }
+
+  const realD1 = {
+    prepare(query: string) {
+      let values: unknown[] = [];
+      const statement = {
+        bind(...params: unknown[]) {
+          values = params;
+          return statement;
+        },
+        async first<T>() {
+          const result = runSql(`${bindSql(query, values)};`)[0];
+          return (result.results?.[0] as T | undefined) || null;
+        },
+        async all<T>() {
+          const result = runSql(`${bindSql(query, values)};`)[0];
+          return { results: (result.results || []) as T[], success: true, meta: result.meta || {} };
+        },
+        async run() {
+          const result = runSql(`${bindSql(query, values)};`)[0];
+          return { success: true, meta: result.meta || { changes: 0 } };
+        }
+      };
+      return statement;
+    }
+  };
 
   beforeAll(() => {
     mkdirSync(persistDir, { recursive: true });
@@ -46,7 +94,8 @@ describe('real D1 manual retry and domain CAS', () => {
        operator_channel, operator_thread_ref, operator_thread_status, created_at, updated_at, version)
       VALUES
       ('conv-create', 'chatwoot', '1', '2', '3', 'telegram', NULL, 'OPEN', 1, 1, 1),
-      ('conv-status', 'chatwoot', '1', '4', '5', 'telegram', '77', 'OPEN', 1, 1, 1);
+      ('conv-status', 'chatwoot', '1', '4', '5', 'telegram', '77', 'OPEN', 1, 1, 1),
+      ('conv-stale-group', 'chatwoot', '1', '6', '7', 'telegram', '88', 'OPEN', 1, 1, 1);
 
       INSERT INTO outbound_operations
       (id, conversation_id, destination_provider, operation_type, status, attempt_count,
@@ -64,7 +113,10 @@ describe('real D1 manual retry and domain CAS', () => {
        '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","method":"createForumTopic"}', 1, 1),
       ('op-close', 'conv-status', 'telegram', 'CLOSE_TOPIC', 'SENT', 1, 1, 'NOT_REQUIRED',
        'CONVERSATION', 'conv-status',
-       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"77","method":"closeForumTopic"}', 1, 1);
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"77","method":"closeForumTopic"}', 1, 1),
+      ('op-stale-group', 'conv-stale-group', 'telegram', 'CLOSE_TOPIC', 'SENT', 1, 1, 'NOT_REQUIRED',
+       'CONVERSATION', 'conv-stale-group',
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-100111","threadRef":"88","method":"closeForumTopic"}', 1, 1);
 
       UPDATE outbound_operations SET provider_message_ref = '701' WHERE id = 'op-create';
       UPDATE outbound_operations SET provider_message_ref = '601' WHERE id = 'op-attachment';
@@ -237,4 +289,25 @@ describe('real D1 manual retry and domain CAS', () => {
       operator_thread_status: 'CLOSED', operator_thread_ref: '77', version: 2, audit_count: 1
     });
   }, 30_000);
+
+  it('real D1 service blocks a stale-group operation with the same thread reference', async () => {
+    const env = { DB: realD1, BOT_GROUP_ID: '-100222' } as any;
+
+    await expect(resolveOutboundDomainState(env, 'op-stale-group')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+    await expect(resolveOutboundDomainState(env, 'op-stale-group')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+
+    const row = runSql(`
+      SELECT operator_thread_ref, operator_thread_status,
+        (SELECT COUNT(*) FROM reliability_audit
+         WHERE entity_id = 'op-stale-group' AND action = 'DOMAIN_STATE_CONFLICT') AS audit_count
+      FROM conversations WHERE id = 'conv-stale-group';
+    `)[0].results[0];
+    expect(row).toEqual({
+      operator_thread_ref: '88', operator_thread_status: 'OPEN', audit_count: 1
+    });
+  }, 60_000);
 });

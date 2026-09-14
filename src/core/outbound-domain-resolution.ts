@@ -265,6 +265,15 @@ async function resolveConversation(
   if (!evidence || evidence.provider !== 'telegram' || evidence.method !== expectedMethod) {
     return auditConflict(env, operation, 'CONVERSATION_TARGET_EVIDENCE_INVALID');
   }
+  const currentGroup = env.BOT_GROUP_ID;
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.BOT_GROUP_ID ||
+    !/^-100\d{1,16}$/.test(currentGroup) ||
+    evidence.groupRef !== currentGroup
+  ) {
+    return auditConflict(env, operation, 'CONVERSATION_GROUP_TARGET_CONFLICT');
+  }
   const conversation = await loadConversation(env, operation);
   if (operation.operation_type === 'CREATE_TOPIC') {
     return resolveCreateTopic(env, operation, conversation);
