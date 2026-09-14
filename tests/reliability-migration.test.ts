@@ -16,11 +16,12 @@ describe('reliability migration contract', () => {
     expect(migration).toContain('ALTER TABLE event_receipts ADD COLUMN conversation_id TEXT;');
   });
 
-  it('rebuilds ai_runs with expanded status CHECK including FAILED_FINAL and FAILED_RETRYABLE', () => {
+  it('rebuilds ai_runs with expanded status CHECK including FAILED, FAILED_FINAL and FAILED_RETRYABLE', () => {
     expect(migration).toContain('CREATE TABLE ai_runs_new (');
+    expect(migration).toContain("'FAILED'");
     expect(migration).toContain("'FAILED_FINAL'");
     expect(migration).toContain("'FAILED_RETRYABLE'");
-    expect(migration).toContain('WHEN status = \'FAILED\' THEN \'FAILED_FINAL\'');
+    expect(migration).not.toContain('WHEN status = \'FAILED\' THEN \'FAILED_FINAL\'');
     expect(migration).toContain('ALTER TABLE ai_runs_new RENAME TO ai_runs;');
   });
 

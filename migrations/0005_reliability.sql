@@ -89,10 +89,7 @@ SELECT
     handoff_epoch,
     provider_response_ref,
     response_text,
-    CASE 
-        WHEN status = 'FAILED' THEN 'FAILED_FINAL' 
-        ELSE status 
-    END AS status,
+    status,
     0 AS attempt_count,
     NULL AS next_retry_at,
     last_error,

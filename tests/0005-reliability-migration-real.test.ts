@@ -131,14 +131,14 @@ describe('Real 0005 Reliability Migration', () => {
     });
   }, 30000);
 
-  it('safely maps FAILED to FAILED_FINAL for legacy AI runs but preserves the others', () => {
+  it('preserves FAILED for legacy AI runs', () => {
     const res = runSql(`SELECT trigger_event_ref, status FROM ai_runs`);
     const runs = res[0].results;
     
     const getStatus = (id: string) => runs.find((r: any) => r.trigger_event_ref === id).status;
     expect(getStatus('ai_pending')).toBe('PENDING');
     expect(getStatus('ai_success')).toBe('SUCCESS');
-    expect(getStatus('ai_failed')).toBe('FAILED_FINAL');
+    expect(getStatus('ai_failed')).toBe('FAILED');
     expect(getStatus('ai_cancelled')).toBe('CANCELLED_BY_HANDOFF');
     expect(getStatus('ai_stale')).toBe('DISCARDED_STALE');
   }, 30000);
