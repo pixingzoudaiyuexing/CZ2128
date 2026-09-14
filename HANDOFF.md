@@ -1,4 +1,4 @@
-# CZ2128 - Phase 4A Frozen / Phase 4B-1 In Review
+# CZ2128 - Phase 4A Frozen / Phase 4B-1 Complete
 
 ## 状态
 - **Current Branch**: `main`
@@ -9,7 +9,7 @@
 - **PR #3**: merged; Phase 3 complete and frozen
 - **PR #4**: merged; Phase 3.5 complete and frozen
 - **Phase 4A**: reliability architecture complete and frozen
-- **Phase 4B-1**: canonical error taxonomy and retry contracts implemented / in review
+- **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2 / Phase 4C**: not started
 - **Final HEAD / CI**: 以 Phase 3.5 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
