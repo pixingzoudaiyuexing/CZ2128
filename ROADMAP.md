@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3 complete and merged — Phase 3.5 in review — Phase 4 not started**
+Status: **Phases 1-3.5 complete and merged — Phase 4 not started**
 
 ## Phase 0 — Architecture Freeze
 
@@ -120,7 +120,7 @@ Code completion does not imply production validation. Real R2, Telegram, Chatwoo
 
 ## Phase 3.5 — Runtime Config + Telegram Admin Control Plane
 
-Status: **IMPLEMENTED / PR #4 IN REVIEW**
+Status: **COMPLETE / MERGED**
 
 Scope:
 

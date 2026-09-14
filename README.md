@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3 are complete and merged. Phase 3.5 is implemented in PR #4 and awaiting review. Phase 4 has not started. Phase 3 code completion is not production validation.
+Phases 1-3.5 are complete and merged. Phase 4 has not started. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
 
 ## Setup
 - `npm ci`

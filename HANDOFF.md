@@ -1,15 +1,15 @@
-# CZ2128 - Phase 3.5 Runtime Control Plane Handoff
+# CZ2128 - Phase 3.5 Complete / Main Freeze
 
 ## 状态
-- **Current Branch**: `codex/phase3.5-runtime-control-plane`
+- **Current Branch**: `main`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
 - **PR #2**: merged; Phase 2 complete and frozen
 - **PR #3**: merged; Phase 3 complete and frozen
-- **PR #4**: Phase 3.5 implementation in review; do not merge before Primary approval
+- **PR #4**: merged; Phase 3.5 complete and frozen
 - **Phase 4**: not started
-- **Final HEAD / CI**: 以 Phase 3 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
+- **Final HEAD / CI**: 以 Phase 3.5 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
 - Provider ingress is authenticated before normalization into a version 1 typed Queue envelope.
@@ -64,4 +64,5 @@
 - The Support profile version scopes Queue/event/message/outbound identity and `(profile version, update_id)` ordering; old-generation Queue events cannot perform side effects.
 - Runtime-config store read failure fails closed for runtime-controlled providers; env fallback requires a successful D1 read proving absence.
 - Support Bot rotation requests `drop_pending_updates=true` when setting the candidate webhook.
-- The Cloudflare R2 account is enabled, but Phase 3 real R2 staging has not yet been rerun; staging bucket/lifecycle validation and all provider/Admin Bot staging remain outstanding.
+- The Cloudflare R2 account is enabled, but real R2 staging remains incomplete and bucket/lifecycle validation is pending.
+- Real Admin Bot, Support Bot rotation, Telegram group migration, Telegram provider, Chatwoot and Queue/D1 concurrency validation remain NOT TESTED.
