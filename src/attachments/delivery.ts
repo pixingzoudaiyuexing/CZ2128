@@ -134,14 +134,17 @@ export async function deliverAttachmentToTelegram(
   );
   const response = request.response;
   if (!response.ok) {
-    request.finish();
-    const telegramRetryAfter = response.status === 429
-      ? await readTelegramRetryAfterMetadata(response)
-      : undefined;
-    throw visibleHttpDeliveryError('TELEGRAM', response.status, {
-      telegramRetryAfter,
-      httpRetryAfter: retryAfterHeader(response)
-    });
+    try {
+      const telegramRetryAfter = response.status === 429
+        ? await readTelegramRetryAfterMetadata(response)
+        : undefined;
+      throw visibleHttpDeliveryError('TELEGRAM', response.status, {
+        telegramRetryAfter,
+        httpRetryAfter: retryAfterHeader(response)
+      });
+    } finally {
+      request.finish();
+    }
   }
   try {
     const payload = await response.json() as any;

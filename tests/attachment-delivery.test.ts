@@ -108,6 +108,48 @@ describe('attachment multipart delivery', () => {
     expect(String(error)).not.toContain('private provider detail');
   });
 
+  it('keeps the destination timeout active while a Telegram 429 body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      let requestSignal: AbortSignal | null | undefined;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        requestSignal = init?.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => {
+              controller.error(new DOMException('Aborted', 'AbortError'));
+            }, { once: true });
+          }
+        });
+        return new Response(body, { status: 429 });
+      });
+
+      const pending = deliverAttachmentToTelegram(
+        env,
+        { ...config, destinationTimeoutMs: 10 },
+        attachment(),
+        '7',
+        new Uint8Array([1]).buffer
+      ).then(() => null, value => value as ProviderDeliveryError);
+
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(11);
+      await Promise.resolve();
+
+      expect(requestSignal?.aborted).toBe(true);
+      expect(settled).toBe(true);
+      const outcome = await pending;
+      expect(outcome).toMatchObject({
+        outcome: 'RETRYABLE',
+        code: 'OUTBOUND_RATE_LIMITED',
+        retryAfterSeconds: expect.any(Number)
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([408, 500, 502, 503, 504])('keeps Telegram attachment API %s ambiguous', async status => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       ok: false, error_code: status, description: 'private provider detail'

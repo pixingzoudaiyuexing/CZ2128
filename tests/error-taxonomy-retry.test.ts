@@ -26,7 +26,10 @@ import {
   resolveRetryAfterSeconds
 } from '../src/core/retry';
 import { logger } from '../src/observability/logger';
-import { readTelegramRetryAfterMetadata } from '../src/adapters/telegram/error-metadata';
+import {
+  MAX_TELEGRAM_ERROR_METADATA_READ_MS,
+  readTelegramRetryAfterMetadata
+} from '../src/adapters/telegram/error-metadata';
 
 describe('canonical safe error taxonomy', () => {
   it('registers every declared code exactly once with finite dimensions', () => {
@@ -148,5 +151,30 @@ describe('Retry-After contract', () => {
       parameters: { retry_after: 10 }, padding: 'x'.repeat(5000)
     }), { status: 429 });
     await expect(readTelegramRetryAfterMetadata(response)).resolves.toBeUndefined();
+  });
+
+  it('cancels a stalled Telegram metadata body at its own 1000ms deadline', async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    try {
+      const response = new Response(new ReadableStream<Uint8Array>({
+        pull: () => new Promise(() => undefined),
+        cancel: () => { cancelled = true; }
+      }), { status: 429 });
+      const metadata = readTelegramRetryAfterMetadata(response);
+      const outcome = Promise.race([
+        metadata,
+        new Promise<'UNBOUNDED'>(resolve => setTimeout(() => resolve('UNBOUNDED'), 1001))
+      ]);
+
+      await vi.advanceTimersByTimeAsync(1001);
+
+      expect(MAX_TELEGRAM_ERROR_METADATA_READ_MS).toBe(1000);
+      expect(await outcome).toBeUndefined();
+      expect(cancelled).toBe(true);
+      expect(response.body?.locked).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

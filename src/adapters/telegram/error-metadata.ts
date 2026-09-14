@@ -1,4 +1,7 @@
 const MAX_TELEGRAM_ERROR_METADATA_BYTES = 4096;
+export const MAX_TELEGRAM_ERROR_METADATA_READ_MS = 1000;
+
+const METADATA_READ_TIMEOUT = Symbol('TELEGRAM_ERROR_METADATA_READ_TIMEOUT');
 
 export function telegramRetryAfterValue(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object') return undefined;
@@ -12,13 +15,22 @@ export async function readTelegramRetryAfterMetadata(response: Response): Promis
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof METADATA_READ_TIMEOUT>(resolve => {
+    timeout = setTimeout(() => resolve(METADATA_READ_TIMEOUT), MAX_TELEGRAM_ERROR_METADATA_READ_MS);
+  });
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const next = await Promise.race([reader.read(), deadline]);
+      if (next === METADATA_READ_TIMEOUT) {
+        void reader.cancel('TELEGRAM_ERROR_METADATA_READ_TIMEOUT').catch(() => undefined);
+        return undefined;
+      }
+      const { done, value } = next;
       if (done) break;
       size += value.byteLength;
       if (size > MAX_TELEGRAM_ERROR_METADATA_BYTES) {
-        await reader.cancel('TELEGRAM_ERROR_METADATA_TOO_LARGE');
+        void reader.cancel('TELEGRAM_ERROR_METADATA_TOO_LARGE').catch(() => undefined);
         return undefined;
       }
       chunks.push(value);
@@ -26,7 +38,8 @@ export async function readTelegramRetryAfterMetadata(response: Response): Promis
   } catch {
     return undefined;
   } finally {
-    reader.releaseLock();
+    if (timeout !== undefined) clearTimeout(timeout);
+    try { reader.releaseLock(); } catch { /* cancellation may still be settling */ }
   }
   const bytes = new Uint8Array(size);
   let offset = 0;
