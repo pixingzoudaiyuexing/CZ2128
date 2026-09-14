@@ -12,8 +12,14 @@ import { hashAttachmentToken } from '../core/attachments';
 import { RetryableProcessingError, SafeError, safeErrorCode } from '../core/errors';
 import { AttachmentTransferEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
-import { deliverAttachmentToChatwoot, deliverAttachmentToTelegram, loadAttachmentBuffer } from './delivery';
+import {
+  deliverAttachmentToChatwoot,
+  deliverAttachmentToTelegram,
+  loadAttachmentBuffer,
+  telegramAttachmentMethod
+} from './delivery';
 import { AttachmentProcessingError, downloadChatwootAttachment, downloadTelegramAttachment, storeAttachmentStream } from './source';
+import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 
 export async function processAttachmentTransfer(event: AttachmentTransferEvent, env: Env): Promise<void> {
   const config = getAttachmentConfig(env);
@@ -83,6 +89,19 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
     }
     const bytes = await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
     const operationId = `attachment_${row.destination_provider}:${row.id}`;
+    const targetEvidence = row.destination_provider === 'chatwoot'
+      ? await buildChatwootTargetEvidence(
+          env,
+          conversation.helpdesk_account_ref,
+          conversation.helpdesk_conversation_ref,
+          operationId
+        )
+      : buildTelegramTargetEvidence(
+          env,
+          env.BOT_GROUP_ID,
+          conversation.operator_thread_ref,
+          telegramAttachmentMethod(row).method
+        );
     const result = await executeOutboundOperation(
       env,
       row.conversation_id,
@@ -95,7 +114,11 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
           )
         : deliverAttachmentToTelegram(env, config, row, conversation.operator_thread_ref, bytes, lifecycle),
       operationId,
-      { leaseSeconds: config.outboundLeaseSeconds }
+      {
+        leaseSeconds: config.outboundLeaseSeconds,
+        subject: { type: 'ATTACHMENT', ref: row.id },
+        targetEvidence
+      }
     );
 
     if (result.status === 'SENT') {

@@ -162,7 +162,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Decision:** 0005 migration expands `ai_runs` durable status capacity but intentionally preserves legacy `FAILED` during the Phase 4B-1 compatibility window. 
 
-**Reason:** Unchanged Phase 4B-1 runtime treats `FAILED_FINAL` as a generatable state because it doesn't recognize it. Mapping to `FAILED_FINAL` prematurely causes overlapping deployments to blindly retry already-failed requests. Phase 4B-2C will activate the new AI durable state machine and retire legacy `FAILED` only after the runtime understands the new terminal/retry states.
+**Reason:** Unchanged Phase 4B-1 runtime treats `FAILED_FINAL` as a generatable state because it doesn't recognize it. Mapping to `FAILED_FINAL` prematurely causes overlapping deployments to blindly retry already-failed requests. Phase 4B-2C-3 will activate the new AI durable state machine and retire legacy `FAILED` only after the runtime understands the new terminal/retry states.
 
 ## Phase 4B-2B
 - v2 lease-token compatibility rule applied for robust boundary handoff
@@ -170,3 +170,17 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 - legacy expired SENDING is never auto-retried
 - new v2 pre-request expired SENDING may be safely reclaimed
 - started request expiry becomes AMBIGUOUS
+
+## D-024 — Persist immutable outbound subject and target evidence
+
+**Decision:** Every new outbound operation persists one finite subject identity and one versioned, sanitized target-evidence document before a provider-visible request. The same deterministic operation ID cannot be reused with a different subject or material target identity. Existing attempted rows without evidence are never assigned historical identity from current mutable runtime configuration.
+
+**Reason:** A safe retry must prove it is addressing the same business subject and provider destination as the original attempt. Current configuration cannot prove where a historical request was sent.
+
+## D-025 — Reconcile ambiguity without rewriting delivery history or resending
+
+**Decision:** The original delivery status remains `AMBIGUOUS`. `CONFIRMED_SENT` and `MANUAL_MARK_DELIVERED` supply effective-SENT behavior without invoking a provider action. Chatwoot may be positively confirmed only by an exact unique `source_id=cz2128:<operation_id>` found through a bounded read-only message search. Zero matches, multiple matches and Telegram operations remain `STILL_AMBIGUOUS`. Manual mark-delivered and cancel transitions use CAS plus an atomic `reliability_audit` record.
+
+**Reason:** Provider acceptance cannot be disproved by a bounded paginated search, and Telegram has no trustworthy generic historical lookup in the current architecture. Preserving historical uncertainty prevents reconciliation from becoming a blind resend path.
+
+**Scope:** Phase 4B-2C-1 only. No `0006`, manual retry child, visible redrive, AI durable-state activation, Admin UI or DLQ consumer is introduced.

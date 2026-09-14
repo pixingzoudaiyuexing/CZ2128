@@ -1,4 +1,4 @@
-# CZ2128 - Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2A Complete
+# CZ2128 - Phase 4B-2B Complete / Phase 4B-2C-1 Implemented, In Review
 
 ## 状态
 - **Current Branch**: `main`
@@ -13,7 +13,10 @@
 - **Phase 4B-2A**: reliability persistence foundation complete
 - **Phase 4B-2A**: COMPLETE
 - **Phase 4B-2B**: COMPLETE / MERGED
-- **Phase 4B-2C**: NOT STARTED
+- **Phase 4B-2C-1**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-2C-2**: NOT STARTED
+- **Phase 4B-2C-3**: NOT STARTED
+- **Phase 4B-3**: NOT STARTED
 - **Final HEAD / CI**: 以 Phase 3.5 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
@@ -36,8 +39,11 @@
 ## Known Reliability Boundary
 - Third-party staging and real D1/Queue concurrency remain required before production acceptance.
 - `AMBIGUOUS` visible delivery outcomes require Phase 4 reconciliation or manual inspection and are never blindly resent.
+- Phase 4B-2C-1 now supplies internal reconciliation services, immutable outbound subject/target evidence and audited manual mark-delivered/cancel persistence. Historical `AMBIGUOUS` rows are not rewritten to `SENT`.
+- Chatwoot reconciliation can confirm only an exact unique `source_id=cz2128:<operation_id>` within a bounded read-only search. Zero matches, duplicate matches, lookup failure and Telegram operations never become automatic resend opportunities.
+- Existing attempted rows without target evidence are not backfilled from current runtime configuration. Only provably pre-request rows (`attempt_count=0`, `request_started_at IS NULL`, safely unsent status) may receive CAS backfill.
 - OpenAI-compatible errors are persisted and logged only as bounded categories; raw provider bodies, exception text and API keys are not recorded.
-- Phase 4 reconciliation is not part of this branch.
+- Manual retry child execution, domain redrive and the AI durable retry state machine remain outside this branch.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -71,3 +77,4 @@
 - Support Bot rotation requests `drop_pending_updates=true` when setting the candidate webhook.
 - The Cloudflare R2 account is enabled, but real R2 staging remains incomplete and bucket/lifecycle validation is pending.
 - Real Admin Bot, Support Bot rotation, Telegram group migration, Telegram provider, Chatwoot and Queue/D1 concurrency validation remain NOT TESTED.
+- Phase 4B-2C-1 does not add `0006`, manual retry children, visible redrive, AI durable retry state activation, Admin reliability UI or a DLQ consumer.

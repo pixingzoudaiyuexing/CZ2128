@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete / Phase 4B-2C-1 Implemented, In Review**
 
 ## Purpose
 
@@ -32,6 +32,8 @@ Chatwoot, Telegram, Cloudflare, and any future business system are adapters/infr
 10. Queue retries use stable event/operation identity so normal retries do not duplicate customer-visible messages; ambiguous third-party delivery outcomes are explicitly recorded rather than hidden behind a false exactly-once guarantee.
 11. Core flows have automated tests, including duplicate delivery and AI/operator race cases.
 12. Frequently changed provider and runtime limits can be managed from an authenticated Telegram admin control plane without routine Worker redeployment.
+13. Outbound operations retain immutable business-subject and sanitized provider-target evidence so retries cannot silently move a visible side effect to a changed destination.
+14. Ambiguous Chatwoot sends can be positively reconciled by exact stable `source_id`; Telegram ambiguity remains manual and neither path automatically resends.
 
 ## V1 Non-Goals
 
@@ -76,3 +78,12 @@ Crisp-specific APIs, session models, content-hash echo detection, and KV-as-prim
 ## Definition of V1 Done
 
 V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-to-end with D1 persistence, webhook verification, provider-ID/operation-ID-based idempotency and echo prevention, Queue retry behavior, guarded AI generation, attachment expiry, and automated tests for critical state transitions and failure modes.
+
+## Phase 4B-2C Breakdown
+
+- Phase 4B-2C-1 — Outbound reconciliation and target evidence: **IMPLEMENTED / IN REVIEW**.
+- Phase 4B-2C-2 — Manual retry child operations and domain resolution: **NOT STARTED**.
+- Phase 4B-2C-3 — AI durable retry state machine and legacy `FAILED` retirement: **NOT STARTED**.
+- Phase 4B-3 reliability UI/control-plane exposure: **NOT STARTED**.
+
+Phase 4B-2C-1 does not create migration `0006`, a visible resend/redrive path, Admin UI, DLQ consumption or new AI durable-state behavior.

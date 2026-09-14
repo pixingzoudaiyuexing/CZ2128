@@ -8,6 +8,14 @@ import {
   safeErrorCode
 } from './errors';
 import { SafeErrorCode } from './error-taxonomy';
+import { OutboundOperation } from './domain';
+import {
+  OutboundSubjectIdentity,
+  OutboundTargetEvidence,
+  serializeTargetEvidence,
+  targetEvidenceMatches
+} from './outbound-evidence';
+import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 
 const OUTBOUND_LEASE_SECONDS = 30;
 const MAX_OUTBOUND_ATTEMPTS = 3;
@@ -17,6 +25,110 @@ export interface OutboundAttemptLifecycle {
   responseObserved(httpStatus: number): Promise<void>;
 }
 
+export interface ExecuteOutboundOperationOptions {
+  leaseSeconds?: number;
+  subject: OutboundSubjectIdentity;
+  targetEvidence: OutboundTargetEvidence;
+}
+
+async function loadOperation(env: DatabaseEnv, id: string): Promise<OutboundOperation> {
+  const operation = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
+    .bind(id).first<OutboundOperation>();
+  if (!operation) throw new Error('Outbound operation could not be loaded');
+  return operation;
+}
+
+function assertSubjectIdentity(operation: OutboundOperation, subject: OutboundSubjectIdentity): void {
+  if (operation.subject_type == null && operation.subject_ref == null) return;
+  if (operation.subject_type !== subject.type || operation.subject_ref !== subject.ref) {
+    throw new Error('Outbound operation subject identity collision');
+  }
+}
+
+async function rejectTargetIdentity(
+  env: DatabaseEnv,
+  operation: OutboundOperation,
+  reasonCode: 'TARGET_IDENTITY_CHANGED' | 'TARGET_EVIDENCE_MISSING_UNSAFE'
+): Promise<OutboundOperation> {
+  const now = Math.floor(Date.now() / 1000);
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE outbound_operations
+       SET status = 'FAILED_FINAL', last_error = 'TARGET_IDENTITY_CHANGED',
+           lease_until = NULL, lease_token = NULL, updated_at = ?
+       WHERE id = ? AND (status = 'PENDING' OR status = 'FAILED_RETRYABLE')`
+    ).bind(now, operation.id),
+    auditAfterPreviousChange(env, {
+      id: crypto.randomUUID(),
+      entityType: 'OUTBOUND_OPERATION',
+      entityId: operation.id,
+      action: 'TARGET_IDENTITY_REJECTED',
+      actorType: 'SYSTEM',
+      actorRef: 'system:outbound-execution',
+      oldState: operation.status,
+      newState: 'FAILED_FINAL',
+      reasonCode,
+      createdAt: now
+    })
+  ]);
+  if (d1Changed(results[0]) !== d1Changed(results[1])) {
+    throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
+  }
+  return loadOperation(env, operation.id);
+}
+
+async function establishEvidence(
+  env: DatabaseEnv,
+  operation: OutboundOperation,
+  subject: OutboundSubjectIdentity,
+  targetEvidenceJson: string
+): Promise<OutboundOperation> {
+  assertSubjectIdentity(operation, subject);
+  if (
+    operation.subject_type != null &&
+    operation.subject_ref != null &&
+    operation.target_evidence_json != null
+  ) {
+    return operation;
+  }
+
+  const hasPartialEvidence =
+    operation.subject_type != null ||
+    operation.subject_ref != null ||
+    operation.target_evidence_json != null;
+  if (hasPartialEvidence) {
+    return rejectTargetIdentity(env, operation, 'TARGET_EVIDENCE_MISSING_UNSAFE');
+  }
+
+  if (
+    operation.attempt_count !== 0 ||
+    operation.request_started_at !== null ||
+    (operation.status !== 'PENDING' && operation.status !== 'FAILED_RETRYABLE')
+  ) {
+    return rejectTargetIdentity(env, operation, 'TARGET_EVIDENCE_MISSING_UNSAFE');
+  }
+
+  const result = await env.DB.prepare(
+    `UPDATE outbound_operations
+     SET subject_type = ?, subject_ref = ?, target_evidence_json = ?, updated_at = ?
+     WHERE id = ? AND attempt_count = 0 AND request_started_at IS NULL
+       AND (status = 'PENDING' OR status = 'FAILED_RETRYABLE')
+       AND subject_type IS NULL AND subject_ref IS NULL AND target_evidence_json IS NULL`
+  ).bind(
+    subject.type,
+    subject.ref,
+    targetEvidenceJson,
+    Math.floor(Date.now() / 1000),
+    operation.id
+  ).run();
+  if (result.meta.changes !== 1) {
+    const current = await loadOperation(env, operation.id);
+    assertSubjectIdentity(current, subject);
+    return current;
+  }
+  return loadOperation(env, operation.id);
+}
+
 export async function executeOutboundOperation(
   env: DatabaseEnv,
   conversationId: string,
@@ -24,21 +136,24 @@ export async function executeOutboundOperation(
   operationType: string,
   action: (operationId: string, lifecycle: OutboundAttemptLifecycle) => Promise<{ providerMessageRef?: string }>,
   deterministicOperationId: string,
-  options: { leaseSeconds?: number } = {}
+  options: ExecuteOutboundOperationOptions
 ): Promise<{ status: string; providerMessageRef?: string }> {
   const id = deterministicOperationId;
   const now = Math.floor(Date.now() / 1000);
+  const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
   
   await env.DB.prepare(
-    `INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO outbound_operations
+     (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
+      subject_type, subject_ref, target_evidence_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO NOTHING`
-  ).bind(id, conversationId, destinationProvider, operationType, 'PENDING', now, now).run();
+  ).bind(
+    id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
+    options.subject.type, options.subject.ref, targetEvidenceJson
+  ).run();
 
-  let op = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?').bind(id).first<any>();
-  if (!op) {
-    throw new Error('Outbound operation could not be loaded');
-  }
+  let op = await loadOperation(env, id);
   if (
     op.conversation_id !== conversationId ||
     op.destination_provider !== destinationProvider ||
@@ -46,18 +161,22 @@ export async function executeOutboundOperation(
   ) {
     throw new Error('Outbound operation identity collision');
   }
+  assertSubjectIdentity(op, options.subject);
 
   // Crash recovery / idempotent retry
   if (op.status === 'SENT') {
     return { status: 'SENT', providerMessageRef: op.provider_message_ref || undefined };
   }
 
-  if (op.status === 'FAILED_FINAL' || op.status === 'AMBIGUOUS') {
-    return { status: op.status };
+  if (
+    op.status === 'AMBIGUOUS' &&
+    (op.reconciliation_status === 'CONFIRMED_SENT' || op.reconciliation_status === 'MANUAL_MARK_DELIVERED')
+  ) {
+    return { status: 'SENT', providerMessageRef: op.provider_message_ref || undefined };
   }
 
-  if (op.status === 'FAILED_RETRYABLE' && op.next_retry_at !== null && op.next_retry_at > now) {
-    throw new RetryableProcessingError('OUTBOUND_RATE_LIMITED', op.next_retry_at - now);
+  if (op.status === 'FAILED_FINAL' || op.status === 'AMBIGUOUS') {
+    return { status: op.status };
   }
 
   
@@ -75,15 +194,17 @@ export async function executeOutboundOperation(
       throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
     }
 
-    const isLegacyActive = op.lease_until > now && !op.lease_token.startsWith('v2:');
-    const isV2Active = op.lease_until > now && op.lease_token.startsWith('v2:');
+    const leaseUntil = op.lease_until as number;
+    const leaseToken = op.lease_token as string;
+    const isLegacyActive = leaseUntil > now && !leaseToken.startsWith('v2:');
+    const isV2Active = leaseUntil > now && leaseToken.startsWith('v2:');
 
     if (isV2Active || isLegacyActive) {
       logger.info('Active outbound lease blocks duplicate send', { operation_id: id });
-      throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', op.lease_until! - now);
+      throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', leaseUntil - now);
     }
 
-    const isV2 = op.lease_token.startsWith('v2:');
+    const isV2 = leaseToken.startsWith('v2:');
 
     if (isV2 && op.request_started_at === null) {
       logger.info('Safe reclaim of expired pre-request lease', { operation_id: id });
@@ -93,9 +214,9 @@ export async function executeOutboundOperation(
              request_started_at = NULL, response_observed_at = NULL, response_http_status = NULL,
              retry_after_seconds = NULL, next_retry_at = NULL, updated_at = ?
          WHERE id = ? AND status = 'SENDING' AND lease_until <= ? AND lease_token = ? AND request_started_at IS NULL`
-      ).bind(now, id, now, op.lease_token).run();
+      ).bind(now, id, now, leaseToken).run();
       if (reclaimResult.meta.changes === 1) {
-        op = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?').bind(id).first<any>();
+        op = await loadOperation(env, id);
       } else {
         throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
       }
@@ -105,10 +226,22 @@ export async function executeOutboundOperation(
         `UPDATE outbound_operations 
          SET status = 'AMBIGUOUS', reconciliation_status = 'PENDING', updated_at = ?
          WHERE id = ? AND status = 'SENDING' AND lease_until <= ? AND lease_token = ?`
-      ).bind(now, id, now, op.lease_token).run();
+      ).bind(now, id, now, leaseToken).run();
       if (ambiguousResult.meta.changes === 1) return { status: 'AMBIGUOUS' };
       throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
     }
+  }
+
+  op = await establishEvidence(env, op, options.subject, targetEvidenceJson);
+  assertSubjectIdentity(op, options.subject);
+  if (op.status === 'FAILED_FINAL') return { status: 'FAILED_FINAL' };
+  if (!op.target_evidence_json || !targetEvidenceMatches(op.target_evidence_json, options.targetEvidence)) {
+    op = await rejectTargetIdentity(env, op, 'TARGET_IDENTITY_CHANGED');
+    return { status: op.status };
+  }
+
+  if (op.status === 'FAILED_RETRYABLE' && op.next_retry_at !== null && op.next_retry_at > now) {
+    throw new RetryableProcessingError('OUTBOUND_RATE_LIMITED', op.next_retry_at - now);
   }
 
   if (op.attempt_count >= MAX_OUTBOUND_ATTEMPTS) {
