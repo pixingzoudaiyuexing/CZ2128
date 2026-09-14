@@ -3,6 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2024-03-20"
 compatibility_flags = ["nodejs_compat"]
 
+[triggers]
+crons = ["0 * * * *"]
+
+[[r2_buckets]]
+binding = "ATTACHMENTS_BUCKET"
+bucket_name = "cz2128-attachments"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "cz2128-db"

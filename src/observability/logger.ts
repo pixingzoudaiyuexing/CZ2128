@@ -10,6 +10,10 @@ export interface LogContext {
   error_category?: string;
   duration_ms?: number;
   eventId?: string;
+  attachment_id?: string;
+  destination_provider?: string;
+  size_bytes?: number;
+  mime_type?: string;
 }
 
 function errorName(error: unknown): string {

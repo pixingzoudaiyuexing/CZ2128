@@ -387,43 +387,44 @@ Recommended policy:
 
 ## 10. Temporary Attachments
 
-### Telegram file/image flow
+### Canonical provider flow
 
 ```text
-Telegram document/photo
-  -> inspect declared size/name/MIME metadata
-  -> reject unsupported oversized downloads early
-  -> obtain Bot API file URL
-  -> fetch as a stream
-  -> write to private R2 bucket without whole-file buffering
-  -> create D1 attachment metadata + expiry
-  -> produce opaque gateway URL
-  -> send image/link through Chatwoot
+Telegram source
+  -> trusted getFile downloader
+  -> private R2
+  -> direct Chatwoot multipart attachments[]
+
+Chatwoot source
+  -> verified-webhook, exact-allowlist downloader
+  -> private R2
+  -> direct Telegram multipart Bot API
 ```
 
-The hosted Telegram Bot API currently limits `getFile` downloads to 20 MB. V1 must enforce that limit and give the operator a clear error. A self-hosted Telegram Bot API server is a later option if larger files become a real requirement.
+The hosted Telegram Bot API currently limits `getFile` downloads to 20 MB. V1 enforces that limit. Both provider paths use direct multipart delivery; neither sends a proxy URL to Telegram or Chatwoot.
 
-### Access URL
+### Secure proxy
 
-Example:
+Implemented routes:
 
 ```text
-GET /a/<opaque-token>
+GET  /attachments/:token
+HEAD /attachments/:token
 ```
 
 Gateway behavior:
 
-- store only a hash of the opaque token where practical
+- store only SHA-256 of the 256-bit opaque token
 - look up attachment metadata
 - verify `expires_at`
 - serve only the bound R2 object; never proxy an arbitrary database/user URL
 - preserve safe filename/content headers
-- support `GET`/`HEAD`; byte-range support is recommended for download ergonomics but is not a Phase 1 blocker
-- return 404/410 after logical expiry
+- support one byte range through the R2 native range read
+- return a uniform 404 for malformed, unknown, expired and missing-object access
 
 R2 lifecycle rules physically remove expired objects later; they are cleanup, not authorization.
 
-For V1, Worker-proxied attachment URLs are preferred over exposing long-lived public R2 URLs. A short-lived redirect/presigned design can be reconsidered later if bandwidth/performance measurements justify it.
+The secure proxy is implemented infrastructure for explicit temporary-download consumers. It is not the primary provider transport, and the current Telegram/Chatwoot channel flow does not surface proxy URLs.
 
 ## 11. Telegram Topic Lifecycle
 
@@ -556,3 +557,19 @@ Resolved:
 8. **Recent D1 messages are sufficient for V1 AI context; RAG is deferred.**
 
 With these decisions frozen, Phase 1 implementation may begin.
+
+## 17. Phase 3 Temporary Attachment Transport
+
+Phase 3 implements one reusable attachment core for Telegram and Chatwoot sources:
+
+- one source message maps to zero-to-ten durable attachment rows and one stable Queue job per row;
+- source identity is `(source_provider, source_message_ref, source_attachment_ref)`;
+- R2 object keys are anonymous `attachments/<attachment-id>` values and the bucket remains private;
+- Telegram source downloads use `getFile`; Chatwoot source downloads accept only verified webhook locators, exact HTTPS hosts, manual redirects and stripped credentials after an origin change;
+- source bodies are counted while streaming into bounded 5 MiB R2 multipart chunks, with a hard 20 MiB ceiling;
+- destination multipart sends process one attachment at a time with a bounded 20 MiB single-file buffer and use the existing outbound operation ledger;
+- bearer download URLs use 32 random bytes, while D1 stores only SHA-256 of the raw token;
+- `/attachments/:token` supports GET, HEAD and one byte range, returns private no-store downloads, and uses uniform 404 responses for invalid access;
+- stored data has a 24-hour business TTL, hourly logical cleanup is bounded to 100 rows, and a seven-day R2 lifecycle rule is the orphan safety net.
+
+Attachment-only customer messages do not create AI triggers. Captions remain ordinary text messages and are not duplicated in attachment delivery. Telegram operator attachments participate in the existing Telegram `update_id` state-order fence.

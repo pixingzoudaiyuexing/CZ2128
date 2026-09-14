@@ -121,3 +121,21 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Decision:** Telegram-originated file ingestion through the hosted Bot API is limited to files supported by `getFile`; V1 rejects unsupported oversized files with a clear operator message.
 
 **Reason:** The hosted Bot API currently caps downloads at 20 MB. A self-hosted Bot API server is deferred until larger files are a proven requirement.
+
+## D-018 — Use one private temporary attachment pipeline
+
+**Decision:** Telegram and Chatwoot attachments share one D1 state machine, private R2 bucket, stable Queue job contract and outbound operation ledger. R2 keys contain no customer or filename data.
+
+**Reason:** Source adapters differ, but identity, storage, delivery ambiguity, expiry and access control must not diverge by provider.
+
+## D-019 — Restrict Chatwoot source downloads
+
+**Decision:** Chatwoot attachment URLs are accepted only from verified webhook events. The initial URL must match the configured HTTPS Chatwoot origin. Redirects are manual, limited to three and restricted to exact configured hosts. Chatwoot credentials are sent only to the exact Chatwoot origin and are stripped on cross-origin redirects.
+
+**Reason:** A generic URL fetcher or automatic credential-bearing redirect would create SSRF and credential disclosure paths.
+
+## D-020 — Bound attachment memory and retention
+
+**Decision:** Source downloads stream to R2 through bounded 5 MiB multipart chunks. Destination multipart uploads buffer one file at a time with a hard 20 MiB maximum. Business retention is 24 hours; hourly cleanup removes the object before its D1 row, and a seven-day R2 lifecycle rule handles orphans.
+
+**Reason:** Workers must not buffer multiple large files or retain private content indefinitely.

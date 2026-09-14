@@ -10,10 +10,13 @@ import {
 import { ChatwootEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
 import { logger } from '../observability/logger';
+import { getAttachmentConfig } from '../config/attachments';
+import { enqueueAttachmentJobs } from '../core/attachment-repository';
 
 export async function processChatwootEvent(event: ChatwootEvent, env: Env): Promise<void> {
   if (event.type === 'message_created') {
     const payload = event.payload;
+    const content = payload.content || '';
     const conv = await getOrCreateConversation(
       env,
       'chatwoot',
@@ -27,16 +30,18 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
       await pauseOperator(env, conv.id);
     }
 
-    await insertMessage(
-      env,
-      conv.id,
-      'chatwoot',
-      payload.messageRef,
-      isOperator ? 'OUTBOUND' : 'INBOUND',
-      payload.actorRole,
-      'TEXT',
-      payload.content
-    );
+    if (content) {
+      await insertMessage(
+        env,
+        conv.id,
+        'chatwoot',
+        payload.messageRef,
+        isOperator ? 'OUTBOUND' : 'INBOUND',
+        payload.actorRole,
+        'TEXT',
+        content
+      );
+    }
 
     let threadRef = conv.operator_thread_ref;
     if (!threadRef) {
@@ -62,19 +67,30 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
       }
     }
 
-    await executeOutboundOperation(
+    await enqueueAttachmentJobs(
       env,
+      getAttachmentConfig(env),
       conv.id,
-      'telegram',
-      'SEND_MESSAGE',
-      async () => {
-        const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, payload.content);
-        return { providerMessageRef: res.messageId };
-      },
-      `send_tg_${payload.messageRef}`
+      'chatwoot',
+      payload.messageRef,
+      payload.attachments || []
     );
 
-    if (!isOperator) {
+    if (content) {
+      await executeOutboundOperation(
+        env,
+        conv.id,
+        'telegram',
+        'SEND_MESSAGE',
+        async () => {
+          const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content);
+          return { providerMessageRef: res.messageId };
+        },
+        `send_tg_${payload.messageRef}`
+      );
+    }
+
+    if (!isOperator && content) {
       await env.QUEUE.send({
         version: 1,
         source: 'internal',

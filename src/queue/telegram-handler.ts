@@ -1,22 +1,26 @@
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
+import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
 import { applyTelegramOperatorAction } from '../core/ai-state';
 import { insertMessage } from '../core/conversation-service';
 import { TelegramMessageEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
+import { enqueueAttachmentJobs } from '../core/attachment-repository';
 
 export async function processTelegramEvent(event: TelegramMessageEvent, env: Env): Promise<void> {
   const payload = event.payload;
+  const content = payload.content || '';
   const conv = await env.DB.prepare(
     'SELECT * FROM conversations WHERE operator_channel = ? AND operator_thread_ref = ?'
   ).bind('telegram', payload.threadRef).first<any>();
 
   if (!conv) return;
 
-  const command = payload.content.trim();
-  if (command === '/ai_off' || command === '/ai_on') {
+  const command = content.trim();
+  const attachments = payload.attachments || [];
+  if (attachments.length === 0 && (command === '/ai_off' || command === '/ai_on')) {
     const operationId = `${command === '/ai_off' ? 'ai_off' : 'ai_on'}_ack:${payload.messageRef}`;
     const commandState = await applyTelegramOperatorAction(
       env,
@@ -49,32 +53,43 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
   }
 
   await applyTelegramOperatorAction(env, conv.id, payload.updateRef, 'HUMAN_REPLY');
-  await insertMessage(
+  if (content) {
+    await insertMessage(
+      env,
+      conv.id,
+      'telegram',
+      payload.messageRef,
+      'INBOUND',
+      'OPERATOR',
+      'TEXT',
+      content
+    );
+
+    await executeOutboundOperation(
+      env,
+      conv.id,
+      'chatwoot',
+      'SEND_MESSAGE',
+      async (opId) => {
+        const res = await createChatwootMessage(
+          env,
+          conv.helpdesk_account_ref,
+          conv.helpdesk_conversation_ref,
+          content,
+          opId
+        );
+        return { providerMessageRef: res.messageId };
+      },
+      `send_chatwoot_${payload.messageRef}`
+    );
+  }
+
+  await enqueueAttachmentJobs(
     env,
+    getAttachmentConfig(env),
     conv.id,
     'telegram',
     payload.messageRef,
-    'INBOUND',
-    'OPERATOR',
-    'TEXT',
-    payload.content
-  );
-
-  await executeOutboundOperation(
-    env,
-    conv.id,
-    'chatwoot',
-    'SEND_MESSAGE',
-    async (opId) => {
-      const res = await createChatwootMessage(
-        env,
-        conv.helpdesk_account_ref,
-        conv.helpdesk_conversation_ref,
-        payload.content,
-        opId
-      );
-      return { providerMessageRef: res.messageId };
-    },
-    `send_chatwoot_${payload.messageRef}`
+    attachments
   );
 }

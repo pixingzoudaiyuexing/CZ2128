@@ -11,7 +11,8 @@ export async function executeOutboundOperation(
   destinationProvider: string,
   operationType: string,
   action: (operationId: string) => Promise<{ providerMessageRef?: string }>,
-  deterministicOperationId: string
+  deterministicOperationId: string,
+  options: { leaseSeconds?: number } = {}
 ): Promise<{ status: string; providerMessageRef?: string }> {
   const id = deterministicOperationId;
   const now = Math.floor(Date.now() / 1000);
@@ -71,7 +72,10 @@ export async function executeOutboundOperation(
   }
 
   // Atomic CAS: attempt to claim the lease
-  const leaseUntil = now + OUTBOUND_LEASE_SECONDS;
+  const leaseSeconds = options.leaseSeconds && Number.isSafeInteger(options.leaseSeconds)
+    ? Math.min(Math.max(options.leaseSeconds, OUTBOUND_LEASE_SECONDS), 300)
+    : OUTBOUND_LEASE_SECONDS;
+  const leaseUntil = now + leaseSeconds;
   const leaseToken = crypto.randomUUID();
   const claimResult = await env.DB.prepare(
     `UPDATE outbound_operations 
@@ -81,7 +85,7 @@ export async function executeOutboundOperation(
 
   if (claimResult.meta.changes !== 1) {
     logger.info('Outbound lease claimed by another worker', { operation_id: id });
-    throw new RetryableProcessingError('Outbound operation lease claimed by another worker', OUTBOUND_LEASE_SECONDS);
+    throw new RetryableProcessingError('Outbound operation lease claimed by another worker', leaseSeconds);
   }
 
   const startTime = Date.now();
