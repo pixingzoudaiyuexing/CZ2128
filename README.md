@@ -2,7 +2,15 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A and Phase 4B-2B are frozen, Phase 4B-1 and Phase 4B-2A are complete, and Phase 4B-2C-1 is complete and frozen. Phase 4B-2C-2, 4B-2C-3 and 4B-3 have not started. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C-1 are frozen, Phase 4B-1 and Phase 4B-2A are complete, and Phase 4B-2C-2 is implemented and in review. Phase 4B-2C-3 and 4B-3 have not started. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+
+## Manual Retry and Domain Resolution
+- Internal manual retry supports ambiguous `MESSAGE`, `ATTACHMENT` and Telegram topic lifecycle operations after an operator explicitly accepts duplicate risk.
+- The original operation remains `AMBIGUOUS`; one deterministic child records the new provider-visible side-effect identity and uses the existing outbound lease/attempt lifecycle.
+- Message content is reconstructed from durable `messages`, attachment bytes from unexpired private R2 state, and topic creation from a durable canonical title. Payload content is not copied into target evidence or reliability audit.
+- Target drift blocks child creation. Chatwoot children use a new child-scoped `source_id`; Telegram group, thread, method and runtime generation must remain compatible.
+- Effective delivery repairs attachment/topic domain state through idempotent D1 CAS without another provider action.
+- No Admin endpoint/command exposes this service yet. AI durable retry, DLQ consumption and reliability UI remain later phases.
 
 ## Setup
 - `npm ci`

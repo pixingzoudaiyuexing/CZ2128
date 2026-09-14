@@ -181,3 +181,21 @@ export function targetEvidenceMatches(left: string, right: OutboundTargetEvidenc
     return false;
   }
 }
+
+export function manualRetryDestinationMatches(
+  storedParentEvidence: string,
+  childEvidence: OutboundTargetEvidence
+): boolean {
+  try {
+    const parent = parseTargetEvidence(storedParentEvidence);
+    if (parent.provider !== childEvidence.provider) return false;
+    if (parent.provider === 'telegram' || childEvidence.provider === 'telegram') {
+      return serializeTargetEvidence(parent) === serializeTargetEvidence(childEvidence);
+    }
+    const { sourceId: _parentSourceId, ...parentDestination } = parent;
+    const { sourceId: _childSourceId, ...childDestination } = childEvidence;
+    return JSON.stringify(parentDestination) === JSON.stringify(childDestination);
+  } catch {
+    return false;
+  }
+}

@@ -185,4 +185,18 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-1 only. No `0006`, manual retry child, visible redrive, AI durable-state activation, Admin UI or DLQ consumer is introduced.
 
-**Status:** Phase 4B-2C-1 is COMPLETE / FROZEN. Phase 4B-2C-2 and Phase 4B-2C-3 remain NOT STARTED. D-016 legacy AI `FAILED` compatibility remains in force.
+**Status:** Phase 4B-2C-1 is COMPLETE / FROZEN. Phase 4B-2C-2 is IMPLEMENTED / IN REVIEW and Phase 4B-2C-3 remains NOT STARTED. D-016 legacy AI `FAILED` compatibility remains in force.
+
+## D-026 — Manual retry creates one deterministic child and repairs domain state separately
+
+**Decision:** An explicit manual retry never reuses or rewrites the original ambiguous operation. It records the finite reason `OPERATOR_ACCEPTS_DUPLICATE_RISK`, preserves the parent as historical `AMBIGUOUS`, atomically transitions the parent to `MANUAL_RETRY_CREATED`, and creates at most one deterministic direct child through `parent_operation_id`. Further retries form an explicit child-to-grandchild chain rather than another child of the original parent.
+
+**Payload and target rule:** Phase 4B-2C-2 supports only `MESSAGE`, `ATTACHMENT` and Telegram `CONVERSATION` subjects. Payloads are reconstructed only from durable message rows, unexpired retrievable private R2 objects, or durable conversation data. The current destination must match the parent's sanitized target evidence. Chatwoot destination comparison ignores only the operation-scoped `sourceId`; the child receives `source_id=cz2128:<child-operation-id>`. `AI_RUN` is deferred to Phase 4B-2C-3 and `CONTROL_ACK` is not manually retried.
+
+**Domain rule:** Effective delivery through `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or child `SENT` invokes a provider-free, idempotent D1 CAS service. It may repair an ambiguous attachment to `DELIVERED`, populate a missing topic reference, or apply close/reopen status only when persisted target identity still matches. Conflicting provider references or newer topic mappings fail closed and are never overwritten.
+
+**Reason:** Accepting uncertainty and performing a new visible side effect require a new auditable identity. Separating provider execution from local domain repair allows a transient D1 failure to be retried without repeating the provider action.
+
+**Scope:** Phase 4B-2C-2 only. No migration `0006`, external Admin surface, DLQ consumer, `CONFIRMED_NOT_SENT` activation, AI durable retry state machine or legacy AI `FAILED` retirement.
+
+**Status:** Phase 4B-2C-2 is IMPLEMENTED / IN REVIEW. Phase 4B-2C-3 remains NOT STARTED. Phase 4B-2B and Phase 4B-2C-1 remain COMPLETE / FROZEN.
