@@ -50,10 +50,10 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
         conv.id,
         'telegram',
         'CREATE_TOPIC',
-        async () => {
+        async (opId, lifecycle) => {
           const customerLabel = payload.customerName || `Customer ${payload.customerRef}`;
           const topicName = `${customerLabel} | Chatwoot #${payload.conversationRef}`.slice(0, 128);
-          const res = await createTelegramTopic(env, env.BOT_GROUP_ID, topicName);
+          const res = await createTelegramTopic(env, env.BOT_GROUP_ID, topicName, lifecycle);
           return { providerMessageRef: res.messageThreadId };
         },
         `create_topic_${conv.id}`
@@ -82,8 +82,8 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
         conv.id,
         'telegram',
         'SEND_MESSAGE',
-        async () => {
-          const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content);
+        async (opId, lifecycle) => {
+          const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle);
           return { providerMessageRef: res.messageId };
         },
         `send_tg_${payload.messageRef}`
@@ -122,8 +122,8 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
       conv.id,
       'telegram',
       'CLOSE_TOPIC',
-      async () => {
-        await closeTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref);
+      async (opId, lifecycle) => {
+        await closeTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref, lifecycle);
         return {};
       },
       operationId
@@ -137,8 +137,8 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
       conv.id,
       'telegram',
       'REOPEN_TOPIC',
-      async () => {
-        await reopenTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref);
+      async (opId, lifecycle) => {
+        await reopenTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref, lifecycle);
         return {};
       },
       operationId

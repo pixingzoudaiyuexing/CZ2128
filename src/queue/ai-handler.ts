@@ -162,7 +162,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     convId,
     'chatwoot',
     'SEND_MESSAGE',
-    async (opId) => {
+    async (opId, lifecycle) => {
       // FINAL PREFLIGHT GUARD: Ensure epoch matches
       if (env.hooks && env.hooks.beforeAiDispatchPreflight) await env.hooks.beforeAiDispatchPreflight(env, convId);
       const isEpochValid = await verifyHandoffEpoch(env, convId, handoffEpoch);
@@ -174,9 +174,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
       let res;
       if (env.hooks && env.hooks.beforeVisibleSend) {
-         res = await env.hooks.beforeVisibleSend(env, conv!.helpdesk_account_ref, conv!.helpdesk_conversation_ref, aiContent, String(opId));
+         res = await env.hooks.beforeVisibleSend(env, conv!.helpdesk_account_ref, conv!.helpdesk_conversation_ref, aiContent, String(opId), lifecycle);
       } else {
-         res = await createChatwootMessage(env, conv!.helpdesk_account_ref, conv!.helpdesk_conversation_ref, aiContent, String(opId));
+         res = await createChatwootMessage(env, conv!.helpdesk_account_ref, conv!.helpdesk_conversation_ref, aiContent, String(opId), lifecycle);
       }
       
       await insertMessage(env, convId, 'ai', responseId, 'OUTBOUND', 'AI', 'TEXT', aiContent);
@@ -204,8 +204,8 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       convId,
       'telegram',
       'SEND_MESSAGE',
-      async () => {
-        const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, conv!.operator_thread_ref!, `🤖 AI\n\n${aiContent}`);
+      async (opId, lifecycle) => {
+        const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, conv!.operator_thread_ref!, `🤖 AI\n\n${aiContent}`, lifecycle);
         return { providerMessageRef: String((res as any).messageId || (res as any).message_id) };
       },
       `ai_tg_mirror:${stableAiJobId}`

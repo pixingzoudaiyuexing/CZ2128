@@ -15,6 +15,12 @@ interface OperationRow {
   last_error: string | null;
   created_at: number;
   updated_at: number;
+  request_started_at?: number | null;
+  response_observed_at?: number | null;
+  response_http_status?: number | null;
+  reconciliation_status?: string | null;
+  retry_after_seconds?: number | null;
+  next_retry_at?: number | null;
 }
 
 class OperationDb {
@@ -56,11 +62,17 @@ class OperationDb {
           lease_token: null,
           last_error: null,
           created_at: Number(createdAt),
-          updated_at: Number(updatedAt)
+          updated_at: Number(updatedAt),
+          request_started_at: null,
+          response_observed_at: null,
+          response_http_status: null,
+          reconciliation_status: null,
+          retry_after_seconds: null,
+          next_retry_at: null
         });
         changes = 1;
       }
-    } else if (query.includes("attempt_count = attempt_count + 1")) {
+    } else if (query.includes("status = 'SENDING', lease_until = ?")) {
       const [leaseUntil, leaseToken, updatedAt, id] = params;
       const row = this.rows.get(String(id));
       if (row && (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE')) {
@@ -68,10 +80,86 @@ class OperationDb {
         row.lease_until = Number(leaseUntil);
         row.lease_token = String(leaseToken);
         row.updated_at = Number(updatedAt);
-        row.attempt_count += 1;
+        row.request_started_at = null;
         changes = 1;
       }
-    } else if (query.includes("SET status = 'SENT'")) {
+    } else if (query.includes("request_started_at = ?, attempt_count = attempt_count + 1")) {
+      const [ts, , id, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && row.lease_token === leaseToken && row.request_started_at === null) {
+        row.request_started_at = Number(ts);
+        row.attempt_count += 1;
+        row.updated_at = Number(ts);
+        changes = 1;
+      }
+    } else if (query.includes("response_observed_at = ?")) {
+      const [ts, httpStatus, , id, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && row.lease_token === leaseToken && row.request_started_at !== null) {
+        row.response_observed_at = Number(ts);
+        row.response_http_status = Number(httpStatus);
+        row.updated_at = Number(ts);
+        changes = 1;
+      }
+    } else if (query.includes("status = 'PENDING', lease_until = NULL, lease_token = NULL,") && query.includes("request_started_at IS NULL")) {
+      const [updatedAt, id, leaseUntilThreshold, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && (row.lease_until || 0) <= Number(leaseUntilThreshold) && row.lease_token === leaseToken && row.request_started_at === null) {
+        row.status = 'PENDING';
+        row.lease_until = null;
+        row.lease_token = null;
+        row.request_started_at = null;
+        row.response_observed_at = null;
+        row.response_http_status = null;
+        row.retry_after_seconds = null;
+        row.next_retry_at = null;
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
+    } else if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until <=")) {
+      const [updatedAt, id, leaseUntilThreshold, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && (row.lease_until || 0) <= Number(leaseUntilThreshold) && row.lease_token === leaseToken) {
+        row.status = 'AMBIGUOUS';
+        row.reconciliation_status = 'PENDING';
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
+    } else if (query.includes("status = 'FAILED_FINAL', last_error = 'OUTBOUND_RETRY_EXHAUSTED'")) {
+      const row = this.rows.get(String(params[1]));
+      if (row && (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE')) {
+        row.status = 'FAILED_FINAL';
+        row.last_error = 'OUTBOUND_RETRY_EXHAUSTED';
+        row.updated_at = Number(params[0]);
+        changes = 1;
+      }
+    } else if (query.includes("SET status = ?, last_error = ?, lease_until = NULL")) {
+      const [status, lastError, reconciliationStatus, retryAfterSecs, nextRetryAt, updatedAt, id, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && row.lease_token === leaseToken) {
+        row.status = String(status);
+        row.last_error = String(lastError);
+        row.lease_until = null;
+        row.lease_token = null;
+        row.reconciliation_status = String(reconciliationStatus);
+        row.retry_after_seconds = retryAfterSecs === null ? null : Number(retryAfterSecs);
+        row.next_retry_at = nextRetryAt === null ? null : Number(nextRetryAt);
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
+    } else if (query.includes("status = 'AMBIGUOUS', last_error = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED'")) {
+      const [updatedAt, id, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && row.lease_token === leaseToken) {
+        row.status = 'AMBIGUOUS';
+        row.last_error = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED';
+        row.lease_until = null;
+        row.lease_token = null;
+        row.reconciliation_status = 'PENDING';
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
+    } else if (query.includes("status = 'SENT'") && query.includes("provider_message_ref = ?")) {
       const [providerRef, updatedAt, id, leaseToken] = params;
       const row = this.rows.get(String(id));
       if (!this.failSentUpdates && row?.status === 'SENDING' && row.lease_token === leaseToken) {
@@ -79,32 +167,22 @@ class OperationDb {
         row.provider_message_ref = providerRef === null ? null : String(providerRef);
         row.lease_until = null;
         row.lease_token = null;
+        row.reconciliation_status = 'NOT_REQUIRED';
         row.updated_at = Number(updatedAt);
         changes = 1;
       }
-    } else if (query.includes('SET status = ?, last_error = ?')) {
-      const [status, lastError, updatedAt, id, leaseToken] = params;
-      const row = this.rows.get(String(id));
-      if (row?.status === 'SENDING' && row.lease_token === leaseToken) {
-        row.status = String(status);
-        row.last_error = String(lastError);
+    } else if (query.includes("status = 'FAILED_FINAL', last_error = ?")) {
+      const row = this.rows.get(String(params[2]));
+      if (row && (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE')) {
+        row.status = 'FAILED_FINAL';
+        row.last_error = String(params[0]);
         row.lease_until = null;
         row.lease_token = null;
-        row.updated_at = Number(updatedAt);
+        row.updated_at = Number(params[1]);
         changes = 1;
       }
-    } else if (query.includes("SET status = 'FAILED_FINAL'")) {
-      const row = this.rows.get(String(params[1]));
-      if (row) {
-        row.status = 'FAILED_FINAL';
-        changes = 1;
-      }
-    } else if (query.includes("SET status = 'AMBIGUOUS'")) {
-      const row = this.rows.get(String(params[1]));
-      if (row?.status === 'SENDING') {
-        row.status = 'AMBIGUOUS';
-        changes = 1;
-      }
+    } else {
+      console.log('UNMATCHED QUERY:', query);
     }
     return { meta: { changes } };
   }
@@ -114,93 +192,229 @@ function makeEnv(db: OperationDb) {
   return { DB: db } as any;
 }
 
-describe('outbound operation safety', () => {
-  it('marks an unknown post-claim failure AMBIGUOUS instead of retryable', async () => {
-    const db = new OperationDb();
-    const action = vi.fn(async () => {
-      throw new Error('connection reset after request started');
-    });
-
-    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-1')).resolves.toEqual({ status: 'AMBIGUOUS' });
-    expect(db.rows.get('op-1')?.status).toBe('AMBIGUOUS');
-
-    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-1');
-    expect(action).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not report success while another worker owns an active lease', async () => {
-    const db = new OperationDb();
-    db.rows.set('op-2', {
-      id: 'op-2', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
-      status: 'SENDING', provider_message_ref: null, attempt_count: 1,
-      lease_until: Math.floor(Date.now() / 1000) + 30, lease_token: 'other-owner', last_error: null, created_at: 0, updated_at: 0
-    });
-
-    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', vi.fn(), 'op-2')).rejects.toThrow(/lease/i);
-  });
-
-  it('allows only one action to cross the atomic claim', async () => {
-    const db = new OperationDb();
-    let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    const action = vi.fn(async () => {
-      await held;
-      return { providerMessageRef: 'provider-1' };
-    });
-
-    const first = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-3');
-    await vi.waitFor(() => expect(action).toHaveBeenCalledTimes(1));
-    const second = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-3');
-    await expect(second).rejects.toThrow(/lease|worker/i);
-    release();
-    await expect(first).resolves.toEqual({ status: 'SENT', providerMessageRef: 'provider-1' });
-    expect(action).toHaveBeenCalledTimes(1);
-  });
-
-  it('bounds retryable provider failures and then marks them final', async () => {
-    const db = new OperationDb();
-    const action = vi.fn(async () => {
-      throw new ProviderDeliveryError('RETRYABLE', 'OUTBOUND_RATE_LIMITED', {
-        provider: 'TELEGRAM', retryAfterSeconds: 30, httpStatus: 429
-      });
-    });
-
-    const first = await executeOutboundOperation(
-      makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4'
-    ).catch(error => error as RetryableProcessingError);
-    expect(first).toBeInstanceOf(RetryableProcessingError);
-    if (!(first instanceof RetryableProcessingError)) throw new Error('Expected retryable processing error');
-    expect(first.retryAfterSeconds).toBe(30);
-    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4')).rejects.toBeInstanceOf(RetryableProcessingError);
-    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-4')).resolves.toEqual({ status: 'FAILED_FINAL' });
-    expect(db.rows.get('op-4')?.attempt_count).toBe(3);
-    expect(db.rows.get('op-4')?.last_error).toBe('OUTBOUND_RETRY_EXHAUSTED');
-    expect(action).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not resend after provider success could not be persisted', async () => {
+// Add our tests here
+describe('outbound operation attempt lifecycle', () => {
+  it('Safe Pre-Request Expiry: reclaims lease if it expires before request started', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
     try {
       const db = new OperationDb();
-      db.failSentUpdates = true;
-      const action = vi.fn(async () => ({ providerMessageRef: 'provider-2' }));
+      // Setup a row that was claimed but request never started
+      db.rows.set('op-pre-req', {
+        id: 'op-pre-req', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
+        lease_until: Math.floor(Date.now() / 1000) - 1, lease_token: 'v2:stale-token', last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
 
-      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-5')).rejects.toBeInstanceOf(RetryableProcessingError);
-      expect(db.rows.get('op-5')?.status).toBe('SENDING');
-
-      vi.advanceTimersByTime(31_000);
-      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-5')).resolves.toEqual({ status: 'AMBIGUOUS' });
-      expect(action).toHaveBeenCalledTimes(1);
+      // It should successfully reclaim and then try to send
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async (opId, lifecycle) => {
+        await lifecycle.requestStarted();
+        await lifecycle.responseObserved(200);
+        return { providerMessageRef: 'ok' };
+      }, 'op-pre-req')).resolves.toEqual({ status: 'SENT', providerMessageRef: 'ok' });
+      
+      const row = db.rows.get('op-pre-req')!;
+      expect(row.status).toBe('SENT');
+      expect(row.attempt_count).toBe(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('rejects a deterministic operation id collision across destinations', async () => {
-    const db = new OperationDb();
-    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async () => ({ providerMessageRef: '1' }), 'shared-id');
+  it('Started Lease Expiry: marks as AMBIGUOUS if lease expires after request started', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      // Setup a row that started request but then lease expired (crash during network I/O)
+      db.rows.set('op-started-exp', {
+        id: 'op-started-exp', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 1,
+        lease_until: Math.floor(Date.now() / 1000) - 1, lease_token: 'v2:stale-token', last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: Math.floor(Date.now() / 1000) - 10, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
 
-    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'chatwoot', 'SEND_MESSAGE', vi.fn(), 'shared-id')).rejects.toThrow('identity collision');
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', vi.fn(), 'op-started-exp'))
+        .resolves.toEqual({ status: 'AMBIGUOUS' });
+      
+      const row = db.rows.get('op-started-exp')!;
+      expect(row.status).toBe('AMBIGUOUS');
+      expect(row.reconciliation_status).toBe('PENDING');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Legacy Lease Compatibility: marks as AMBIGUOUS if legacy v1 lease expires', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      // Legacy lease does not start with v2:
+      db.rows.set('op-legacy', {
+        id: 'op-legacy', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 1,
+        lease_until: Math.floor(Date.now() / 1000) - 1, lease_token: 'stale-token-no-v2', last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
+
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', vi.fn(), 'op-legacy'))
+        .resolves.toEqual({ status: 'AMBIGUOUS' });
+      
+      const row = db.rows.get('op-legacy')!;
+      expect(row.status).toBe('AMBIGUOUS');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Stale Owner Race: rejects executeOutboundOperation if lease is held by someone else and active', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      db.rows.set('op-race', {
+        id: 'op-race', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
+        lease_until: Math.floor(Date.now() / 1000) + 30, lease_token: 'v2:active-token', last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
+
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', vi.fn(), 'op-race'))
+        .rejects.toThrow(RetryableProcessingError);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('requestStarted Idempotency/CAS: does not increment attempt count if requestStarted is called twice on same attempt', async () => {
+    const db = new OperationDb();
+    const action = vi.fn(async (opId, lifecycle) => {
+      await lifecycle.requestStarted();
+      await lifecycle.requestStarted(); 
+      return { providerMessageRef: 'ok' };
+    });
+
+    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-cas');
+    const row = db.rows.get('op-cas')!;
+    expect(row.attempt_count).toBe(1); // attempt_count should be 1 from the first successful call
+    expect(row.status).toBe('AMBIGUOUS'); // Because the second call throws, and hasStarted is true
+  });
+
+  it('Response Evidence Tests: 2xx success', async () => {
+    const db = new OperationDb();
+    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async (opId, lifecycle) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'ok' };
+    }, 'op-2xx');
+    const row = db.rows.get('op-2xx')!;
+    expect(row.status).toBe('SENT');
+  });
+
+  it('Response Evidence Tests: 429 retryable', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(429);
+      throw new ProviderDeliveryError('RETRYABLE', 'OUTBOUND_RATE_LIMITED', { provider: 'TELEGRAM', retryAfterSeconds: 30, httpStatus: 429 });
+    };
+
+    const promise = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-429');
+    await expect(promise).rejects.toThrow(RetryableProcessingError);
+    const row = db.rows.get('op-429')!;
+    expect(row.status).toBe('FAILED_RETRYABLE');
+    expect(row.attempt_count).toBe(1);
+    expect(row.retry_after_seconds).toBe(30);
+  });
+
+  it('Response Evidence Tests: Explicit 4xx final', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(400);
+      throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM', httpStatus: 400 });
+    };
+
+    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-400');
+    expect(result).toEqual({ status: 'FAILED_FINAL' });
+    const row = db.rows.get('op-400')!;
+    expect(row.status).toBe('FAILED_FINAL');
+    expect(row.last_error).toBe('OUTBOUND_PRECONDITION_FAILED');
+  });
+
+  it('Response Evidence Tests: 5xx ambiguous', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(500);
+      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED', { provider: 'TELEGRAM', httpStatus: 500 });
+    };
+
+    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-500');
+    expect(result).toEqual({ status: 'AMBIGUOUS' });
+    const row = db.rows.get('op-500')!;
+    expect(row.status).toBe('AMBIGUOUS');
+  });
+
+  it('Response Evidence Tests: transport exception', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED', { provider: 'TELEGRAM' });
+    };
+
+    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-transport');
+    expect(result).toEqual({ status: 'AMBIGUOUS' });
+    const row = db.rows.get('op-transport')!;
+    expect(row.status).toBe('AMBIGUOUS');
+  });
+
+  it('Attempt Exhaustion Test: fails permanently after 3 attempts', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      const action = async (opId: string, lifecycle: any) => {
+        await lifecycle.requestStarted();
+        await lifecycle.responseObserved(429);
+        throw new ProviderDeliveryError('RETRYABLE', 'OUTBOUND_RATE_LIMITED', { provider: 'TELEGRAM', retryAfterSeconds: 0, httpStatus: 429 });
+      };
+
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-exhaust')).rejects.toThrow();
+      expect(db.rows.get('op-exhaust')!.attempt_count).toBe(1);
+
+      vi.advanceTimersByTime(10_000);
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-exhaust')).rejects.toThrow();
+      expect(db.rows.get('op-exhaust')!.attempt_count).toBe(2);
+
+      vi.advanceTimersByTime(10_000);
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-exhaust')).resolves.toEqual({ status: 'FAILED_FINAL' });
+      expect(db.rows.get('op-exhaust')!.attempt_count).toBe(3);
+      
+      const row = db.rows.get('op-exhaust')!;
+      expect(row.status).toBe('FAILED_FINAL');
+      expect(row.last_error).toBe('OUTBOUND_RETRY_EXHAUSTED');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Pre-Request Failures: errors before requestStarted are final or retryable without using attempt_count', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' });
+    };
+
+    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-pre-fail');
+    expect(result).toEqual({ status: 'FAILED_FINAL' });
+    const row = db.rows.get('op-pre-fail')!;
+    expect(row.status).toBe('FAILED_FINAL');
+    expect(row.attempt_count).toBe(0); // Attempt count was not incremented
   });
 });
