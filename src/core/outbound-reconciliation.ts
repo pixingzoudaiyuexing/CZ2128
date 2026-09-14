@@ -11,6 +11,7 @@ import {
 } from './outbound-evidence';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
+import { resolveOutboundDomainState } from './outbound-domain-resolution';
 
 const CHATWOOT_MAX_PAGES = 5;
 const CHATWOOT_MAX_MESSAGES = 500;
@@ -59,6 +60,20 @@ function result(operation: OutboundOperation, changed = false): ReconciliationRe
     ...(operation.provider_message_ref ? { providerMessageRef: operation.provider_message_ref } : {}),
     changed
   };
+}
+
+async function resolveDeliveredDomain(
+  env: Env,
+  operationId: string,
+  reconciliationResult: ReconciliationResult
+): Promise<ReconciliationResult> {
+  if (
+    reconciliationResult.reconciliationStatus === 'CONFIRMED_SENT' ||
+    reconciliationResult.reconciliationStatus === 'MANUAL_MARK_DELIVERED'
+  ) {
+    await resolveOutboundDomainState(env, operationId);
+  }
+  return reconciliationResult;
 }
 
 function isUnresolved(operation: OutboundOperation): boolean {
@@ -343,7 +358,9 @@ export async function reconcileOutboundOperation(
 ): Promise<ReconciliationResult> {
   const operation = await loadOperation(env, operationId);
   if (!isUnresolved(operation)) {
-    if (operation.status === 'AMBIGUOUS') return result(operation);
+    if (operation.status === 'AMBIGUOUS') {
+      return resolveDeliveredDomain(env, operationId, result(operation));
+    }
     throw new SafeError('OUTBOUND_RECONCILIATION_NOT_ELIGIBLE');
   }
   const storedEvidenceJson = operation.target_evidence_json;
@@ -465,7 +482,11 @@ export async function reconcileOutboundOperation(
       'CHATWOOT_OPERATION_NOT_RECONCILABLE'
     );
   }
-  return reconcileChatwoot(env, operation, evidence);
+  return resolveDeliveredDomain(
+    env,
+    operationId,
+    await reconcileChatwoot(env, operation, evidence)
+  );
 }
 
 export async function manualMarkDelivered(
@@ -479,19 +500,25 @@ export async function manualMarkDelivered(
   if (operation.status !== 'AMBIGUOUS') {
     throw new SafeError('OUTBOUND_RECONCILIATION_NOT_ELIGIBLE');
   }
-  if (!isUnresolved(operation)) return result(operation);
+  if (!isUnresolved(operation)) {
+    return resolveDeliveredDomain(env, operationId, result(operation));
+  }
   if (operation.operation_type === 'CREATE_TOPIC' && !providerMessageRef) {
     throw new SafeError('OUTBOUND_RECONCILIATION_NOT_ELIGIBLE');
   }
-  return transition(
+  return resolveDeliveredDomain(
     env,
-    operation,
-    'MANUAL_MARK_DELIVERED',
-    'MANUAL_MARK_DELIVERED',
-    actor.type,
-    boundedActorRef(actor.ref),
-    reason,
-    providerMessageRef
+    operationId,
+    await transition(
+      env,
+      operation,
+      'MANUAL_MARK_DELIVERED',
+      'MANUAL_MARK_DELIVERED',
+      actor.type,
+      boundedActorRef(actor.ref),
+      reason,
+      providerMessageRef
+    )
   );
 }
 

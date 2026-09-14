@@ -1,7 +1,7 @@
-# CZ2128 - Phase 4B-2B Frozen / Phase 4B-2C-1 Complete and Frozen
+# CZ2128 - Phase 4B-2C-2 Implemented / In Review
 
 ## 状态
-- **Current Branch**: `main`
+- **Current Branch**: `codex/phase4b2c2-manual-retry-domain-resolution`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
@@ -14,7 +14,7 @@
 - **Phase 4B-2A**: COMPLETE
 - **Phase 4B-2B**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-1**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-2C-2**: NOT STARTED
+- **Phase 4B-2C-2**: IMPLEMENTED / IN REVIEW
 - **Phase 4B-2C-3**: NOT STARTED
 - **Phase 4B-3**: NOT STARTED
 - **Final HEAD / CI**: 以 Phase 3.5 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
@@ -44,7 +44,13 @@
 - Chatwoot target evidence fingerprints the canonical full API base, including its base pathname, while keeping the raw URL absent. Message, attachment, candidate-validation and reconciliation requests share one URL builder. Reconciliation derives the current runtime identity internally and cannot be bypassed with caller-supplied old evidence.
 - Existing attempted rows without target evidence are not backfilled from current runtime configuration. Only provably pre-request rows (`attempt_count=0`, `request_started_at IS NULL`, safely unsent status) may receive CAS backfill.
 - OpenAI-compatible errors are persisted and logged only as bounded categories; raw provider bodies, exception text and API keys are not recorded.
-- Manual retry child execution, domain redrive and the AI durable retry state machine remain outside this branch.
+- The AI durable retry state machine remains outside this branch.
+- Phase 4B-2C-2 now supplies internal manual retry child execution for `MESSAGE`, `ATTACHMENT` and Telegram conversation lifecycle operations. One parent has one deterministic direct child; the parent remains `AMBIGUOUS` and records `MANUAL_RETRY_CREATED`.
+- Child creation, parent transition and the sanitized creation audit use one D1 batch. Duplicate callers locate the same child, while the existing outbound lease prevents two visible provider effects.
+- Payload reconstruction is durable-state-only. Message text comes from `messages`; attachment bytes must be unexpired and retrievable from private R2 before the decision is consumed; topic creation uses the durable canonical fallback title.
+- A dedicated domain-resolution service repairs attachment delivery and Telegram topic mapping/status after effective delivery. It is idempotent, CAS-safe and never invokes a provider action.
+- Telegram conversation domain repair is fenced by the current effective support-group identity. Historical evidence for an old `BOT_GROUP_ID` cannot restore a cleared topic mapping or mutate close/reopen state after group migration; a same-group Support Bot rotation remains repair-compatible.
+- `AI_RUN` and `CONTROL_ACK` manual retry remain rejected. Phase 4B-2C-3, Admin reliability exposure, DLQ consumption and `CONFIRMED_NOT_SENT` activation remain not started.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -78,4 +84,4 @@
 - Support Bot rotation requests `drop_pending_updates=true` when setting the candidate webhook.
 - The Cloudflare R2 account is enabled, but real R2 staging remains incomplete and bucket/lifecycle validation is pending.
 - Real Admin Bot, Support Bot rotation, Telegram group migration, Telegram provider, Chatwoot and Queue/D1 concurrency validation remain NOT TESTED.
-- Phase 4B-2C-1 does not add `0006`, manual retry children, visible redrive, AI durable retry state activation, Admin reliability UI or a DLQ consumer.
+- Phase 4B-2C-2 does not add `0006`, Admin reliability UI/commands, a DLQ consumer, AI durable retry state activation or legacy AI `FAILED` retirement.
