@@ -163,3 +163,10 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Decision:** 0005 migration expands `ai_runs` durable status capacity but intentionally preserves legacy `FAILED` during the Phase 4B-1 compatibility window. 
 
 **Reason:** Unchanged Phase 4B-1 runtime treats `FAILED_FINAL` as a generatable state because it doesn't recognize it. Mapping to `FAILED_FINAL` prematurely causes overlapping deployments to blindly retry already-failed requests. Phase 4B-2C will activate the new AI durable state machine and retire legacy `FAILED` only after the runtime understands the new terminal/retry states.
+
+## Phase 4B-2B
+- v2 lease-token compatibility rule applied for robust boundary handoff
+- attempt_count means actual provider-boundary crossings
+- legacy expired SENDING is never auto-retried
+- new v2 pre-request expired SENDING may be safely reclaimed
+- started request expiry becomes AMBIGUOUS
