@@ -62,27 +62,28 @@ export async function executeOutboundOperation(
 
   
   if (op.status === 'SENDING') {
-    const isLegacyActive = op.lease_until && op.lease_until > now && (!op.lease_token || !op.lease_token.startsWith('v2:'));
-    const isV2Active = op.lease_until && op.lease_until > now && op.lease_token && op.lease_token.startsWith('v2:');
-
-    if (isV2Active || isLegacyActive) {
-      logger.info('Active outbound lease blocks duplicate send', { operation_id: id });
-      throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', op.lease_until! - now);
-    }
-
     const isMalformed = op.lease_until == null || op.lease_token == null;
-    const isV2 = !isMalformed && op.lease_token.startsWith('v2:');
 
     if (isMalformed) {
       logger.warn('SENDING lease is malformed. Marking as AMBIGUOUS.', { operation_id: id });
       const ambiguousResult = await env.DB.prepare(
         `UPDATE outbound_operations 
          SET status = 'AMBIGUOUS', reconciliation_status = 'PENDING', updated_at = ?
-         WHERE id = ? AND status = 'SENDING' AND (lease_until IS NULL OR lease_until <= ?) AND (lease_token IS NULL OR lease_token = ?)`
-      ).bind(now, id, now, op.lease_token || null).run();
+         WHERE id = ? AND status = 'SENDING' AND (lease_until IS NULL OR lease_token IS NULL)`
+      ).bind(now, id).run();
       if (ambiguousResult.meta.changes === 1) return { status: 'AMBIGUOUS' };
       throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
     }
+
+    const isLegacyActive = op.lease_until > now && !op.lease_token.startsWith('v2:');
+    const isV2Active = op.lease_until > now && op.lease_token.startsWith('v2:');
+
+    if (isV2Active || isLegacyActive) {
+      logger.info('Active outbound lease blocks duplicate send', { operation_id: id });
+      throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', op.lease_until! - now);
+    }
+
+    const isV2 = op.lease_token.startsWith('v2:');
 
     if (isV2 && op.request_started_at === null) {
       logger.info('Safe reclaim of expired pre-request lease', { operation_id: id });

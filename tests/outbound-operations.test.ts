@@ -26,6 +26,7 @@ interface OperationRow {
 class OperationDb {
   rows = new Map<string, OperationRow>();
   failSentUpdates = false;
+  failResponseObservedUpdates = false;
 
   prepare(query: string) {
     let params: unknown[] = [];
@@ -96,7 +97,7 @@ class OperationDb {
     } else if (query.includes("response_observed_at = ?")) {
       const [ts, httpStatus, , id, leaseToken] = params;
       const row = this.rows.get(String(id));
-      if (row && row.status === 'SENDING' && row.lease_token === leaseToken && row.request_started_at !== null) {
+      if (row && !this.failResponseObservedUpdates && row.status === 'SENDING' && row.lease_token === leaseToken && row.request_started_at !== null) {
         row.response_observed_at = Number(ts);
         row.response_http_status = Number(httpStatus);
         row.last_error = null;
@@ -118,10 +119,10 @@ class OperationDb {
         row.updated_at = Number(updatedAt);
         changes = 1;
       }
-    } else if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until IS NULL")) {
-      const [updatedAt, id, leaseUntilThreshold, leaseToken] = params;
+    } else if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until IS NULL OR lease_token IS NULL")) {
+      const [updatedAt, id] = params;
       const row = this.rows.get(String(id));
-      if (row && row.status === 'SENDING' && ((row.lease_until === null) || (row.lease_until <= Number(leaseUntilThreshold))) && ((row.lease_token === null) || (row.lease_token === leaseToken))) {
+      if (row && row.status === 'SENDING' && (row.lease_until === null || row.lease_token === null)) {
         row.status = 'AMBIGUOUS';
         row.reconciliation_status = 'PENDING';
         row.updated_at = Number(updatedAt);
@@ -209,6 +210,75 @@ function makeEnv(db: OperationDb) {
 // Add our tests here
 describe('outbound operation attempt lifecycle', () => {
 
+  it('Identity Collision: prevents identical operation id across different contexts', async () => {
+    const db = new OperationDb();
+    
+    const action1 = vi.fn(async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'ok' };
+    });
+
+    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action1, 'op-collision-id');
+
+    const action2 = vi.fn();
+    
+    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'chatwoot', 'SEND_MESSAGE', action2, 'op-collision-id'))
+      .rejects.toThrowError(/Outbound operation identity collision/);
+      
+    expect(action2).not.toHaveBeenCalled();
+  });
+
+  it('Real Simultaneous Worker Test: only one worker owns lease and succeeds', async () => {
+    const db = new OperationDb();
+
+    let resolveAPause: any;
+    const aPause = new Promise(r => resolveAPause = r);
+    const visibleEffect = vi.fn();
+
+    const actionA = async (opId: string, lifecycle: any) => {
+      await aPause; // wait for B to try to claim
+      await lifecycle.requestStarted();
+      visibleEffect();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'ok-a' };
+    };
+
+    const actionB = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      visibleEffect();
+      await lifecycle.responseObserved(200);
+      return { providerMessageRef: 'ok-b' };
+    };
+
+    // A starts and will pause inside its action
+    const pA = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', actionA, 'op-simul-race');
+    
+    // Give A a moment to start and claim the lease
+    await new Promise(r => setTimeout(r, 50));
+
+    // B starts concurrently while A is holding the lease
+    const pB = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', actionB, 'op-simul-race');
+
+    // B should immediately fail with CONCURRENCY_LEASE_HELD
+    await expect(pB).rejects.toThrowError(RetryableProcessingError);
+    try {
+      await pB;
+    } catch (e: any) {
+      expect(e.code).toBe('CONCURRENCY_LEASE_HELD');
+    }
+
+    // Now A can continue
+    resolveAPause();
+    const resA = await pA;
+    expect(resA).toEqual({ status: 'SENT', providerMessageRef: 'ok-a' });
+
+    expect(visibleEffect).toHaveBeenCalledTimes(1);
+
+    const row = db.rows.get('op-simul-race')!;
+    expect(row.status).toBe('SENT');
+  });
+
   it('True Stale Owner Race: throws CONCURRENCY_CAS_CONFLICT without mutating B state', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
@@ -278,6 +348,33 @@ describe('outbound operation attempt lifecycle', () => {
       expect(rowFinal.status).toBe('SENT');
       expect(rowFinal.provider_message_ref).toBe('ok-b');
       expect(rowFinal.attempt_count).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Active NULL Token: future lease_until but NULL token must be treated as malformed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      db.rows.set('op-active-null', {
+        id: 'op-active-null', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
+        lease_until: Math.floor(Date.now() / 1000) + 30, lease_token: null, last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
+
+      const action = vi.fn();
+      const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-active-null');
+      
+      expect(res).toEqual({ status: 'AMBIGUOUS' });
+      expect(action).not.toHaveBeenCalled();
+
+      const row = db.rows.get('op-active-null')!;
+      expect(row.status).toBe('AMBIGUOUS');
+      expect(row.reconciliation_status).toBe('PENDING');
     } finally {
       vi.useRealTimers();
     }
@@ -700,6 +797,49 @@ it('Response Evidence Tests: invalid 2xx', async () => {
       await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action4, 'op-exhaust')).resolves.toEqual({ status: 'FAILED_FINAL' });
       expect(action4).not.toHaveBeenCalled();
       expect(db.rows.get('op-exhaust')!.attempt_count).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Persistence Failure: responseObserved persistence error after provider response', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      db.failResponseObservedUpdates = true;
+
+      const action = vi.fn(async (opId: string, lifecycle: any) => {
+        await lifecycle.requestStarted();
+        await lifecycle.responseObserved(200); // this will throw internally in our fake DB due to failResponseObservedUpdates
+        return { providerMessageRef: 'ok' };
+      });
+
+      const promise = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-persist-obs-fail');
+      await expect(promise).rejects.toThrowError(RetryableProcessingError);
+      
+      try {
+        await promise;
+      } catch (e: any) {
+        expect(e.code).toBe('CONCURRENCY_CAS_CONFLICT'); // Since changes=0 in the mock
+      }
+
+      const row = db.rows.get('op-persist-obs-fail')!;
+      expect(row.status).toBe('SENDING'); // Still SENDING
+      
+      // Advance timers to let lease expire
+      vi.advanceTimersByTime(35_000);
+      
+      const action2 = vi.fn();
+      const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action2, 'op-persist-obs-fail');
+      
+      expect(res.status).toBe('AMBIGUOUS');
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(action2).not.toHaveBeenCalled(); // Automatic resend MUST NOT HAPPEN
+      
+      const finalRow = db.rows.get('op-persist-obs-fail')!;
+      expect(finalRow.status).toBe('AMBIGUOUS');
+      expect(finalRow.reconciliation_status).toBe('PENDING');
     } finally {
       vi.useRealTimers();
     }

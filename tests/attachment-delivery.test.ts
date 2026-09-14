@@ -29,6 +29,29 @@ function attachment(overrides: Partial<AttachmentRow> = {}): AttachmentRow {
 }
 
 describe('attachment multipart delivery', () => {
+
+  it('calls OutboundAttemptLifecycle correctly for attachment delivery', async () => {
+
+
+    const calls: string[] = [];
+    
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      calls.push('fetch');
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 999 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+
+    const lifecycle = {
+      requestStarted: vi.fn().mockImplementation(async () => { calls.push('requestStarted'); }),
+      responseObserved: vi.fn().mockImplementation(async (status) => { calls.push('responseObserved:' + status); })
+    };
+
+    const attach = { id: 'mock.png', file_name: 'test.png', mime_type: 'image/png' } as any;
+
+    await deliverAttachmentToTelegram(env, { provider: 'TELEGRAM', maxSizeBytes: 4096 } as any, attach, '123', new Uint8Array([1, 2, 3]).buffer, lifecycle);
+    
+    expect(calls).toEqual(['requestStarted', 'fetch', 'responseObserved:200']);
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it('uploads Chatwoot attachments[] with source_id correlation', async () => {

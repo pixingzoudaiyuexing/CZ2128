@@ -24,7 +24,7 @@ export async function createChatwootMessage(
     throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CHATWOOT' });
   }
   
-  // ensure trailing slash is stripped from base url
+  
   const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
   
   const body = {
