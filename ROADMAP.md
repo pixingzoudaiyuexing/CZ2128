@@ -135,7 +135,7 @@ Scope:
 - confirmed support-group migration with topic-mapping invalidation
 - versioned CAS, restore-env and safe history rollback
 
-Phase 3 staging remains incomplete because Cloudflare R2 is not enabled and dedicated Telegram/Chatwoot staging environments are unavailable.
+The Cloudflare R2 account is now enabled, but Phase 3 real R2 staging has not yet been rerun. The staging bucket/lifecycle and dedicated Telegram/Chatwoot environments remain pending validation.
 
 ## Phase 4 — Reliability Hardening
 

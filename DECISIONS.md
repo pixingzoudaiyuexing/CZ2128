@@ -142,7 +142,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 ## D-021 — Separate bootstrap and runtime configuration
 
-**Decision:** D1 owns frequently changed provider and limit overrides, resolved once per request/event with env fallback only when no override exists. Cloudflare bindings, Chatwoot webhook signing, the encryption master key and all Admin Bot identity/authorization settings remain bootstrap-only.
+**Decision:** D1 owns frequently changed provider and limit overrides, resolved once per request/event with env fallback only when a successful D1 read proves no override exists. Runtime-store read failure disables runtime-controlled provider identities/credentials rather than falling back. Cloudflare bindings, Chatwoot webhook signing, the encryption master key and all Admin Bot identity/authorization settings remain bootstrap-only.
 
 **Reason:** Routine operations should not require a Worker redeploy, while break-glass access and ingress trust anchors must remain outside the mutable control plane.
 
@@ -154,6 +154,6 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 ## D-023 — Treat Support Telegram identity and group changes as workflows
 
-**Decision:** The Support Bot token, webhook secret and webhook path activate as one encrypted profile after provider validation and a new webhook identity is created. Group migration validates forum permissions and atomically clears old topic mappings. Both require confirmation and dedicated workflows rather than generic set/rollback.
+**Decision:** The Support Bot token, webhook secret and webhook path activate as one encrypted profile after provider validation and a new webhook identity is created. The profile version scopes Telegram event/message/outbound identity and lexicographic operator ordering; old-generation queued events are discarded. Rotation drops candidate-bot pending updates. Group migration validates forum permissions and atomically clears old topic mappings. Both require confirmation and dedicated workflows rather than generic set/rollback.
 
 **Reason:** Partial bot rotation or reuse of topic IDs across groups can admit stale webhooks, duplicate events or misroute operator messages.

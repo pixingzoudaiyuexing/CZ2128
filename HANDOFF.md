@@ -61,4 +61,7 @@
 - Admin ingress requires its bootstrap path, webhook secret, private chat and exact positive Telegram user-ID allowlist.
 - Admin sessions expire after ten minutes and `admin_update_receipts` makes mutations idempotent by `update_id`.
 - Support Bot rotation creates a new token/path/secret profile and group migration clears old topic mappings atomically.
-- Cloudflare R2 account enablement and all Phase 3/3.5 real staging validation remain outstanding.
+- The Support profile version scopes Queue/event/message/outbound identity and `(profile version, update_id)` ordering; old-generation Queue events cannot perform side effects.
+- Runtime-config store read failure fails closed for runtime-controlled providers; env fallback requires a successful D1 read proving absence.
+- Support Bot rotation requests `drop_pending_updates=true` when setting the candidate webhook.
+- The Cloudflare R2 account is enabled, but Phase 3 real R2 staging has not yet been rerun; staging bucket/lifecycle validation and all provider/Admin Bot staging remain outstanding.
