@@ -98,6 +98,16 @@ async function seedOperation(
   ).run();
 }
 
+async function seedAiRun(db: SqliteD1, text = 'Durable AI answer'): Promise<void> {
+  await db.prepare(
+    `INSERT INTO ai_runs
+     (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+      provider_response_ref, response_text, status, attempt_count, created_at, updated_at)
+     VALUES ('ai-run-1', 'conv', 'customer-message-1', 'generation-1', 0,
+             'provider-response-1', ?, 'SUCCESS', 1, 1, 1)`
+  ).bind(text).run();
+}
+
 function r2Object(bytes = new TextEncoder().encode('data')) {
   return { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
 }
@@ -310,6 +320,158 @@ describe('resolved outbound domain state', () => {
       .bind('att-1').first<any>();
 
     expect(attachment).toEqual({ status: 'FAILED_FINAL', last_error: 'ATTACHMENT_DELIVERY_AMBIGUOUS' });
+    db.close();
+  });
+
+  it('repairs one durable AI message after primary Chatwoot SENT and remains idempotent', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await seedAiRun(db);
+    const env = makeEnv(db);
+    await seedOperation(
+      db,
+      await buildChatwootTargetEvidence(env, 'account-1', 'conversation-2', 'op-1'),
+      {
+        provider: 'chatwoot', operationType: 'SEND_MESSAGE', status: 'SENT',
+        providerRef: 'chatwoot-message-1', reconciliation: 'NOT_REQUIRED',
+        subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+      }
+    );
+
+    await expect(resolveOutboundDomainState(env, 'op-1')).resolves.toEqual({
+      changed: true, domain: 'MESSAGE'
+    });
+    await expect(resolveOutboundDomainState(env, 'op-1')).resolves.toEqual({
+      changed: false, domain: 'MESSAGE'
+    });
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('assigns a stable fallback response identity before repairing a legacy SUCCESS message', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await seedAiRun(db);
+    await db.prepare("UPDATE ai_runs SET provider_response_ref = NULL WHERE trigger_event_ref = 'ai-run-1'").run();
+    const env = makeEnv(db);
+    await seedOperation(
+      db,
+      await buildChatwootTargetEvidence(env, 'account-1', 'conversation-2', 'op-1'),
+      {
+        provider: 'chatwoot', operationType: 'SEND_MESSAGE', status: 'SENT',
+        reconciliation: 'NOT_REQUIRED', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+      }
+    );
+
+    await resolveOutboundDomainState(env, 'op-1');
+
+    expect((await db.prepare('SELECT provider_response_ref FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind('ai-run-1').first<any>()).provider_response_ref).toBe('ai_res_ai-run-1');
+    expect((await db.prepare("SELECT provider_message_ref FROM messages WHERE provider = 'ai'")
+      .first<any>()).provider_message_ref).toBe('ai_res_ai-run-1');
+    db.close();
+  });
+
+  it('repairs one durable AI message after CONFIRMED_SENT reconciliation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await seedAiRun(db);
+    const env = makeEnv(db);
+    await seedOperation(
+      db,
+      await buildChatwootTargetEvidence(env, 'account-1', 'conversation-2', 'op-1'),
+      {
+        provider: 'chatwoot', operationType: 'SEND_MESSAGE', subjectType: 'AI_RUN',
+        subjectRef: 'ai-run-1'
+      }
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      payload: [{ id: 801, source_id: 'cz2128:op-1' }]
+    }), { status: 200 }));
+
+    await reconcileOutboundOperation(env, 'op-1');
+
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 1 });
+    expect((await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?')
+      .bind('op-1').first<any>()).reconciliation_status).toBe('CONFIRMED_SENT');
+    db.close();
+  });
+
+  it('repairs one durable AI message after MANUAL_MARK_DELIVERED', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await seedAiRun(db);
+    const env = makeEnv(db);
+    await seedOperation(
+      db,
+      await buildChatwootTargetEvidence(env, 'account-1', 'conversation-2', 'op-1'),
+      {
+        provider: 'chatwoot', operationType: 'SEND_MESSAGE', subjectType: 'AI_RUN',
+        subjectRef: 'ai-run-1'
+      }
+    );
+
+    await manualMarkDelivered(
+      env, 'op-1', { type: 'ADMIN', ref: '42' }, 'OPERATOR_CONFIRMED_DELIVERY', 'chatwoot-message-2'
+    );
+
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('fails closed when an AI provider response identity has conflicting message content', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await seedAiRun(db, 'Canonical answer');
+    const env = makeEnv(db);
+    await seedOperation(
+      db,
+      await buildChatwootTargetEvidence(env, 'account-1', 'conversation-2', 'op-1'),
+      {
+        provider: 'chatwoot', operationType: 'SEND_MESSAGE', status: 'SENT',
+        reconciliation: 'NOT_REQUIRED', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+      }
+    );
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('conflict', 'conv', 'ai', 'provider-response-1', 'OUTBOUND', 'AI',
+               'TEXT', 'Conflicting answer', 1)`
+    ).run();
+
+    await expect(resolveOutboundDomainState(env, 'op-1')).rejects.toMatchObject({
+      code: 'OUTBOUND_DOMAIN_STATE_CONFLICT'
+    });
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE provider = 'ai'")
+      .first<{ count: number }>()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('does not create an AI context message for Telegram mirror delivery alone', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await seedAiRun(db);
+    const env = makeEnv(db);
+    await seedOperation(db, buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage'), {
+      provider: 'telegram', operationType: 'SEND_MESSAGE', status: 'SENT',
+      reconciliation: 'NOT_REQUIRED', subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+    });
+
+    await expect(resolveOutboundDomainState(env, 'op-1')).resolves.toEqual({
+      changed: false, domain: 'NONE'
+    });
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 0 });
     db.close();
   });
 

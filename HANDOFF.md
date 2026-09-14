@@ -1,4 +1,4 @@
-# CZ2128 - Phase 4B-2C-2 Complete / Frozen
+# CZ2128 - Phase 4B-2C-3 Implemented / In Review
 
 ## 状态
 - **Current Branch**: `main`
@@ -16,7 +16,7 @@
 - **Phase 4B-2B**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-1**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-2**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-2C-3**: NOT STARTED
+- **Phase 4B-2C-3**: IMPLEMENTED / IN REVIEW
 - **Phase 4B-3**: NOT STARTED
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
@@ -51,7 +51,13 @@
 - Payload reconstruction is durable-state-only. Message text comes from `messages`; attachment bytes must be unexpired and retrievable from private R2 before the decision is consumed; topic creation uses the durable canonical fallback title.
 - A dedicated domain-resolution service repairs attachment delivery and Telegram topic mapping/status after effective delivery. It is idempotent, CAS-safe and never invokes a provider action.
 - Telegram conversation domain repair is fenced by the current effective support-group identity. Historical evidence for an old `BOT_GROUP_ID` cannot restore a cleared topic mapping or mutate close/reopen state after group migration; a same-group Support Bot rotation remains repair-compatible.
-- `AI_RUN` and `CONTROL_ACK` manual retry remain rejected. Phase 4B-2C-3, Admin reliability exposure, DLQ consumption and `CONFIRMED_NOT_SENT` activation remain not started.
+- `AI_RUN` manual retry is active only for a matching durable `SUCCESS` response and never regenerates AI. `CONTROL_ACK` remains rejected.
+- AI generation is capped at three provider-boundary attempts. `attempt_count` advances only through an owned CAS immediately before `generateChatCompletion()`.
+- Retryable AI failures persist `FAILED_RETRYABLE` plus `next_retry_at`; the third retryable failure becomes `RETRY_EXHAUSTED`. Non-retryable failures become `FAILED_FINAL`.
+- Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
+- Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
+- Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
+- Phase 4B-3, Admin reliability exposure, DLQ consumption and `CONFIRMED_NOT_SENT` activation remain not started.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -85,4 +91,4 @@
 - Support Bot rotation requests `drop_pending_updates=true` when setting the candidate webhook.
 - The Cloudflare R2 account is enabled, but real R2 staging remains incomplete and bucket/lifecycle validation is pending.
 - Real Admin Bot, Support Bot rotation, Telegram group migration, Telegram provider, Chatwoot and Queue/D1 concurrency validation remain NOT TESTED.
-- Phase 4B-2C-2 does not add `0006`, Admin reliability UI/commands, a DLQ consumer, AI durable retry state activation or legacy AI `FAILED` retirement.
+- Phase 4B-2C-3 adds no `0006`, Admin reliability UI/commands, DLQ consumer, `CONFIRMED_NOT_SENT` activation or Durable Objects. Production provider/load validation remains NOT TESTED.

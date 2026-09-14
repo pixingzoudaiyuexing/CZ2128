@@ -2,7 +2,15 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B, Phase 4B-2C-1 and Phase 4B-2C-2 are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and 4B-3 have not started. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B, Phase 4B-2C-1 and Phase 4B-2C-2 are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 is implemented and in review; Phase 4B-3 has not started. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+
+## Durable AI Reliability
+- One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
+- Retryable failures use `FAILED_RETRYABLE` and a persisted `next_retry_at`; the third retryable failure becomes terminal `RETRY_EXHAUSTED`. Provider 4xx and invalid local context become `FAILED_FINAL`.
+- Human handoff wins. Generation-owned CAS prevents a late old generation from overwriting a reclaimed run or reviving AI after handoff.
+- New runtime code never writes legacy `FAILED`. The schema still accepts it for rolling deployment and new Workers lazily normalize old rows.
+- Durable `SUCCESS` text is reused for outbound continuation and explicit `AI_RUN` manual retry. Effective Chatwoot delivery repairs one AI context message; Telegram mirror delivery does not create a duplicate context entry.
+- The migration set remains `0001` through `0005`; there is no `0006`.
 
 ## Manual Retry and Domain Resolution
 - Internal manual retry supports ambiguous `MESSAGE`, `ATTACHMENT` and Telegram topic lifecycle operations after an operator explicitly accepts duplicate risk.
@@ -11,7 +19,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B, Phase 4B-2C-1 and P
 - Target drift blocks child creation. Chatwoot children use a new child-scoped `source_id`; Telegram group, thread, method and runtime generation must remain compatible.
 - Effective delivery repairs attachment/topic domain state through idempotent D1 CAS without another provider action.
 - Telegram topic repair additionally requires the operation's persisted group identity to match the current effective `BOT_GROUP_ID`, preventing old-group topic references from returning after support-group migration.
-- No Admin endpoint/command exposes this service yet. AI durable retry, DLQ consumption and reliability UI remain later phases.
+- No Admin endpoint/command exposes this service yet. DLQ consumption and reliability UI remain later phases.
 
 ## Setup
 - `npm ci`

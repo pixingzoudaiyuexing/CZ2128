@@ -1,9 +1,25 @@
 import { Env } from '../config/env';
-import { Conversation } from './domain';
+import { AiRun, Conversation } from './domain';
 import { logger } from '../observability/logger';
 import { getAIConfig } from '../config/ai';
 import { RetryableProcessingError } from './errors';
 import { SafeErrorCode } from './error-taxonomy';
+import { boundedQueueRetryDelay, RETRY_DELAY_FALLBACK_SECONDS } from './retry';
+
+export const MAX_AI_GENERATION_ATTEMPTS = 3;
+
+const RETRYABLE_AI_ERRORS = new Set<SafeErrorCode>([
+  'AI_RATE_LIMITED',
+  'AI_TIMEOUT',
+  'AI_TRANSPORT_ERROR',
+  'AI_PROVIDER_5XX',
+  'AI_INVALID_RESPONSE'
+]);
+
+const FINAL_AI_ERRORS = new Set<SafeErrorCode>([
+  'AI_PROVIDER_4XX',
+  'AI_CONTEXT_INVALID'
+]);
 
 export async function pauseOperator(env: Env, convId: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
@@ -283,35 +299,258 @@ export async function verifyHandoffEpoch(
   return conv.ai_mode === 'ENABLED' && conv.ai_handoff_epoch === expectedEpoch;
 }
 
-export async function getDurableAiRun(env: Env, triggerEventRef: string) {
+export async function getDurableAiRun(env: Env, triggerEventRef: string): Promise<AiRun | null> {
   return await env.DB.prepare(
     `SELECT * FROM ai_runs WHERE trigger_event_ref = ?`
-  ).bind(triggerEventRef).first<any>();
+  ).bind(triggerEventRef).first<AiRun>();
 }
 
-export async function saveDurableAiRun(
+export async function normalizeLegacyAiRun(
+  env: Env,
+  run: AiRun
+): Promise<AiRun> {
+  if (run.status !== 'FAILED') return run;
+  const now = Math.floor(Date.now() / 1000);
+  const attemptCount = Math.max(Number(run.attempt_count) || 0, 1);
+  const legacyError = run.last_error;
+  const retryable = RETRYABLE_AI_ERRORS.has(legacyError as SafeErrorCode);
+  const final = FINAL_AI_ERRORS.has(legacyError as SafeErrorCode);
+  const status = retryable
+    ? attemptCount >= MAX_AI_GENERATION_ATTEMPTS ? 'RETRY_EXHAUSTED' : 'FAILED_RETRYABLE'
+    : 'FAILED_FINAL';
+  const nextRetryAt = status === 'FAILED_RETRYABLE'
+    ? Number.isSafeInteger(run.next_retry_at) && Number(run.next_retry_at) > 0
+      ? Number(run.next_retry_at)
+      : now + RETRY_DELAY_FALLBACK_SECONDS
+    : null;
+  const lastError = status === 'RETRY_EXHAUSTED'
+    ? 'AI_RETRY_EXHAUSTED'
+    : retryable || final
+      ? legacyError
+      : 'AI_LEGACY_FAILURE_UNCLASSIFIED';
+
+  await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = ?, attempt_count = ?, next_retry_at = ?, last_error = ?, updated_at = ?
+     WHERE trigger_event_ref = ? AND status = 'FAILED'`
+  ).bind(
+    status,
+    attemptCount,
+    nextRetryAt,
+    lastError,
+    now,
+    run.trigger_event_ref
+  ).run();
+  return (await getDurableAiRun(env, run.trigger_event_ref)) || run;
+}
+
+export async function ensureAiRunProviderResponseRef(env: Env, run: AiRun): Promise<AiRun> {
+  if (run.status !== 'SUCCESS' || run.response_text === null || run.provider_response_ref) return run;
+  const fallbackRef = `ai_res_${run.trigger_event_ref}`;
+  await env.DB.prepare(
+    `UPDATE ai_runs SET provider_response_ref = ?, updated_at = ?
+     WHERE trigger_event_ref = ? AND status = 'SUCCESS' AND response_text IS NOT NULL
+       AND provider_response_ref IS NULL`
+  ).bind(fallbackRef, Math.floor(Date.now() / 1000), run.trigger_event_ref).run();
+  return (await getDurableAiRun(env, run.trigger_event_ref)) || run;
+}
+
+export async function cancelDurableAiRunForHandoff(
+  env: Env,
+  triggerEventRef: string,
+  convId: string,
+  triggerMessageRef: string,
+  handoffEpoch: number
+): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  const result = await env.DB.prepare(
+    `INSERT INTO ai_runs
+     (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+      provider_response_ref, response_text, status, attempt_count, next_retry_at, last_error,
+      created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, 'CANCELLED_BY_HANDOFF', 0, NULL, NULL, ?, ?)
+     ON CONFLICT (trigger_event_ref) DO UPDATE
+     SET status = 'CANCELLED_BY_HANDOFF', next_retry_at = NULL, last_error = NULL, updated_at = ?
+     WHERE ai_runs.conversation_id = excluded.conversation_id
+       AND ai_runs.trigger_message_ref = excluded.trigger_message_ref
+       AND ai_runs.status IN ('PENDING', 'FAILED_RETRYABLE')`
+  ).bind(
+    triggerEventRef,
+    convId,
+    triggerMessageRef,
+    `cancelled:${triggerEventRef}`,
+    handoffEpoch,
+    now,
+    now,
+    now
+  ).run();
+  return result.meta.changes === 1;
+}
+
+export async function claimDurableAiRun(
   env: Env,
   triggerEventRef: string,
   convId: string,
   triggerMessageRef: string,
   generationId: string,
-  handoffEpoch: number,
-  status: 'PENDING' | 'SUCCESS' | 'FAILED' | 'CANCELLED_BY_HANDOFF' | 'DISCARDED_STALE',
-  providerResponseRef?: string,
-  responseText?: string,
-  lastError?: SafeErrorCode
+  handoffEpoch: number
 ): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);
+  const leaseExpiryThreshold = now - getAIConfig(env).generationLeaseSeconds;
   const result = await env.DB.prepare(
-    `INSERT INTO ai_runs (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch, provider_response_ref, response_text, status, last_error, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (trigger_event_ref) DO UPDATE 
-     SET status = ?, provider_response_ref = ?, response_text = ?, last_error = ?, generation_id = ?, handoff_epoch = ?, updated_at = ?
-     WHERE ai_runs.status NOT IN ('CANCELLED_BY_HANDOFF', 'DISCARDED_STALE')
-       AND (excluded.status = 'PENDING' OR ai_runs.generation_id = excluded.generation_id)`
+    `INSERT INTO ai_runs
+     (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+      provider_response_ref, response_text, status, attempt_count, next_retry_at, last_error,
+      created_at, updated_at)
+     SELECT ?, ?, ?, ?, ?, NULL, NULL, 'PENDING', 0, NULL, NULL, ?, ?
+     FROM conversations
+     WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ?
+       AND ai_handoff_epoch = ? AND ai_generation_started_at >= ?
+     ON CONFLICT (trigger_event_ref) DO UPDATE
+     SET generation_id = excluded.generation_id, handoff_epoch = excluded.handoff_epoch,
+         provider_response_ref = NULL, response_text = NULL, status = 'PENDING',
+         next_retry_at = NULL, last_error = NULL, updated_at = excluded.updated_at
+     WHERE ai_runs.conversation_id = excluded.conversation_id
+       AND ai_runs.trigger_message_ref = excluded.trigger_message_ref
+       AND ai_runs.attempt_count < ?
+       AND (
+         ai_runs.status = 'PENDING'
+         OR (ai_runs.status = 'FAILED_RETRYABLE' AND ai_runs.next_retry_at <= ?)
+       )
+       AND EXISTS (
+         SELECT 1 FROM conversations
+         WHERE id = excluded.conversation_id AND ai_mode = 'ENABLED'
+           AND ai_generation_id = excluded.generation_id
+           AND ai_handoff_epoch = excluded.handoff_epoch
+           AND ai_generation_started_at >= ?
+       )`
   ).bind(
-    triggerEventRef, convId, triggerMessageRef, generationId, handoffEpoch, providerResponseRef || null, responseText || null, status, lastError || null, now, now,
-    status, providerResponseRef || null, responseText || null, lastError || null, generationId, handoffEpoch, now
+    triggerEventRef,
+    convId,
+    triggerMessageRef,
+    generationId,
+    handoffEpoch,
+    now,
+    now,
+    convId,
+    generationId,
+    handoffEpoch,
+    leaseExpiryThreshold,
+    MAX_AI_GENERATION_ATTEMPTS,
+    now,
+    leaseExpiryThreshold
+  ).run();
+  return result.meta.changes === 1;
+}
+
+export async function startAiGenerationAttempt(
+  env: Env,
+  triggerEventRef: string,
+  convId: string,
+  generationId: string,
+  handoffEpoch: number
+): Promise<number | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const leaseExpiryThreshold = now - getAIConfig(env).generationLeaseSeconds;
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET attempt_count = attempt_count + 1, last_error = NULL, updated_at = ?
+     WHERE trigger_event_ref = ? AND conversation_id = ? AND generation_id = ?
+       AND handoff_epoch = ? AND status = 'PENDING' AND attempt_count < ?
+       AND EXISTS (
+         SELECT 1 FROM conversations
+         WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ?
+           AND ai_handoff_epoch = ? AND ai_generation_started_at >= ?
+       )`
+  ).bind(
+    now,
+    triggerEventRef,
+    convId,
+    generationId,
+    handoffEpoch,
+    MAX_AI_GENERATION_ATTEMPTS,
+    convId,
+    generationId,
+    handoffEpoch,
+    leaseExpiryThreshold
+  ).run();
+  if (result.meta.changes !== 1) return null;
+  const current = await getDurableAiRun(env, triggerEventRef);
+  return current?.generation_id === generationId ? current.attempt_count : null;
+}
+
+export async function saveAiGenerationFailure(
+  env: Env,
+  triggerEventRef: string,
+  convId: string,
+  generationId: string,
+  handoffEpoch: number,
+  error: SafeErrorCode,
+  retryable: boolean,
+  retryAfterSeconds?: number
+): Promise<AiRun | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const leaseExpiryThreshold = now - getAIConfig(env).generationLeaseSeconds;
+  const retryDelay = boundedQueueRetryDelay(retryAfterSeconds, RETRY_DELAY_FALLBACK_SECONDS);
+  const result = retryable
+    ? await env.DB.prepare(
+      `UPDATE ai_runs
+       SET status = CASE WHEN attempt_count >= ? THEN 'RETRY_EXHAUSTED' ELSE 'FAILED_RETRYABLE' END,
+           next_retry_at = CASE WHEN attempt_count >= ? THEN NULL ELSE ? END,
+           last_error = CASE WHEN attempt_count >= ? THEN 'AI_RETRY_EXHAUSTED' ELSE ? END,
+           updated_at = ?
+       WHERE trigger_event_ref = ? AND generation_id = ? AND handoff_epoch = ? AND status = 'PENDING'
+         AND EXISTS (
+           SELECT 1 FROM conversations
+           WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ?
+             AND ai_handoff_epoch = ? AND ai_generation_started_at >= ?
+         )`
+    ).bind(
+      MAX_AI_GENERATION_ATTEMPTS,
+      MAX_AI_GENERATION_ATTEMPTS,
+      now + retryDelay,
+      MAX_AI_GENERATION_ATTEMPTS,
+      error,
+      now,
+      triggerEventRef,
+      generationId,
+      handoffEpoch,
+      convId,
+      generationId,
+      handoffEpoch,
+      leaseExpiryThreshold
+    ).run()
+    : await env.DB.prepare(
+      `UPDATE ai_runs
+       SET status = 'FAILED_FINAL', next_retry_at = NULL, last_error = ?, updated_at = ?
+       WHERE trigger_event_ref = ? AND generation_id = ? AND handoff_epoch = ? AND status = 'PENDING'
+         AND EXISTS (
+           SELECT 1 FROM conversations
+           WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ?
+             AND ai_handoff_epoch = ? AND ai_generation_started_at >= ?
+         )`
+    ).bind(
+      error, now, triggerEventRef, generationId, handoffEpoch,
+      convId, generationId, handoffEpoch, leaseExpiryThreshold
+    ).run();
+  if (result.meta.changes !== 1) return null;
+  return getDurableAiRun(env, triggerEventRef);
+}
+
+export async function exhaustAiRunWithoutAttempt(
+  env: Env,
+  triggerEventRef: string
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = 'RETRY_EXHAUSTED', next_retry_at = NULL,
+         last_error = 'AI_RETRY_EXHAUSTED', updated_at = ?
+     WHERE trigger_event_ref = ? AND attempt_count >= ?
+       AND status IN ('PENDING', 'FAILED_RETRYABLE')`
+  ).bind(
+    Math.floor(Date.now() / 1000),
+    triggerEventRef,
+    MAX_AI_GENERATION_ATTEMPTS
   ).run();
   return result.meta.changes === 1;
 }
@@ -325,23 +564,71 @@ export async function saveGeneratedAiResult(
   providerResponseRef: string,
   responseText: string
 ): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  const leaseExpiryThreshold = now - getAIConfig(env).generationLeaseSeconds;
   const result = await env.DB.prepare(
     `UPDATE ai_runs
-     SET status = 'SUCCESS', provider_response_ref = ?, response_text = ?, last_error = NULL, updated_at = ?
-     WHERE trigger_event_ref = ? AND generation_id = ? AND status = 'PENDING'
+     SET status = 'SUCCESS', provider_response_ref = ?, response_text = ?,
+         next_retry_at = NULL, last_error = NULL, updated_at = ?
+     WHERE trigger_event_ref = ? AND generation_id = ? AND handoff_epoch = ? AND status = 'PENDING'
        AND EXISTS (
          SELECT 1 FROM conversations
-         WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ? AND ai_handoff_epoch = ?
+         WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ?
+           AND ai_handoff_epoch = ? AND ai_generation_started_at >= ?
        )`
   ).bind(
     providerResponseRef,
     responseText,
-    Math.floor(Date.now() / 1000),
+    now,
     triggerEventRef,
     generationId,
+    handoffEpoch,
     convId,
     generationId,
-    handoffEpoch
+    handoffEpoch,
+    leaseExpiryThreshold
   ).run();
   return result.meta.changes === 1;
+}
+
+export async function cancelOwnedAiRunAfterHandoff(
+  env: Env,
+  triggerEventRef: string,
+  generationId: string | null
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = 'CANCELLED_BY_HANDOFF', next_retry_at = NULL, last_error = NULL, updated_at = ?
+     WHERE trigger_event_ref = ? AND generation_id IS ? AND status IN ('PENDING', 'SUCCESS')`
+  ).bind(Math.floor(Date.now() / 1000), triggerEventRef, generationId).run();
+  return result.meta.changes === 1;
+}
+
+export async function discardOwnedStaleAiRun(
+  env: Env,
+  triggerEventRef: string,
+  generationId: string
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = 'DISCARDED_STALE', next_retry_at = NULL, last_error = NULL, updated_at = ?
+     WHERE trigger_event_ref = ? AND generation_id = ? AND status = 'PENDING'`
+  ).bind(Math.floor(Date.now() / 1000), triggerEventRef, generationId).run();
+  return result.meta.changes === 1;
+}
+
+export function aiRunRetryDelay(run: AiRun, now = Math.floor(Date.now() / 1000)): number | null {
+  if (run.status !== 'FAILED_RETRYABLE') return null;
+  if (!Number.isSafeInteger(run.next_retry_at) || Number(run.next_retry_at) <= now) return null;
+  return Math.max(Number(run.next_retry_at) - now, 1);
+}
+
+export function isAiRunTerminal(status: AiRun['status']): boolean {
+  return [
+    'SUCCESS',
+    'RETRY_EXHAUSTED',
+    'FAILED_FINAL',
+    'CANCELLED_BY_HANDOFF',
+    'DISCARDED_STALE'
+  ].includes(status);
 }
