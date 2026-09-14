@@ -41,10 +41,10 @@ export interface EventReceipt {
   claim_token: string | null;
   last_error: SafeErrorCode | null;
   processed_at: number | null;
-  event_type?: string;
-  conversation_id?: string;
-  last_attempt_at?: number;
-  dead_lettered_at?: number;
+  event_type: string | null;
+  conversation_id: string | null;
+  last_attempt_at: number | null;
+  dead_lettered_at: number | null;
 }
 
 export interface OutboundOperation {
@@ -60,18 +60,18 @@ export interface OutboundOperation {
   last_error: SafeErrorCode | null;
   created_at: number;
   updated_at: number;
-  request_started_at?: number;
-  response_observed_at?: number;
-  response_http_status?: number;
-  next_retry_at?: number;
-  retry_after_seconds?: number;
-  reconciliation_status?: 'NOT_REQUIRED' | 'PENDING' | 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | 'STILL_AMBIGUOUS' | 'MANUAL_MARK_DELIVERED' | 'MANUAL_CANCELLED' | 'MANUAL_RETRY_CREATED';
-  resolved_by?: string;
-  resolved_at?: number;
-  resolution_reason?: string;
-  parent_operation_id?: string;
-  subject_type?: string;
-  subject_ref?: string;
-  target_evidence_json?: string;
+  request_started_at: number | null;
+  response_observed_at: number | null;
+  response_http_status: number | null;
+  next_retry_at: number | null;
+  retry_after_seconds: number | null;
+  reconciliation_status: 'NOT_REQUIRED' | 'PENDING' | 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | 'STILL_AMBIGUOUS' | 'MANUAL_MARK_DELIVERED' | 'MANUAL_CANCELLED' | 'MANUAL_RETRY_CREATED';
+  resolved_by: string | null;
+  resolved_at: number | null;
+  resolution_reason: string | null;
+  parent_operation_id: string | null;
+  subject_type: string | null;
+  subject_ref: string | null;
+  target_evidence_json: string | null;
 }
 import { SafeErrorCode } from './error-taxonomy';

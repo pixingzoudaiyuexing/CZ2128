@@ -55,13 +55,13 @@ describe('Real 0005 Reliability Migration', () => {
         ('op_failed_final', 'conv_1', 'chatwoot', 'SEND_MESSAGE', 'FAILED_FINAL', 0, 0),
         ('op_ambiguous', 'conv_1', 'chatwoot', 'SEND_MESSAGE', 'AMBIGUOUS', 0, 0);
 
-      INSERT INTO ai_runs (trigger_event_ref, conversation_id, trigger_message_ref, handoff_epoch, status, created_at, updated_at)
+      INSERT INTO ai_runs (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch, provider_response_ref, response_text, status, last_error, created_at, updated_at)
       VALUES 
-        ('ai_pending', 'conv_1', 'msg_1', 0, 'PENDING', 0, 0),
-        ('ai_success', 'conv_1', 'msg_1', 0, 'SUCCESS', 0, 0),
-        ('ai_failed', 'conv_1', 'msg_1', 0, 'FAILED', 0, 0),
-        ('ai_cancelled', 'conv_1', 'msg_1', 0, 'CANCELLED_BY_HANDOFF', 0, 0),
-        ('ai_stale', 'conv_1', 'msg_1', 0, 'DISCARDED_STALE', 0, 0);
+        ('ai_pending', 'conv_1', 'msg_1', NULL, 0, NULL, NULL, 'PENDING', NULL, 0, 0),
+        ('ai_success', 'conv_1', 'msg_1', 'gen_preserve_123', 7, 'provider_ref_456', 'synthetic migration response', 'SUCCESS', 'AI_TIMEOUT', 111, 222),
+        ('ai_failed', 'conv_1', 'msg_1', NULL, 0, NULL, NULL, 'FAILED', NULL, 0, 0),
+        ('ai_cancelled', 'conv_1', 'msg_1', NULL, 0, NULL, NULL, 'CANCELLED_BY_HANDOFF', NULL, 0, 0),
+        ('ai_stale', 'conv_1', 'msg_1', NULL, 0, NULL, NULL, 'DISCARDED_STALE', NULL, 0, 0);
         
       INSERT INTO attachments (id, conversation_id, source_provider, source_message_ref, source_attachment_ref, attachment_type, original_filename, safe_filename, mime_type, storage_key, access_token_hash, status, destination_provider, created_at, updated_at)
       VALUES 
@@ -77,7 +77,7 @@ describe('Real 0005 Reliability Migration', () => {
   });
 
   it('preserves all rows and identities during 0005 upgrade', () => {
-    const getCounts = () => {
+    const getSnapshot = () => {
       const res = runSql(`
         SELECT 
           (SELECT COUNT(*) FROM conversations) as c_count,
@@ -85,12 +85,24 @@ describe('Real 0005 Reliability Migration', () => {
           (SELECT COUNT(*) FROM outbound_operations) as o_count,
           (SELECT COUNT(*) FROM ai_runs) as a_count,
           (SELECT COUNT(*) FROM attachments) as att_count,
-          (SELECT COUNT(*) FROM runtime_config) as r_count
+          (SELECT COUNT(*) FROM runtime_config) as r_count,
+          (SELECT json_group_array(id) FROM (SELECT id FROM conversations ORDER BY id)) as convs,
+          (SELECT json_group_array(source || ':' || source_event_ref) FROM (SELECT source, source_event_ref FROM event_receipts ORDER BY source, source_event_ref)) as events,
+          (SELECT json_group_array(id) FROM (SELECT id FROM outbound_operations ORDER BY id)) as outbounds,
+          (SELECT json_group_array(trigger_event_ref) FROM (SELECT trigger_event_ref FROM ai_runs ORDER BY trigger_event_ref)) as ais,
+          (SELECT json_group_array(id) FROM (SELECT id FROM attachments ORDER BY id)) as atts,
+          (SELECT json_group_array(key) FROM (SELECT key FROM runtime_config ORDER BY key)) as configs
       `);
       return res[0].results[0];
     };
 
-    const before = getCounts();
+    const getRepresentativeAiRun = () => {
+      return runSql(`SELECT trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch, provider_response_ref, response_text, status, last_error, created_at, updated_at FROM ai_runs WHERE trigger_event_ref = 'ai_success'`)[0].results[0];
+    };
+
+    const before = getSnapshot();
+    const beforeAi = getRepresentativeAiRun();
+
     expect(before.c_count).toBe(1);
     expect(before.e_count).toBe(1);
     expect(before.o_count).toBe(6);
@@ -100,8 +112,11 @@ describe('Real 0005 Reliability Migration', () => {
 
     runMigration('0005_reliability.sql');
 
-    const after = getCounts();
+    const after = getSnapshot();
     expect(after).toEqual(before);
+
+    const afterAi = getRepresentativeAiRun();
+    expect(afterAi).toEqual(beforeAi);
   }, 60000);
 
   it('maps AMBIGUOUS to PENDING reconciliation status', () => {
@@ -145,9 +160,13 @@ describe('Real 0005 Reliability Migration', () => {
         ('ai_failed_retryable', 'conv_1', 'msg_1', 0, 'FAILED_RETRYABLE', 0, 0),
         ('ai_retry_exhausted', 'conv_1', 'msg_1', 0, 'RETRY_EXHAUSTED', 0, 0);
     `);
-    const res = runSql(`SELECT status FROM ai_runs WHERE trigger_event_ref IN ('ai_failed_compat', 'ai_failed_retryable', 'ai_retry_exhausted') ORDER BY status`);
+    
+    // Also test UPDATE
+    runSql(`UPDATE ai_runs SET status = 'FAILED' WHERE trigger_event_ref = 'ai_pending';`);
+
+    const res = runSql(`SELECT status FROM ai_runs WHERE trigger_event_ref IN ('ai_failed_compat', 'ai_failed_retryable', 'ai_retry_exhausted', 'ai_pending') ORDER BY status`);
     const statuses = res[0].results.map((r: any) => r.status);
-    expect(statuses.sort()).toEqual(['FAILED', 'FAILED_RETRYABLE', 'RETRY_EXHAUSTED'].sort());
+    expect(statuses.sort()).toEqual(['FAILED', 'FAILED', 'FAILED_RETRYABLE', 'RETRY_EXHAUSTED'].sort());
   }, 30000);
 
   it('passes integrity and foreign key checks via sqlite3 CLI', () => {
