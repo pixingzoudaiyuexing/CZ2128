@@ -1,5 +1,6 @@
 import { Env } from '../../config/env';
 import { ProviderDeliveryError } from '../../core/errors';
+import { OutboundAttemptLifecycle } from '../../core/outbound-operations';
 import {
   invalidVisibleSuccessError,
   visibleHttpDeliveryError,
@@ -12,7 +13,8 @@ export async function createChatwootMessage(
   accountId: string,
   conversationId: string,
   content: string,
-  outboundOperationId: string
+  outboundOperationId: string,
+  lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ messageId: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
@@ -21,6 +23,8 @@ export async function createChatwootMessage(
   ) {
     throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CHATWOOT' });
   }
+  
+  
   const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
   
   const body = {
@@ -30,6 +34,12 @@ export async function createChatwootMessage(
     source_id: `cz2128:${outboundOperationId}`
   };
 
+  const payload = JSON.stringify(body);
+
+  if (lifecycle) {
+    await lifecycle.requestStarted();
+  }
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -38,10 +48,14 @@ export async function createChatwootMessage(
         'Content-Type': 'application/json',
         'api_access_token': env.CHATWOOT_API_TOKEN
       },
-      body: JSON.stringify(body),
+      body: payload
     });
   } catch {
     throw visibleTransportDeliveryError('CHATWOOT');
+  }
+
+  if (lifecycle) {
+    await lifecycle.responseObserved(response.status);
   }
 
   if (!response.ok) {
@@ -52,9 +66,12 @@ export async function createChatwootMessage(
 
   try {
     const data = await response.json() as any;
-    if (data.id === undefined || data.id === null) throw new Error('Missing message id');
+    if (data?.id === undefined || data?.id === null) {
+      throw invalidVisibleSuccessError('CHATWOOT');
+    }
     return { messageId: String(data.id) };
-  } catch {
+  } catch (error) {
+    if (error instanceof ProviderDeliveryError) throw error;
     throw invalidVisibleSuccessError('CHATWOOT');
   }
 }

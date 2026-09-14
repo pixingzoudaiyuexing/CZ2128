@@ -40,6 +40,88 @@ class HandlerDb {
 
   private run(query: string, params: any[]) {
     let changes = 0;
+
+    if (query.includes("status = 'SENDING'") && query.includes("lease_until = ?")) {
+      const row = this.outbound.find(item => item.id === params[3]);
+      if (row && ['PENDING', 'FAILED_RETRYABLE'].includes(row.status)) {
+        row.status = 'SENDING'; row.lease_until = params[0]; row.lease_token = params[1]; row.request_started_at = null; row.response_observed_at = null; row.response_http_status = null;
+        this.lastOutboundLeaseUntil = params[0]; 
+        return { meta: { changes: 1 } };
+      }
+    }
+    if (query.includes("request_started_at = ?, attempt_count = attempt_count + 1")) {
+      const row = this.outbound.find(x => x.id === params[2]);
+      if (row && row.status === 'SENDING' && row.lease_token === params[3] && row.request_started_at == null) {
+        row.request_started_at = params[0]; row.attempt_count++; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("response_observed_at = ?")) {
+      const row = this.outbound.find(x => x.id === params[3]);
+      if (row && row.status === 'SENDING' && row.lease_token === params[4] && row.request_started_at != null) {
+        row.response_observed_at = params[0]; row.response_http_status = params[1]; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("status = 'PENDING', lease_until = NULL, lease_token = NULL,") && query.includes("request_started_at IS NULL")) {
+      const row = this.outbound.find(x => x.id === params[1]);
+      if (row && row.status === 'SENDING' && (row.lease_until || 0) <= params[2] && row.lease_token === params[3] && row.request_started_at === null) {
+        row.status = 'PENDING'; row.lease_until = null; row.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until <=")) {
+      const row = this.outbound.find(x => x.id === params[1]);
+      if (row && row.status === 'SENDING' && (row.lease_until === null || (row.lease_until || 0) <= params[2]) && (!row.lease_token || row.lease_token === params[3])) {
+        row.status = 'AMBIGUOUS'; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("status = 'FAILED_FINAL', last_error = 'OUTBOUND_RETRY_EXHAUSTED'")) {
+      const row = this.outbound.find(x => x.id === params[1]);
+      if (row && (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE')) {
+        row.status = 'FAILED_FINAL'; row.last_error = 'OUTBOUND_RETRY_EXHAUSTED'; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("status = 'SENT'") && query.includes("provider_message_ref = ?")) {
+      const row = this.outbound.find(item => item.id === params[2]);
+      if (row?.status === 'SENDING' && row.lease_token === params[3] && !this.failStoredPersistence) {
+        row.status = 'SENT'; row.provider_message_ref = params[0]; row.lease_until = null; row.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes('SET status = ?, last_error = ?, lease_until = NULL')) {
+      const row = this.outbound.find(item => item.id === params[6]);
+      if (row?.status === 'SENDING' && row.lease_token === params[7]) {
+        row.status = params[0]; row.last_error = params[1]; row.lease_until = null; row.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("status = 'AMBIGUOUS', last_error = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED'")) {
+      const row = this.outbound.find(item => item.id === params[1]);
+      if (row?.status === 'SENDING' && row.lease_token === params[2]) {
+        row.status = 'AMBIGUOUS'; row.lease_until = null; row.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (query.includes("status = 'FAILED_FINAL', last_error = ?")) {
+      const row = this.outbound.find(item => item.id === params[2]);
+      if (row && (row.status === 'PENDING' || row.status === 'FAILED_RETRYABLE')) {
+        row.status = 'FAILED_FINAL'; row.last_error = params[0]; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+
     if (query.includes("SET status = 'FETCHING'")) {
       const row = this.attachments.find(item => item.id === params[1]);
       if (row && row.attempt_count < params[2] && ['PENDING', 'FETCHING', 'FAILED_RETRYABLE'].includes(row.status)) {

@@ -9,6 +9,7 @@ import {
 } from '../core/provider-retry';
 import { retryAfterHeader } from '../core/retry';
 import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
+import { OutboundAttemptLifecycle } from '../core/outbound-operations';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -17,17 +18,25 @@ async function visibleFetch(
   url: string,
   form: FormData,
   timeoutMs: number,
-  headers?: HeadersInit
+  headers?: HeadersInit,
+  lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ response: Response; finish: () => void }> {
+  if (lifecycle) {
+    await lifecycle.requestStarted();
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
   try {
-    const response = await fetch(url, { method: 'POST', headers, body: form, signal: controller.signal });
-    return { response, finish: () => clearTimeout(timeout) };
+    response = await fetch(url, { method: 'POST', headers, body: form, signal: controller.signal });
   } catch {
     clearTimeout(timeout);
     throw visibleTransportDeliveryError(provider);
   }
+  if (lifecycle) {
+    await lifecycle.responseObserved(response.status);
+  }
+  return { response, finish: () => clearTimeout(timeout) };
 }
 
 export async function loadAttachmentBuffer(
@@ -60,7 +69,8 @@ export async function deliverAttachmentToChatwoot(
   accountRef: string,
   conversationRef: string,
   operationId: string,
-  bytes: ArrayBuffer
+  bytes: ArrayBuffer,
+  lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
@@ -78,7 +88,8 @@ export async function deliverAttachmentToChatwoot(
     `${baseUrl}/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`,
     form,
     config.destinationTimeoutMs,
-    { 'api_access_token': env.CHATWOOT_API_TOKEN }
+    { 'api_access_token': env.CHATWOOT_API_TOKEN },
+    lifecycle
   );
   const response = request.response;
   if (!response.ok) {
@@ -113,7 +124,8 @@ export async function deliverAttachmentToTelegram(
   config: AttachmentConfig,
   row: AttachmentRow,
   threadRef: string,
-  bytes: ArrayBuffer
+  bytes: ArrayBuffer,
+  lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
@@ -130,7 +142,9 @@ export async function deliverAttachmentToTelegram(
     'TELEGRAM',
     `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${target.method}`,
     form,
-    config.destinationTimeoutMs
+    config.destinationTimeoutMs,
+    undefined,
+    lifecycle
   );
   const response = request.response;
   if (!response.ok) {

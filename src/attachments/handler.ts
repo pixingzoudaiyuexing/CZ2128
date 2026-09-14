@@ -88,12 +88,12 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       row.conversation_id,
       row.destination_provider,
       'SEND_ATTACHMENT',
-      async opId => row.destination_provider === 'chatwoot'
+      async (opId, lifecycle) => row.destination_provider === 'chatwoot'
         ? deliverAttachmentToChatwoot(
             env, config, row, conversation.helpdesk_account_ref,
-            conversation.helpdesk_conversation_ref, opId, bytes
+            conversation.helpdesk_conversation_ref, opId, bytes, lifecycle
           )
-        : deliverAttachmentToTelegram(env, config, row, conversation.operator_thread_ref, bytes),
+        : deliverAttachmentToTelegram(env, config, row, conversation.operator_thread_ref, bytes, lifecycle),
       operationId,
       { leaseSeconds: config.outboundLeaseSeconds }
     );

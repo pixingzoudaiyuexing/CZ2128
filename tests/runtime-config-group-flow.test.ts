@@ -36,8 +36,8 @@ describe('runtime support group migration flow', () => {
     vi.mocked(telegram.createTelegramTopic).mockResolvedValue({ messageThreadId: 'new-topic' });
     vi.mocked(telegram.sendTelegramMessage).mockResolvedValue({ messageId: 'message' });
     vi.mocked(outbound.executeOutboundOperation).mockImplementation(async (_env, _conv, _provider, type, action) => {
-      if (type === 'CREATE_TOPIC') return { status: 'SENT', providerMessageRef: (await action('topic-op')).providerMessageRef };
-      return { status: 'SENT', providerMessageRef: 'message' };
+      if (type === 'CREATE_TOPIC') return { status: 'SENT', providerMessageRef: (await action('topic-op', { requestStarted: vi.fn(), responseObserved: vi.fn() })).providerMessageRef };
+      return { status: 'SENT', providerMessageRef: (await action('msg-op', { requestStarted: vi.fn(), responseObserved: vi.fn() })).providerMessageRef || 'message' };
     });
 
     await processChatwootEvent({
@@ -48,7 +48,7 @@ describe('runtime support group migration flow', () => {
       }
     }, { ...env, BOT_GROUP_ID: '-1001234' });
 
-    expect(telegram.createTelegramTopic).toHaveBeenCalledWith(expect.anything(), '-1001234', expect.any(String));
+    expect(telegram.createTelegramTopic).toHaveBeenCalledWith(expect.anything(), '-1001234', expect.any(String), expect.anything());
     expect(conversations.updateOperatorThreadRef).toHaveBeenCalledWith(expect.anything(), 'conv', 'new-topic');
   });
 });

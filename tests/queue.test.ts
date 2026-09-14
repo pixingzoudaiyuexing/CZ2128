@@ -43,7 +43,103 @@ class MockPreparedStatement {
 
   async run() {
     const meta = { changes: 0 };
-    if (this.query.includes('INSERT INTO conversations')) {
+
+    if (this.query.includes("status = 'SENDING'") && this.query.includes("lease_until = ?")) {
+      const [lu, leaseToken, now, id] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && (o.status === 'PENDING' || o.status === 'FAILED_RETRYABLE')) {
+        o.status = 'SENDING'; o.lease_until = lu; o.lease_token = leaseToken; o.request_started_at = null; o.response_observed_at = null; o.response_http_status = null;
+        return { meta: { changes: 1 } };
+      }
+    }
+    if (this.query.includes("request_started_at = ?, attempt_count = attempt_count + 1")) {
+      const [ts, , id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && o.status === 'SENDING' && o.lease_token === leaseToken && o.request_started_at == null) {
+        o.request_started_at = ts;
+        o.attempt_count++;
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("response_observed_at = ?")) {
+      const [ts, hs, , id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && o.status === 'SENDING' && o.lease_token === leaseToken && o.request_started_at != null) {
+        o.response_observed_at = ts;
+        o.response_http_status = hs;
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = 'PENDING', lease_until = NULL, lease_token = NULL,") && this.query.includes("request_started_at IS NULL")) {
+      const [uat, id, lut, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && o.status === 'SENDING' && (o.lease_until || 0) <= lut && o.lease_token === leaseToken && o.request_started_at === null) {
+        o.status = 'PENDING';
+        o.lease_until = null;
+        o.lease_token = null;
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && this.query.includes("lease_until <=")) {
+      const [uat, id, lut, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && o.status === 'SENDING' && (o.lease_until === null || (o.lease_until || 0) <= lut) && (!o.lease_token || o.lease_token === leaseToken)) {
+        o.status = 'AMBIGUOUS';
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = 'FAILED_FINAL', last_error = 'OUTBOUND_RETRY_EXHAUSTED'")) {
+      const [now, id] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && (o.status === 'PENDING' || o.status === 'FAILED_RETRYABLE')) {
+        o.status = 'FAILED_FINAL';
+        o.last_error = 'OUTBOUND_RETRY_EXHAUSTED';
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = 'SENT'") && this.query.includes("provider_message_ref = ?")) {
+      const [pmr, now, id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
+        o.status = 'SENT'; o.provider_message_ref = pmr; o.lease_until = null; o.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = ?, last_error = ?, lease_until = NULL")) {
+      const [status, err, rec, rSec, nAt, now, id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
+        o.status = status; o.last_error = err; o.lease_until = null; o.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = 'AMBIGUOUS', last_error = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED'")) {
+      const [now, id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
+        o.status = 'AMBIGUOUS'; o.lease_until = null; o.lease_token = null; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (this.query.includes("status = 'FAILED_FINAL', last_error = ?")) {
+      const [err, now, id] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && (o.status === 'PENDING' || o.status === 'FAILED_RETRYABLE')) {
+        o.status = 'FAILED_FINAL'; o.last_error = err; 
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+  
+if (this.query.includes('INSERT INTO conversations')) {
       const [id, p, a, cr, cus, ch, cat, uat, v] = this.boundParams;
       if (!this.db.tables.conversations.find(x => x.helpdesk_provider === p && x.helpdesk_account_ref === a && x.helpdesk_conversation_ref === cr)) {
         this.db.tables.conversations.push({
@@ -146,26 +242,51 @@ class MockPreparedStatement {
         meta.changes = 1;
       }
     }
-    if (this.query.includes("status = 'SENDING'") && this.query.includes("attempt_count + 1")) {
+    if (this.query.includes("status = 'SENDING'") && this.query.includes("lease_until = ?")) {
       const [lu, leaseToken, now, id] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
       if (o && (o.status === 'PENDING' || o.status === 'FAILED_RETRYABLE')) {
-        o.status = 'SENDING'; o.lease_until = lu; o.lease_token = leaseToken; o.attempt_count++;
+        o.status = 'SENDING'; o.lease_until = lu; o.lease_token = leaseToken; o.request_started_at = null; o.response_observed_at = null; o.response_http_status = null;
         meta.changes = 1;
       }
     }
-    if (this.query.includes("status = 'SENT'")) {
+    if (this.query.includes("request_started_at = ?, attempt_count = attempt_count + 1")) {
+      const [ts, , id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && o.status === 'SENDING' && o.lease_token === leaseToken && o.request_started_at == null) {
+        o.request_started_at = ts;
+        o.attempt_count++;
+        meta.changes = 1;
+      }
+    }
+    if (this.query.includes("response_observed_at = ?")) {
+      const [ts, hs, , id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o && o.status === 'SENDING' && o.lease_token === leaseToken && o.request_started_at != null) {
+        o.response_observed_at = ts;
+        o.response_http_status = hs;
+        meta.changes = 1;
+      }
+    }
+    if (this.query.includes("status = 'SENT'") && this.query.includes("provider_message_ref = ?")) {
       const [pmr, now, id, leaseToken] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
       if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
         o.status = 'SENT'; o.provider_message_ref = pmr; o.lease_until = null; o.lease_token = null; meta.changes = 1;
       }
     }
-    if (this.query.includes('SET status = ?, last_error = ?')) {
-      const [status, err, now, id, leaseToken] = this.boundParams;
+    if (this.query.includes('SET status = ?, last_error = ?, lease_until = NULL')) {
+      const [status, err, rec, rs, na, now, id, leaseToken] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
       if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
         o.status = status; o.last_error = err; o.lease_until = null; o.lease_token = null; meta.changes = 1;
+      }
+    }
+    if (this.query.includes("status = 'AMBIGUOUS', last_error = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED'")) {
+      const [now, id, leaseToken] = this.boundParams;
+      const o = this.db.tables.outbound_operations.find(x => x.id === id);
+      if (o?.status === 'SENDING' && o.lease_token === leaseToken) {
+        o.status = 'AMBIGUOUS'; o.lease_until = null; o.lease_token = null; meta.changes = 1;
       }
     }
     if (this.query.includes("status = 'FAILED_FINAL'")) {

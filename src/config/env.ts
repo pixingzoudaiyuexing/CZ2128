@@ -10,7 +10,8 @@ export interface Env {
       accountRef: string,
       conversationRef: string,
       content: string,
-      operationId: string
+      operationId: string,
+      lifecycle?: import('../core/outbound-operations').OutboundAttemptLifecycle
     ) => Promise<{ id?: number | string; messageId?: number | string }>;
   };
   DB: D1Database;

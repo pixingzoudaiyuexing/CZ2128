@@ -192,3 +192,44 @@ describe('provider API contracts', () => {
     expect(error).toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: status });
   });
 });
+
+
+describe('Adapter Lifecycle', () => {
+  it('Chatwoot adapter calls lifecycle correctly', async () => {
+    const testEnv = env as any;
+    const calls: string[] = [];
+    
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      calls.push('fetch');
+      return new Response(JSON.stringify({ id: 999 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+
+    const lifecycle = {
+      requestStarted: vi.fn().mockImplementation(async () => { calls.push('requestStarted'); }),
+      responseObserved: vi.fn().mockImplementation(async (status) => { calls.push('responseObserved:' + status); })
+    };
+
+    await createChatwootMessage(env, '1', '2', 'Reply', 'op-lifecycle-cw', lifecycle);
+    
+    expect(calls).toEqual(['requestStarted', 'fetch', 'responseObserved:200']);
+  });
+
+  it('Telegram Support Bot adapter calls lifecycle correctly', async () => {
+    const testEnv = env as any;
+    const calls: string[] = [];
+    
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      calls.push('fetch');
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1234 } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+
+    const lifecycle = {
+      requestStarted: vi.fn().mockImplementation(async () => { calls.push('requestStarted'); }),
+      responseObserved: vi.fn().mockImplementation(async (status) => { calls.push('responseObserved:' + status); })
+    };
+
+    await sendTelegramMessage(env, '123', null, 'Reply', lifecycle);
+    
+    expect(calls).toEqual(['requestStarted', 'fetch', 'responseObserved:200']);
+  });
+});

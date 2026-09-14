@@ -46,8 +46,8 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
       conv.id,
       'telegram',
       'SEND_MESSAGE',
-      async () => {
-        const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, payload.threadRef, acknowledgement);
+      async (opId, lifecycle) => {
+        const res = await sendTelegramMessage(env, env.BOT_GROUP_ID, payload.threadRef, acknowledgement, lifecycle);
         return { providerMessageRef: res.messageId };
       },
       operationId
@@ -76,13 +76,14 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
       conv.id,
       'chatwoot',
       'SEND_MESSAGE',
-      async (opId) => {
+      async (opId, lifecycle) => {
         const res = await createChatwootMessage(
           env,
           conv.helpdesk_account_ref,
           conv.helpdesk_conversation_ref,
           content,
-          opId
+          opId,
+          lifecycle
         );
         return { providerMessageRef: res.messageId };
       },
