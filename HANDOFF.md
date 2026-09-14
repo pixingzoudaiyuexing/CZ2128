@@ -1,12 +1,13 @@
-# CZ2128 - Phase 3 Complete / Main Freeze
+# CZ2128 - Phase 3.5 Runtime Control Plane Handoff
 
 ## 状态
-- **Current Branch**: `main`
+- **Current Branch**: `codex/phase3.5-runtime-control-plane`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
 - **PR #2**: merged; Phase 2 complete and frozen
 - **PR #3**: merged; Phase 3 complete and frozen
+- **PR #4**: Phase 3.5 implementation in review; do not merge before Primary approval
 - **Phase 4**: not started
 - **Final HEAD / CI**: 以 Phase 3 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
@@ -51,3 +52,13 @@
 - Real Queue/D1 concurrency and 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` memory/load behavior.
 - Apply and verify the seven-day R2 object/aborted-multipart lifecycle.
 - Residual risks include DNS rebinding through an explicitly trusted allowlisted DNS hostname and an extreme R2 I/O stall outliving the attachment event receipt lease.
+
+## Phase 3.5 Runtime Control Plane
+- `runtime_config` stores plain overrides or AES-256-GCM encrypted secrets with optimistic versions.
+- `runtime_config_history` is append-only; rollback creates a new version and never reveals secret values.
+- Missing overrides use env fallback; present but invalid encrypted overrides fail closed.
+- One coherent snapshot is resolved per support HTTP request, Admin request or Queue event.
+- Admin ingress requires its bootstrap path, webhook secret, private chat and exact positive Telegram user-ID allowlist.
+- Admin sessions expire after ten minutes and `admin_update_receipts` makes mutations idempotent by `update_id`.
+- Support Bot rotation creates a new token/path/secret profile and group migration clears old topic mappings atomically.
+- Cloudflare R2 account enablement and all Phase 3/3.5 real staging validation remain outstanding.

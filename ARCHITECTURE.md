@@ -573,3 +573,13 @@ Phase 3 implements one reusable attachment core for Telegram and Chatwoot source
 - stored data has a 24-hour business TTL, hourly logical cleanup is bounded to 100 rows, and a seven-day R2 lifecycle rule is the orphan safety net.
 
 Attachment-only customer messages do not create AI triggers. Captions remain ordinary text messages and are not duplicated in attachment delivery. Telegram operator attachments participate in the existing Telegram `update_id` state-order fence.
+
+## 18. Phase 3.5 Runtime Configuration and Admin Control Plane
+
+The existing Worker exposes a separate Telegram Admin Bot webhook. Its opaque path, webhook secret, bot token, positive-user-ID allowlist and `RUNTIME_CONFIG_MASTER_KEY` remain bootstrap settings and cannot be changed through runtime configuration. The Chatwoot webhook signing secret and Cloudflare bindings also remain bootstrap-only.
+
+Each support HTTP request and Queue event loads one coherent D1 runtime configuration snapshot. Missing keys fall back to their existing env values. Once an encrypted override exists, decryption/authentication/validation failure makes that setting unavailable rather than reactivating a superseded env credential. Provider failures remain isolated so a broken AI override does not stop the human bridge.
+
+Plain values and AES-256-GCM encrypted secrets are stored in `runtime_config`. Secret encryption uses a fresh 12-byte nonce and AAD `cz2128:runtime-config:<key>`. `runtime_config_history` is append-only; rollback creates a new monotonically increasing version. Admin update receipts prevent repeated Telegram updates from applying mutations twice, and ten-minute encrypted sessions fence interactive confirmations.
+
+The Support Telegram profile is one encrypted atomic value containing token, webhook secret and webhook path. Rotation validates the bot and current group, creates a new webhook identity, sets the new webhook, activates it through versioned D1 state, and only then best-effort removes the old webhook. Support-group migration validates the active bot against a forum supergroup and atomically changes `BOT_GROUP_ID` while clearing existing Telegram topic mappings. Neither side-effectful key is exposed through generic rollback.

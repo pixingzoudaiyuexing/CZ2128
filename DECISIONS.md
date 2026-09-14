@@ -139,3 +139,21 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Decision:** Source downloads stream to R2 through bounded 5 MiB multipart chunks. Destination multipart uploads buffer one file at a time with a hard 20 MiB maximum. Business retention is 24 hours; hourly cleanup removes the object before its D1 row, and a seven-day R2 lifecycle rule handles orphans.
 
 **Reason:** Workers must not buffer multiple large files or retain private content indefinitely.
+
+## D-021 — Separate bootstrap and runtime configuration
+
+**Decision:** D1 owns frequently changed provider and limit overrides, resolved once per request/event with env fallback only when no override exists. Cloudflare bindings, Chatwoot webhook signing, the encryption master key and all Admin Bot identity/authorization settings remain bootstrap-only.
+
+**Reason:** Routine operations should not require a Worker redeploy, while break-glass access and ingress trust anchors must remain outside the mutable control plane.
+
+## D-022 — Encrypt runtime secrets with key-bound authenticated encryption
+
+**Decision:** Runtime secrets use AES-256-GCM with a fresh 12-byte nonce and config-key AAD. D1 and history never store plaintext secrets. A present but invalid secret override does not fall back to env.
+
+**Reason:** Authenticated encryption prevents undetected corruption and cross-key ciphertext substitution; fail-closed resolution prevents credential rollback by corruption.
+
+## D-023 — Treat Support Telegram identity and group changes as workflows
+
+**Decision:** The Support Bot token, webhook secret and webhook path activate as one encrypted profile after provider validation and a new webhook identity is created. Group migration validates forum permissions and atomically clears old topic mappings. Both require confirmation and dedicated workflows rather than generic set/rollback.
+
+**Reason:** Partial bot rotation or reuse of topic IDs across groups can admit stale webhooks, duplicate events or misroute operator messages.
