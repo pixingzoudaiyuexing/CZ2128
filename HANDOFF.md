@@ -1,23 +1,24 @@
-# CZ2128 - Phase 4B-2C-2 Implemented / In Review
+# CZ2128 - Phase 4B-2C-2 Complete / Frozen
 
 ## 状态
-- **Current Branch**: `codex/phase4b2c2-manual-retry-domain-resolution`
+- **Current Branch**: `main`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
 - **PR #2**: merged; Phase 2 complete and frozen
 - **PR #3**: merged; Phase 3 complete and frozen
 - **PR #4**: merged; Phase 3.5 complete and frozen
+- **PR #9**: merged; Phase 4B-2C-2 complete and frozen
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
 - **Phase 4B-2A**: COMPLETE
 - **Phase 4B-2B**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-1**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-2C-2**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-2C-2**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-3**: NOT STARTED
 - **Phase 4B-3**: NOT STARTED
-- **Final HEAD / CI**: 以 Phase 3.5 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
+- **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
 - Provider ingress is authenticated before normalization into a version 1 typed Queue envelope.

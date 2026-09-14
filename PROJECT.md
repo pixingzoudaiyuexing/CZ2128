@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C-1 Complete, Frozen / Phase 4B-2C-2 Implemented, In Review**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C-1 Complete, Frozen / Phase 4B-2C-2 Complete, Frozen**
 
 ## Purpose
 
@@ -82,7 +82,7 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 ## Phase 4B-2C Breakdown
 
 - Phase 4B-2C-1 — Outbound reconciliation and target evidence: **COMPLETE / FROZEN**.
-- Phase 4B-2C-2 — Manual retry child operations and domain resolution: **IMPLEMENTED / IN REVIEW**.
+- Phase 4B-2C-2 — Manual retry child operations and domain resolution: **COMPLETE / FROZEN**.
 - Phase 4B-2C-3 — AI durable retry state machine and legacy `FAILED` retirement: **NOT STARTED**.
 - Phase 4B-3 reliability UI/control-plane exposure: **NOT STARTED**.
 
