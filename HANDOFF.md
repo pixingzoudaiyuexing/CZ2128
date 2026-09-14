@@ -1,13 +1,14 @@
-# CZ2128 - Phase 3 Handoff
+# CZ2128 - Phase 3 Complete / Main Freeze
 
 ## 状态
-- **Current Branch**: `codex/phase3-attachments`
+- **Current Branch**: `main`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
 - **PR #2**: merged; Phase 2 complete and frozen
-- **Phase 3**: implementation in PR #3; do not merge before Primary review
-- **Final HEAD / CI**: 以 Phase 2 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
+- **PR #3**: merged; Phase 3 complete and frozen
+- **Phase 4**: not started
+- **Final HEAD / CI**: 以 Phase 3 Merge & Main Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
 - Provider ingress is authenticated before normalization into a version 1 typed Queue envelope.
@@ -40,3 +41,13 @@
 - Secure proxy supports GET, HEAD and single byte ranges with uniform 404 access failures.
 - Hourly cleanup removes at most 100 expired rows after R2 deletion succeeds.
 - Real R2, Chatwoot and Telegram staging validation remains required.
+
+## Pre-Production Requirements
+- Real Cloudflare R2: write, multipart, read, Range and delete.
+- Real Telegram: `getFile` plus multipart `sendPhoto`, `sendDocument`, `sendVideo`, `sendAudio` and `sendVoice`.
+- Real Chatwoot: attachment `data_url` download/redirect behavior and multipart `attachments[]`.
+- Secure proxy: GET, HEAD, Range and response headers in staging.
+- Cleanup: hourly scheduled trigger and R2-before-D1 deletion behavior.
+- Real Queue/D1 concurrency and 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` memory/load behavior.
+- Apply and verify the seven-day R2 object/aborted-multipart lifecycle.
+- Residual risks include DNS rebinding through an explicitly trusted allowlisted DNS hostname and an extreme R2 I/O stall outliving the attachment event receipt lease.

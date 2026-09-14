@@ -2,6 +2,8 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
+Phases 1-3 are complete and merged. Phase 4 has not started. Phase 3 code completion is not production validation.
+
 ## Setup
 - `npm ci`
 - `npx wrangler d1 migrations apply cz2128-db --local`
@@ -69,3 +71,5 @@ npx wrangler r2 bucket lifecycle add cz2128-attachments attachment-retention att
 ```
 
 Review the bucket and lifecycle configuration before running these commands. Phase 3 development does not create or modify production Cloudflare resources. Real R2, Telegram and Chatwoot attachment flows require staging validation before production use.
+
+Pre-production attachment validation must cover real R2 write/multipart/read/Range/delete; Telegram `getFile` and every configured multipart send method; Chatwoot download redirects and `attachments[]`; proxy GET/HEAD/Range/headers; hourly cleanup; Queue/D1 concurrency; and peak memory under a 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` upload. The seven-day R2 lifecycle must be applied and verified. DNS rebinding through an explicitly trusted allowlisted hostname and extreme R2 I/O stalls beyond the event lease remain residual risks to validate operationally.

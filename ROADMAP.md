@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-2 complete — Phase 3 implementation in PR #3**
+Status: **Phases 1-3 complete and merged — Phase 4 not started**
 
 ## Phase 0 — Architecture Freeze
 
@@ -95,7 +95,7 @@ Scope:
 
 ## Phase 3 — Unified Temporary Attachments
 
-Status: **IMPLEMENTATION / PR #3 OPEN**
+Status: **COMPLETE / MERGED**
 
 Goal: replace EasyImages and support ordinary temporary files through one private attachment subsystem.
 
@@ -115,6 +115,8 @@ Scope:
 - GET/HEAD download path; Range support if practical and justified
 - Crisp-era EasyImages dependency absent from the new project
 - tests for access, expiry, missing/deleted objects, oversize rejection and retries
+
+Code completion does not imply production validation. Real R2, Telegram, Chatwoot, proxy, cleanup, Queue/D1 concurrency and 20 MiB memory/load behavior must pass staging validation before production rollout; the seven-day R2 lifecycle must also be applied.
 
 ## Phase 4 — Reliability Hardening
 

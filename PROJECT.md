@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-2 Complete / Phase 3 Implementation in PR #3**
+Status: **Phases 1-3 Complete / Merged / Phase 4 Not Started**
 
 ## Purpose
 
@@ -27,7 +27,7 @@ Chatwoot, Telegram, Cloudflare, and any future business system are adapters/infr
 5. Any human reply pauses AI; operator timeout can automatically restore AI on the next customer message.
 6. Manual AI-off never auto-resumes until explicitly re-enabled.
 7. AI replies use recent conversation context rather than only the current message.
-8. Images and files can be uploaded from Telegram, stored temporarily in R2, and delivered to the customer as an image or expiring download link.
+8. Images and files use private temporary R2 storage and direct provider multipart delivery; an opaque-token proxy is available for explicit temporary-download consumers.
 9. Incoming webhooks are authenticated and idempotent.
 10. Queue retries use stable event/operation identity so normal retries do not duplicate customer-visible messages; ambiguous third-party delivery outcomes are explicitly recorded rather than hidden behind a false exactly-once guarantee.
 11. Core flows have automated tests, including duplicate delivery and AI/operator race cases.

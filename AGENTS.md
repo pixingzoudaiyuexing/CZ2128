@@ -16,9 +16,9 @@ If code and documentation conflict, stop and verify ground truth before changing
 
 ## Current Phase
 
-Phases 1 and 2 are complete. **Phase 3 — Unified Temporary Attachments / R2** is being implemented in PR #3.
+Phases 1, 2 and 3 are complete and merged. Phase 4 has not started.
 
-`ARCHITECTURE.md` and `DECISIONS.md` remain the approved V1 baseline. Phase 3 must preserve the hardened webhook, Queue, outbound ambiguity and AI handoff contracts from Phases 1 and 2.
+`ARCHITECTURE.md` and `DECISIONS.md` remain the approved V1 baseline. Phase 3 preserves the hardened webhook, Queue, outbound ambiguity and AI handoff contracts from Phases 1 and 2. Real provider, R2, proxy, cleanup, Queue/D1 concurrency and load validation remain pre-production requirements rather than completed production validation.
 
 ## Architectural Boundaries
 
