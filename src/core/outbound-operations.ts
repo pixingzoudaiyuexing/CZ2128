@@ -153,7 +153,7 @@ export async function executeOutboundOperation(
       try {
         result = await env.DB.prepare(
           `UPDATE outbound_operations
-           SET request_started_at = ?, attempt_count = attempt_count + 1, updated_at = ?
+           SET request_started_at = ?, attempt_count = attempt_count + 1, last_error = NULL, updated_at = ?
            WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NULL`
         ).bind(ts, ts, id, leaseToken).run();
       } catch (e) {

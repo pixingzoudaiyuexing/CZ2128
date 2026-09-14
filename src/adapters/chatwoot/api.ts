@@ -25,8 +25,7 @@ export async function createChatwootMessage(
   }
   
   // ensure trailing slash is stripped from base url
-  const baseUrl = env.CHATWOOT_API_URL.replace(/\/+$/, '');
-  const url = `${baseUrl}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
+  const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
   
   const body = {
     content,

@@ -89,6 +89,7 @@ class OperationDb {
       if (row && row.status === 'SENDING' && row.lease_token === leaseToken && row.request_started_at === null) {
         row.request_started_at = Number(ts);
         row.attempt_count += 1;
+        row.last_error = null;
         row.updated_at = Number(ts);
         changes = 1;
       }
@@ -98,6 +99,7 @@ class OperationDb {
       if (row && row.status === 'SENDING' && row.lease_token === leaseToken && row.request_started_at !== null) {
         row.response_observed_at = Number(ts);
         row.response_http_status = Number(httpStatus);
+        row.last_error = null;
         row.updated_at = Number(ts);
         changes = 1;
       }
@@ -177,6 +179,9 @@ class OperationDb {
         row.lease_until = null;
         row.lease_token = null;
         row.reconciliation_status = 'NOT_REQUIRED';
+        row.last_error = null;
+        row.retry_after_seconds = null;
+        row.next_retry_at = null;
         row.updated_at = Number(updatedAt);
         changes = 1;
       }
@@ -191,7 +196,7 @@ class OperationDb {
         changes = 1;
       }
     } else {
-      console.log('UNMATCHED QUERY:', query);
+      throw new Error('UNMATCHED QUERY: ' + query);
     }
     return { meta: { changes } };
   }
@@ -209,64 +214,70 @@ describe('outbound operation attempt lifecycle', () => {
     vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
     try {
       const db = new OperationDb();
-      
-      // Simulate Worker A claiming the lease but then stalling
-      db.rows.set('op-true-race', {
-        id: 'op-true-race', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
-        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
-        lease_until: Math.floor(Date.now() / 1000) - 1, lease_token: 'v2:worker-a', last_error: null, created_at: 0, updated_at: 0,
-        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
-        retry_after_seconds: null, next_retry_at: null
-      });
+      const aVisibleEffect = vi.fn();
 
-      // Now Worker B comes in, reclaims the lease successfully, and starts executing.
-      const actionB = vi.fn(async (opId, lifecycle) => {
-        await lifecycle.requestStarted();
+      let lifecycleA: any;
+      let resolveA_HAS_CLAIMED: any;
+      const aHasClaimed = new Promise(r => resolveA_HAS_CLAIMED = r);
+
+      let resolveAResume: any;
+      const aResume = new Promise(r => resolveAResume = r);
+
+      const actionA = async (opId: string, lifecycle: any) => {
+        lifecycleA = lifecycle;
+        resolveA_HAS_CLAIMED();
+        await aResume;
         
-        // While Worker B is executing, Worker A wakes up and tries to call requestStarted() using its stale lease token.
-        // We simulate Worker A's action directly here, passing 'v2:worker-a' to the DB query logic somehow.
-        // Or we can just do two executeOutboundOperation calls. Wait, executeOutboundOperation handles the full lifecycle.
-        // Let's just simulate the concurrency by explicitly calling executeOutboundOperation twice.
-        return { providerMessageRef: 'ok-b' };
-      });
-      
-      let resolveB: any;
-      const bRunning = new Promise(r => resolveB = r);
-      
-      const pB = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async (opId, lifecycle) => {
-        resolveB();
-        // Stalls B here
-        await new Promise(r => setTimeout(r, 100));
+        await lifecycleA.requestStarted();
+        aVisibleEffect();
+        await lifecycleA.responseObserved(200);
+        return { providerMessageRef: 'ok-a' };
+      };
+
+      const pA = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', actionA, 'op-true-race');
+
+      await aHasClaimed;
+
+      // Verify DB state for A
+      const rowA = db.rows.get('op-true-race')!;
+      expect(rowA.status).toBe('SENDING');
+      expect(rowA.request_started_at).toBeNull();
+      expect(rowA.attempt_count).toBe(0);
+
+      // Expire A
+      vi.advanceTimersByTime(35 * 1000); // > 30s
+
+      const actionB = async (opId: string, lifecycle: any) => {
         await lifecycle.requestStarted();
+        await lifecycle.responseObserved(200);
         return { providerMessageRef: 'ok-b' };
-      }, 'op-true-race');
-      
-      await bRunning;
-      // B has successfully claimed the lease and is waiting. 
-      // The lease_token in DB is now B's token.
-      const newLeaseToken = db.rows.get('op-true-race')!.lease_token;
-      
-      // Now simulate Worker A's stale attempt.
-      // We manually construct lifecycle for A
-      const envA = makeEnv(db);
-      const ts = Math.floor(Date.now() / 1000);
-      const res = await envA.DB.prepare(
-        `UPDATE outbound_operations
-         SET request_started_at = ?, attempt_count = attempt_count + 1, updated_at = ?
-         WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NULL`
-      ).bind(ts, ts, 'op-true-race', 'v2:worker-a').run();
-      
-      expect(res.meta.changes).toBe(0); // Worker A fails to update
-      
-      // Fast forward to let B finish
-      vi.advanceTimersByTime(200);
+      };
+
+      const pB = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', actionB, 'op-true-race');
       const resultB = await pB;
-      expect(resultB).toEqual({ status: 'SENT', providerMessageRef: 'ok-b' });
+      expect(resultB.status).toBe('SENT');
+      expect(resultB.providerMessageRef).toBe('ok-b');
+
+      // Now B is done. Let's resume A
+      resolveAResume();
       
-      // Ensure B's state was not corrupted by A
-      const row = db.rows.get('op-true-race')!;
-      expect(row.status).toBe('SENT');
-      expect(row.provider_message_ref).toBe('ok-b');
+      // A should throw CONCURRENCY_CAS_CONFLICT
+      await expect(pA).rejects.toThrowError(RetryableProcessingError);
+      
+      try {
+        await pA;
+      } catch (e: any) {
+        expect(e.code).toBe('CONCURRENCY_CAS_CONFLICT');
+      }
+
+      // Assert visible side effects
+      expect(aVisibleEffect).not.toHaveBeenCalled();
+
+      // Assert B's state remains intact
+      const rowFinal = db.rows.get('op-true-race')!;
+      expect(rowFinal.status).toBe('SENT');
+      expect(rowFinal.provider_message_ref).toBe('ok-b');
+      expect(rowFinal.attempt_count).toBe(1);
     } finally {
       vi.useRealTimers();
     }
@@ -427,15 +438,26 @@ describe('outbound operation attempt lifecycle', () => {
 
   it('Response Evidence Tests: 2xx success', async () => {
     const db = new OperationDb();
-    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async (opId, lifecycle) => {
+    const action = async (opId: string, lifecycle: any) => {
       await lifecycle.requestStarted();
       await lifecycle.responseObserved(200);
-      return { providerMessageRef: 'ok' };
-    }, 'op-2xx');
+      return { providerMessageRef: 'msg-id' };
+    };
+
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-2xx');
+    expect(res).toEqual({ status: 'SENT', providerMessageRef: 'msg-id' });
+
     const row = db.rows.get('op-2xx')!;
     expect(row.status).toBe('SENT');
+    expect(row.attempt_count).toBe(1);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.response_observed_at).toBeGreaterThan(0);
+    expect(row.response_http_status).toBe(200);
+    expect(row.last_error).toBeNull();
+    expect(row.retry_after_seconds).toBeNull();
+    expect(row.next_retry_at).toBeNull();
+    expect(row.reconciliation_status).toBe('NOT_REQUIRED');
   });
-
   it('Response Evidence Tests: 429 retryable', async () => {
     const db = new OperationDb();
     const action = async (opId: string, lifecycle: any) => {
@@ -446,10 +468,55 @@ describe('outbound operation attempt lifecycle', () => {
 
     const promise = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-429');
     await expect(promise).rejects.toThrow(RetryableProcessingError);
+    
     const row = db.rows.get('op-429')!;
     expect(row.status).toBe('FAILED_RETRYABLE');
     expect(row.attempt_count).toBe(1);
-    expect(row.retry_after_seconds).toBe(30);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.response_observed_at).toBeGreaterThan(0);
+    expect(row.response_http_status).toBe(429);
+    expect(row.last_error).toBe('OUTBOUND_RATE_LIMITED');
+    expect(row.retry_after_seconds).toBeGreaterThanOrEqual(30);
+    expect(row.next_retry_at).toBeGreaterThan(0);
+    expect(row.reconciliation_status).toBe('NOT_REQUIRED');
+  });
+  it('requestStarted Clears Previous Error', async () => {
+    const db = new OperationDb();
+    db.rows.set('op-clear-err', {
+      id: 'op-clear-err', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+      status: 'FAILED_RETRYABLE',
+      provider_message_ref: null,
+      attempt_count: 1,
+      lease_until: null,
+      lease_token: null,
+      last_error: 'OUTBOUND_RATE_LIMITED',
+      created_at: 1000,
+      updated_at: 1000,
+      retry_after_seconds: 30,
+      next_retry_at: 999, // ready for retry
+      reconciliation_status: 'NOT_REQUIRED'
+    });
+
+    let observedLastErrorBefore = undefined;
+    let observedAttemptCountBefore = undefined;
+
+    const action = async (opId: string, lifecycle: any) => {
+      const rowBefore = db.rows.get('op-clear-err')!;
+      observedLastErrorBefore = rowBefore.last_error;
+      observedAttemptCountBefore = rowBefore.attempt_count;
+
+      await lifecycle.requestStarted();
+      
+      const rowAfter = db.rows.get('op-clear-err')!;
+      expect(rowAfter.last_error).toBeNull();
+      expect(rowAfter.attempt_count).toBe(observedAttemptCountBefore + 1);
+
+      return { providerMessageRef: 'ok' };
+    };
+
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-clear-err');
+    expect(res.status).toBe('SENT');
+    expect(observedLastErrorBefore).toBe('OUTBOUND_RATE_LIMITED');
   });
 
   it('Response Evidence Tests: Explicit 4xx final', async () => {
@@ -457,41 +524,149 @@ describe('outbound operation attempt lifecycle', () => {
     const action = async (opId: string, lifecycle: any) => {
       await lifecycle.requestStarted();
       await lifecycle.responseObserved(400);
-      throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM', httpStatus: 400 });
+      throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PROVIDER_4XX_FINAL', { provider: 'TELEGRAM', httpStatus: 400 });
     };
 
-    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-400');
-    expect(result).toEqual({ status: 'FAILED_FINAL' });
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-400');
+    expect(res).toEqual({ status: 'FAILED_FINAL' });
+
     const row = db.rows.get('op-400')!;
     expect(row.status).toBe('FAILED_FINAL');
-    expect(row.last_error).toBe('OUTBOUND_PRECONDITION_FAILED');
+    expect(row.attempt_count).toBe(1);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.response_observed_at).toBeGreaterThan(0);
+    expect(row.response_http_status).toBe(400);
+    expect(row.last_error).toBe('OUTBOUND_PROVIDER_4XX_FINAL');
+    expect(row.reconciliation_status).toBe('NOT_REQUIRED');
   });
 
-  it('Response Evidence Tests: 5xx ambiguous', async () => {
+it('Response Evidence Tests: 408 timeout', async () => {
     const db = new OperationDb();
     const action = async (opId: string, lifecycle: any) => {
       await lifecycle.requestStarted();
-      await lifecycle.responseObserved(500);
-      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED', { provider: 'TELEGRAM', httpStatus: 500 });
+      await lifecycle.responseObserved(408);
+      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_TIMEOUT_AMBIGUOUS', { provider: 'TELEGRAM', httpStatus: 408 });
     };
 
-    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-500');
-    expect(result).toEqual({ status: 'AMBIGUOUS' });
-    const row = db.rows.get('op-500')!;
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-408');
+    expect(res).toEqual({ status: 'AMBIGUOUS' });
+
+    const row = db.rows.get('op-408')!;
     expect(row.status).toBe('AMBIGUOUS');
+    expect(row.attempt_count).toBe(1);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.response_observed_at).toBeGreaterThan(0);
+    expect(row.response_http_status).toBe(408);
+    expect(row.last_error).toBe('OUTBOUND_TIMEOUT_AMBIGUOUS');
+    expect(row.reconciliation_status).toBe('PENDING');
   });
 
-  it('Response Evidence Tests: transport exception', async () => {
+it('Response Evidence Tests: 5xx ambiguous', async () => {
     const db = new OperationDb();
     const action = async (opId: string, lifecycle: any) => {
       await lifecycle.requestStarted();
-      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED', { provider: 'TELEGRAM' });
+      await lifecycle.responseObserved(503);
+      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS', { provider: 'TELEGRAM', httpStatus: 503 });
     };
 
-    const result = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-transport');
-    expect(result).toEqual({ status: 'AMBIGUOUS' });
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-5xx');
+    expect(res).toEqual({ status: 'AMBIGUOUS' });
+
+    const row = db.rows.get('op-5xx')!;
+    expect(row.status).toBe('AMBIGUOUS');
+    expect(row.attempt_count).toBe(1);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.response_observed_at).toBeGreaterThan(0);
+    expect(row.response_http_status).toBe(503);
+    expect(row.last_error).toBe('OUTBOUND_PROVIDER_5XX_AMBIGUOUS');
+    expect(row.reconciliation_status).toBe('PENDING');
+  });
+
+it('Response Evidence Tests: transport exception', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_TRANSPORT_AMBIGUOUS', { provider: 'TELEGRAM' });
+    };
+
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-transport');
+    expect(res).toEqual({ status: 'AMBIGUOUS' });
+
     const row = db.rows.get('op-transport')!;
     expect(row.status).toBe('AMBIGUOUS');
+    expect(row.attempt_count).toBe(1);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.last_error).toBe('OUTBOUND_TRANSPORT_AMBIGUOUS');
+    expect(row.reconciliation_status).toBe('PENDING');
+  });
+
+it('Response Evidence Tests: invalid 2xx', async () => {
+    const db = new OperationDb();
+    const action = async (opId: string, lifecycle: any) => {
+      await lifecycle.requestStarted();
+      await lifecycle.responseObserved(200);
+      throw new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_INVALID_SUCCESS_AMBIGUOUS', { provider: 'TELEGRAM', httpStatus: 200 });
+    };
+
+    const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-inv2xx');
+    expect(res).toEqual({ status: 'AMBIGUOUS' });
+
+    const row = db.rows.get('op-inv2xx')!;
+    expect(row.status).toBe('AMBIGUOUS');
+    expect(row.attempt_count).toBe(1);
+    expect(row.request_started_at).toBeGreaterThan(0);
+    expect(row.response_observed_at).toBeGreaterThan(0);
+    expect(row.response_http_status).toBe(200);
+    expect(row.last_error).toBe('OUTBOUND_INVALID_SUCCESS_AMBIGUOUS');
+    expect(row.reconciliation_status).toBe('PENDING');
+  });
+
+  it('Retry Timing: blocks early retry without provider action, allows after deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      const action1 = vi.fn(async (opId: string, lifecycle: any) => {
+        await lifecycle.requestStarted();
+        await lifecycle.responseObserved(429);
+        throw new ProviderDeliveryError('RETRYABLE', 'OUTBOUND_RATE_LIMITED', { provider: 'TELEGRAM', retryAfterSeconds: 30, httpStatus: 429 });
+      });
+
+      // Attempt 1: 429 Retry-After 30
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action1, 'op-retry-timing')).rejects.toThrow();
+      expect(action1).toHaveBeenCalledTimes(1);
+      
+      const row = db.rows.get('op-retry-timing')!;
+      expect(row.status).toBe('FAILED_RETRYABLE');
+      expect(row.retry_after_seconds).toBeGreaterThanOrEqual(30);
+
+      // Attempt 2: Early retry blocked
+      vi.advanceTimersByTime(10_000); // only 10s passed
+      const action2 = vi.fn();
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action2, 'op-retry-timing')).rejects.toThrowError(/OUTBOUND_RATE_LIMITED/);
+      expect(action2).not.toHaveBeenCalled();
+
+      // Attempt 3: Retry after deadline allowed
+      vi.advanceTimersByTime(30_000); // 40s total passed
+      const action3 = vi.fn(async (opId: string, lifecycle: any) => {
+        await lifecycle.requestStarted();
+        await lifecycle.responseObserved(200);
+        return { providerMessageRef: 'ok-3' };
+      });
+      const res3 = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action3, 'op-retry-timing');
+      expect(res3).toEqual({ status: 'SENT', providerMessageRef: 'ok-3' });
+      expect(action3).toHaveBeenCalledTimes(1);
+
+      // Verify clean final evidence
+      const finalRow = db.rows.get('op-retry-timing')!;
+      expect(finalRow.status).toBe('SENT');
+      expect(finalRow.last_error).toBeNull();
+      expect(finalRow.retry_after_seconds).toBeNull();
+      expect(finalRow.next_retry_at).toBeNull();
+      expect(finalRow.reconciliation_status).toBe('NOT_REQUIRED');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('Attempt Exhaustion Test: fails permanently after 3 attempts', async () => {
@@ -519,6 +694,46 @@ describe('outbound operation attempt lifecycle', () => {
       const row = db.rows.get('op-exhaust')!;
       expect(row.status).toBe('FAILED_FINAL');
       expect(row.last_error).toBe('OUTBOUND_RETRY_EXHAUSTED');
+
+      // 4th invocation provider action NO
+      const action4 = vi.fn(action);
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action4, 'op-exhaust')).resolves.toEqual({ status: 'FAILED_FINAL' });
+      expect(action4).not.toHaveBeenCalled();
+      expect(db.rows.get('op-exhaust')!.attempt_count).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Persistence Failure: SENT persistence failure does not resend, eventual status is AMBIGUOUS', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      db.failSentUpdates = true;
+
+      const action = vi.fn(async (opId: string, lifecycle: any) => {
+        await lifecycle.requestStarted();
+        await lifecycle.responseObserved(200);
+        return { providerMessageRef: 'ok' };
+      });
+
+      const promise = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-persist-fail');
+      await expect(promise).rejects.toThrowError(RetryableProcessingError);
+      
+      const row = db.rows.get('op-persist-fail')!;
+      expect(row.status).toBe('SENDING'); // Still SENDING for now
+      
+      vi.advanceTimersByTime(35_000); // Wait for lease to expire
+      
+      const action2 = vi.fn();
+      const res = await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action2, 'op-persist-fail');
+      expect(res.status).toBe('AMBIGUOUS');
+      
+      const finalRow = db.rows.get('op-persist-fail')!;
+      expect(finalRow.status).toBe('AMBIGUOUS');
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(action2).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

@@ -36,8 +36,8 @@ describe('runtime support group migration flow', () => {
     vi.mocked(telegram.createTelegramTopic).mockResolvedValue({ messageThreadId: 'new-topic' });
     vi.mocked(telegram.sendTelegramMessage).mockResolvedValue({ messageId: 'message' });
     vi.mocked(outbound.executeOutboundOperation).mockImplementation(async (_env, _conv, _provider, type, action) => {
-      if (type === 'CREATE_TOPIC') return { status: 'SENT', providerMessageRef: (await action('topic-op', { requestStarted: async () => {}, responseObserved: async () => {} })).providerMessageRef };
-      return { status: 'SENT', providerMessageRef: (await action('msg-op', { requestStarted: async () => {}, responseObserved: async () => {} })).providerMessageRef || 'message' };
+      if (type === 'CREATE_TOPIC') return { status: 'SENT', providerMessageRef: (await action('topic-op', { requestStarted: vi.fn(), responseObserved: vi.fn() })).providerMessageRef };
+      return { status: 'SENT', providerMessageRef: (await action('msg-op', { requestStarted: vi.fn(), responseObserved: vi.fn() })).providerMessageRef || 'message' };
     });
 
     await processChatwootEvent({
