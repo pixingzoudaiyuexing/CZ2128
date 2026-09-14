@@ -157,3 +157,9 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Decision:** The Support Bot token, webhook secret and webhook path activate as one encrypted profile after provider validation and a new webhook identity is created. The profile version scopes Telegram event/message/outbound identity and lexicographic operator ordering; old-generation queued events are discarded. Rotation drops candidate-bot pending updates. Group migration validates forum permissions and atomically clears old topic mappings. Both require confirmation and dedicated workflows rather than generic set/rollback.
 
 **Reason:** Partial bot rotation or reuse of topic IDs across groups can admit stale webhooks, duplicate events or misroute operator messages.
+
+## D-016 — Preserve Legacy FAILED in Phase 4B-2A
+
+**Decision:** 0005 migration expands `ai_runs` durable status capacity but intentionally preserves legacy `FAILED` during the Phase 4B-1 compatibility window. 
+
+**Reason:** Unchanged Phase 4B-1 runtime treats `FAILED_FINAL` as a generatable state because it doesn't recognize it. Mapping to `FAILED_FINAL` prematurely causes overlapping deployments to blindly retry already-failed requests. Phase 4B-2C will activate the new AI durable state machine and retire legacy `FAILED` only after the runtime understands the new terminal/retry states.
