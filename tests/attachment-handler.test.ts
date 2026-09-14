@@ -75,7 +75,7 @@ class HandlerDb {
     }
     if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until <=")) {
       const row = this.outbound.find(x => x.id === params[1]);
-      if (row && row.status === 'SENDING' && (row.lease_until || 0) <= params[2] && row.lease_token === params[3]) {
+      if (row && row.status === 'SENDING' && (row.lease_until === null || (row.lease_until || 0) <= params[2]) && (!row.lease_token || row.lease_token === params[3])) {
         row.status = 'AMBIGUOUS'; 
         return { meta: { changes: 1 } };
       }

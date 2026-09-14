@@ -86,7 +86,7 @@ class MockPreparedStatement {
     if (this.query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && this.query.includes("lease_until <=")) {
       const [uat, id, lut, leaseToken] = this.boundParams;
       const o = this.db.tables.outbound_operations.find(x => x.id === id);
-      if (o && o.status === 'SENDING' && (o.lease_until || 0) <= lut && o.lease_token === leaseToken) {
+      if (o && o.status === 'SENDING' && (o.lease_until === null || (o.lease_until || 0) <= lut) && (!o.lease_token || o.lease_token === leaseToken)) {
         o.status = 'AMBIGUOUS';
         return { meta: { changes: 1 } };
       }

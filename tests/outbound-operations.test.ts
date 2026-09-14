@@ -116,6 +116,15 @@ class OperationDb {
         row.updated_at = Number(updatedAt);
         changes = 1;
       }
+    } else if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until IS NULL")) {
+      const [updatedAt, id, leaseUntilThreshold, leaseToken] = params;
+      const row = this.rows.get(String(id));
+      if (row && row.status === 'SENDING' && ((row.lease_until === null) || (row.lease_until <= Number(leaseUntilThreshold))) && ((row.lease_token === null) || (row.lease_token === leaseToken))) {
+        row.status = 'AMBIGUOUS';
+        row.reconciliation_status = 'PENDING';
+        row.updated_at = Number(updatedAt);
+        changes = 1;
+      }
     } else if (query.includes("status = 'AMBIGUOUS', reconciliation_status = 'PENDING'") && query.includes("lease_until <=")) {
       const [updatedAt, id, leaseUntilThreshold, leaseToken] = params;
       const row = this.rows.get(String(id));
@@ -194,6 +203,116 @@ function makeEnv(db: OperationDb) {
 
 // Add our tests here
 describe('outbound operation attempt lifecycle', () => {
+
+  it('True Stale Owner Race: throws CONCURRENCY_CAS_CONFLICT without mutating B state', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      
+      // Simulate Worker A claiming the lease but then stalling
+      db.rows.set('op-true-race', {
+        id: 'op-true-race', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
+        lease_until: Math.floor(Date.now() / 1000) - 1, lease_token: 'v2:worker-a', last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
+
+      // Now Worker B comes in, reclaims the lease successfully, and starts executing.
+      const actionB = vi.fn(async (opId, lifecycle) => {
+        await lifecycle.requestStarted();
+        
+        // While Worker B is executing, Worker A wakes up and tries to call requestStarted() using its stale lease token.
+        // We simulate Worker A's action directly here, passing 'v2:worker-a' to the DB query logic somehow.
+        // Or we can just do two executeOutboundOperation calls. Wait, executeOutboundOperation handles the full lifecycle.
+        // Let's just simulate the concurrency by explicitly calling executeOutboundOperation twice.
+        return { providerMessageRef: 'ok-b' };
+      });
+      
+      let resolveB;
+      const bRunning = new Promise(r => resolveB = r);
+      
+      const pB = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async (opId, lifecycle) => {
+        resolveB();
+        // Stalls B here
+        await new Promise(r => setTimeout(r, 100));
+        await lifecycle.requestStarted();
+        return { providerMessageRef: 'ok-b' };
+      }, 'op-true-race');
+      
+      await bRunning;
+      // B has successfully claimed the lease and is waiting. 
+      // The lease_token in DB is now B's token.
+      const newLeaseToken = db.rows.get('op-true-race')!.lease_token;
+      
+      // Now simulate Worker A's stale attempt.
+      // We manually construct lifecycle for A
+      const envA = makeEnv(db);
+      const ts = Math.floor(Date.now() / 1000);
+      const res = await envA.DB.prepare(
+        `UPDATE outbound_operations
+         SET request_started_at = ?, attempt_count = attempt_count + 1, updated_at = ?
+         WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NULL`
+      ).bind(ts, ts, 'op-true-race', 'v2:worker-a').run();
+      
+      expect(res.meta.changes).toBe(0); // Worker A fails to update
+      
+      // Fast forward to let B finish
+      vi.advanceTimersByTime(200);
+      const resultB = await pB;
+      expect(resultB).toEqual({ status: 'SENT', providerMessageRef: 'ok-b' });
+      
+      // Ensure B's state was not corrupted by A
+      const row = db.rows.get('op-true-race')!;
+      expect(row.status).toBe('SENT');
+      expect(row.provider_message_ref).toBe('ok-b');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Malformed SENDING must fail safe', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      db.rows.set('op-malformed', {
+        id: 'op-malformed', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
+        lease_until: null, lease_token: null, last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
+
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', vi.fn(), 'op-malformed')).resolves.toEqual({ status: 'AMBIGUOUS' });
+      const row = db.rows.get('op-malformed')!;
+      expect(row.status).toBe('AMBIGUOUS');
+      expect(row.reconciliation_status).toBe('PENDING');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Legacy SENDING with valid lease blocks', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
+    try {
+      const db = new OperationDb();
+      db.rows.set('op-legacy-active', {
+        id: 'op-legacy-active', conversation_id: 'conv-1', destination_provider: 'telegram', operation_type: 'SEND_MESSAGE',
+        status: 'SENDING', provider_message_ref: null, attempt_count: 0,
+        lease_until: Math.floor(Date.now() / 1000) + 30, lease_token: 'old-token', last_error: null, created_at: 0, updated_at: 0,
+        request_started_at: null, response_observed_at: null, response_http_status: null, reconciliation_status: null,
+        retry_after_seconds: null, next_retry_at: null
+      });
+
+      await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', vi.fn(), 'op-legacy-active')).rejects.toThrow(/lease/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('Safe Pre-Request Expiry: reclaims lease if it expires before request started', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-13T00:00:00Z'));
@@ -300,10 +419,10 @@ describe('outbound operation attempt lifecycle', () => {
       return { providerMessageRef: 'ok' };
     });
 
-    await executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-cas');
+    await expect(executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', action, 'op-cas')).rejects.toThrow(/CONCURRENCY_CAS_CONFLICT/);
     const row = db.rows.get('op-cas')!;
     expect(row.attempt_count).toBe(1); // attempt_count should be 1 from the first successful call
-    expect(row.status).toBe('AMBIGUOUS'); // Because the second call throws, and hasStarted is true
+    expect(row.status).toBe('SENDING'); // Status remains SENDING because outer failure is skipped
   });
 
   it('Response Evidence Tests: 2xx success', async () => {

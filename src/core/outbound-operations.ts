@@ -60,14 +60,30 @@ export async function executeOutboundOperation(
     throw new RetryableProcessingError('OUTBOUND_RATE_LIMITED', op.next_retry_at - now);
   }
 
-  if (op.status === 'SENDING' && op.lease_until && op.lease_until > now) {
-    logger.info('Active outbound lease blocks duplicate send', { operation_id: id });
-    throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', op.lease_until - now);
-  }
+  
+  if (op.status === 'SENDING') {
+    const isLegacyActive = op.lease_until && op.lease_until > now && (!op.lease_token || !op.lease_token.startsWith('v2:'));
+    const isV2Active = op.lease_until && op.lease_until > now && op.lease_token && op.lease_token.startsWith('v2:');
 
-  // Ambiguous delivery checking (expired SENDING)
-  if (op.status === 'SENDING' && op.lease_until && op.lease_until <= now) {
-    const isV2 = op.lease_token && op.lease_token.startsWith('v2:');
+    if (isV2Active || isLegacyActive) {
+      logger.info('Active outbound lease blocks duplicate send', { operation_id: id });
+      throw new RetryableProcessingError('CONCURRENCY_LEASE_HELD', op.lease_until! - now);
+    }
+
+    const isMalformed = op.lease_until == null || op.lease_token == null;
+    const isV2 = !isMalformed && op.lease_token.startsWith('v2:');
+
+    if (isMalformed) {
+      logger.warn('SENDING lease is malformed. Marking as AMBIGUOUS.', { operation_id: id });
+      const ambiguousResult = await env.DB.prepare(
+        `UPDATE outbound_operations 
+         SET status = 'AMBIGUOUS', reconciliation_status = 'PENDING', updated_at = ?
+         WHERE id = ? AND status = 'SENDING' AND (lease_until IS NULL OR lease_until <= ?) AND (lease_token IS NULL OR lease_token = ?)`
+      ).bind(now, id, now, op.lease_token || null).run();
+      if (ambiguousResult.meta.changes === 1) return { status: 'AMBIGUOUS' };
+      throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
+    }
+
     if (isV2 && op.request_started_at === null) {
       logger.info('Safe reclaim of expired pre-request lease', { operation_id: id });
       const reclaimResult = await env.DB.prepare(
@@ -116,7 +132,9 @@ export async function executeOutboundOperation(
   const leaseToken = `v2:${crypto.randomUUID()}`;
   const startResult = await env.DB.prepare(
     `UPDATE outbound_operations 
-     SET status = 'SENDING', lease_until = ?, lease_token = ?, request_started_at = NULL, response_observed_at = NULL, response_http_status = NULL, updated_at = ?
+     SET status = 'SENDING', lease_until = ?, lease_token = ?, 
+         request_started_at = NULL, response_observed_at = NULL, response_http_status = NULL, 
+         retry_after_seconds = NULL, next_retry_at = NULL, reconciliation_status = 'NOT_REQUIRED', updated_at = ?
      WHERE id = ? AND (status = 'PENDING' OR status = 'FAILED_RETRYABLE')`
   ).bind(leaseUntil, leaseToken, now, id).run();
 
@@ -131,30 +149,50 @@ export async function executeOutboundOperation(
   const lifecycle: OutboundAttemptLifecycle = {
     async requestStarted() {
       const ts = Math.floor(Date.now() / 1000);
-      const result = await env.DB.prepare(
-        `UPDATE outbound_operations
-         SET request_started_at = ?, attempt_count = attempt_count + 1, updated_at = ?
-         WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NULL`
-      ).bind(ts, ts, id, leaseToken).run();
+      let result;
+      try {
+        result = await env.DB.prepare(
+          `UPDATE outbound_operations
+           SET request_started_at = ?, attempt_count = attempt_count + 1, updated_at = ?
+           WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NULL`
+        ).bind(ts, ts, id, leaseToken).run();
+      } catch (e) {
+        throw new RetryableProcessingError('D1_TRANSACTION_FAILED', OUTBOUND_LEASE_SECONDS);
+      }
       if (result.meta.changes === 0) {
-        throw new Error('CONCURRENCY_CAS_CONFLICT: Failed to cross durable provider boundary');
+        throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
       }
       hasStarted = true;
     },
     async responseObserved(httpStatus: number) {
       const ts = Math.floor(Date.now() / 1000);
-      await env.DB.prepare(
-        `UPDATE outbound_operations
-         SET response_observed_at = ?, response_http_status = ?, updated_at = ?
-         WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NOT NULL`
-      ).bind(ts, httpStatus, ts, id, leaseToken).run();
+      let result;
+      try {
+        result = await env.DB.prepare(
+          `UPDATE outbound_operations
+           SET response_observed_at = ?, response_http_status = ?, updated_at = ?
+           WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NOT NULL`
+        ).bind(ts, httpStatus, ts, id, leaseToken).run();
+      } catch (e) {
+        throw new RetryableProcessingError('D1_TRANSACTION_FAILED', OUTBOUND_LEASE_SECONDS);
+      }
+      if (result.meta.changes === 0) {
+        throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
+      }
     }
   };
-
-  let result: { providerMessageRef?: string };
+let result: { providerMessageRef?: string };
   try {
     result = await action(id, lifecycle);
   } catch (error: unknown) {
+    if (error instanceof RetryableProcessingError && error.code === 'CONCURRENCY_CAS_CONFLICT') {
+      logger.warn('Stale owner detected during request lifecycle, exiting safely', { operation_id: id });
+      throw error;
+    }
+    if (!hasStarted && error instanceof RetryableProcessingError && error.code === 'D1_TRANSACTION_FAILED') {
+      throw error;
+    }
+
     const outcome = error instanceof CancelledBeforeDeliveryError
       ? 'FINAL'
       : error instanceof ProviderDeliveryError
@@ -179,7 +217,7 @@ export async function executeOutboundOperation(
       } else {
         nextStatus = 'AMBIGUOUS';
         reconciliationStatus = 'PENDING';
-        errorCode = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED';
+        errorCode = error instanceof ProviderDeliveryError ? safeErrorCode(error) : (error instanceof RetryableProcessingError ? safeErrorCode(error) : 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED');
       }
     } else {
       const exhaustion = retryExhaustionSemantic(attemptNumber, MAX_OUTBOUND_ATTEMPTS);
@@ -196,7 +234,7 @@ export async function executeOutboundOperation(
       } else {
         nextStatus = 'AMBIGUOUS';
         reconciliationStatus = 'PENDING';
-        errorCode = 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED';
+        errorCode = error instanceof ProviderDeliveryError ? safeErrorCode(error) : (error instanceof RetryableProcessingError ? safeErrorCode(error) : 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED');
       }
     }
 
@@ -252,15 +290,13 @@ export async function executeOutboundOperation(
 
   const sentResult = await env.DB.prepare(
     `UPDATE outbound_operations
-     SET status = 'SENT', provider_message_ref = ?, lease_until = NULL, lease_token = NULL, reconciliation_status = 'NOT_REQUIRED', updated_at = ?
+     SET status = 'SENT', provider_message_ref = ?, lease_until = NULL, lease_token = NULL, last_error = NULL, retry_after_seconds = NULL, next_retry_at = NULL, reconciliation_status = 'NOT_REQUIRED', updated_at = ?
      WHERE id = ? AND status = 'SENDING' AND lease_token = ?`
   ).bind(result.providerMessageRef || null, Math.floor(Date.now() / 1000), id, leaseToken).run();
   
   if (sentResult.meta.changes !== 1) {
     throw new RetryableProcessingError('OUTBOUND_RESULT_PERSIST_AMBIGUOUS', OUTBOUND_LEASE_SECONDS);
-  }
-
-  logger.info('Outbound operation SENT', {
+  }logger.info('Outbound operation SENT', {
     operation_id: id,
     result: 'SUCCESS',
     duration_ms: Date.now() - startTime
