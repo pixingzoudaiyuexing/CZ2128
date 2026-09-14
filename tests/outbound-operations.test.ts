@@ -230,7 +230,7 @@ describe('outbound operation attempt lifecycle', () => {
         return { providerMessageRef: 'ok-b' };
       });
       
-      let resolveB;
+      let resolveB: any;
       const bRunning = new Promise(r => resolveB = r);
       
       const pB = executeOutboundOperation(makeEnv(db), 'conv-1', 'telegram', 'SEND_MESSAGE', async (opId, lifecycle) => {

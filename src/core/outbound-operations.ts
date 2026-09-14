@@ -157,7 +157,7 @@ export async function executeOutboundOperation(
            WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NULL`
         ).bind(ts, ts, id, leaseToken).run();
       } catch (e) {
-        throw new RetryableProcessingError('D1_TRANSACTION_FAILED', OUTBOUND_LEASE_SECONDS);
+        throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
       }
       if (result.meta.changes === 0) {
         throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
@@ -174,7 +174,7 @@ export async function executeOutboundOperation(
            WHERE id = ? AND status = 'SENDING' AND lease_token = ? AND request_started_at IS NOT NULL`
         ).bind(ts, httpStatus, ts, id, leaseToken).run();
       } catch (e) {
-        throw new RetryableProcessingError('D1_TRANSACTION_FAILED', OUTBOUND_LEASE_SECONDS);
+        throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
       }
       if (result.meta.changes === 0) {
         throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', OUTBOUND_LEASE_SECONDS);
@@ -189,7 +189,7 @@ let result: { providerMessageRef?: string };
       logger.warn('Stale owner detected during request lifecycle, exiting safely', { operation_id: id });
       throw error;
     }
-    if (!hasStarted && error instanceof RetryableProcessingError && error.code === 'D1_TRANSACTION_FAILED') {
+    if (!hasStarted && error instanceof RetryableProcessingError && error.code === 'D1_RESULT_PERSIST_FAILED') {
       throw error;
     }
 
