@@ -68,12 +68,17 @@ class MockPreparedStatement {
       }
     }
     if (this.query.includes('last_telegram_operator_update_id = ?')) {
-      const [operatorReplyAt, updateId, updatedAt, id, expectedUpdateId] = this.boundParams;
+      const [operatorReplyAt, profileVersion, updateId, updatedAt, id, expectedProfileVersion, _sameProfileVersion, expectedUpdateId] = this.boundParams;
       const c = this.db.tables.conversations.find(x => x.id === id);
+      const storedProfileVersion = Number(c?.last_telegram_operator_profile_version || 0);
       if (
         c &&
-        (c.last_telegram_operator_update_id === undefined || c.last_telegram_operator_update_id === null ||
-          Number(c.last_telegram_operator_update_id) < Number(expectedUpdateId))
+        (
+          storedProfileVersion < Number(expectedProfileVersion) ||
+          (storedProfileVersion === Number(expectedProfileVersion) &&
+            (c.last_telegram_operator_update_id === undefined || c.last_telegram_operator_update_id === null ||
+              Number(c.last_telegram_operator_update_id) < Number(expectedUpdateId)))
+        )
       ) {
         if (c.ai_mode !== 'PAUSED_MANUAL') c.ai_mode = 'PAUSED_OPERATOR';
         c.last_operator_reply_at = operatorReplyAt;
@@ -81,6 +86,7 @@ class MockPreparedStatement {
         c.ai_generation_started_at = null;
         c.ai_generation_message_id = null;
         c.ai_handoff_epoch = (c.ai_handoff_epoch || 0) + 1;
+        c.last_telegram_operator_profile_version = profileVersion;
         c.last_telegram_operator_update_id = updateId;
         c.updated_at = updatedAt;
         meta.changes = 1;
@@ -226,7 +232,7 @@ function telegramMessageEvent(
     eventId,
     source: 'telegram',
     type: 'message_created',
-    payload: { updateRef, messageRef, threadRef, content }
+    payload: { supportProfileVersion: 0, updateRef, messageRef, threadRef, content }
   };
 }
 
@@ -312,7 +318,7 @@ describe('Queue Event Processing', () => {
     });
     
     db.tables.outbound_operations.push({
-      id: 'send_chatwoot_301', conversation_id: 'conv-1', destination_provider: 'chatwoot', operation_type: 'SEND_MESSAGE',
+      id: 'send_chatwoot_0:301', conversation_id: 'conv-1', destination_provider: 'chatwoot', operation_type: 'SEND_MESSAGE',
       status: 'SENDING', attempt_count: 1, lease_until: Math.floor(Date.now() / 1000) - 100, created_at: 0, updated_at: 0
     });
 
@@ -405,7 +411,7 @@ describe('Queue Event Processing', () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const body = JSON.parse(String((global.fetch as any).mock.calls[0][1].body));
-    expect(body.source_id).toBe('cz2128:send_chatwoot_301');
+    expect(body.source_id).toBe('cz2128:send_chatwoot_0:301');
   });
 
   describe('Chatwoot Handler logic', () => {

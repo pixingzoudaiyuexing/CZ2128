@@ -16,9 +16,11 @@ If code and documentation conflict, stop and verify ground truth before changing
 
 ## Current Phase
 
-Phases 1, 2 and 3 are complete and merged. Phase 4 has not started.
+Phases 1, 2 and 3 are complete and merged. Phase 3.5 runtime configuration and Telegram admin control plane is implemented in PR #4 and awaiting review. Phase 4 has not started.
 
 `ARCHITECTURE.md` and `DECISIONS.md` remain the approved V1 baseline. Phase 3 preserves the hardened webhook, Queue, outbound ambiguity and AI handoff contracts from Phases 1 and 2. Real provider, R2, proxy, cleanup, Queue/D1 concurrency and load validation remain pre-production requirements rather than completed production validation.
+
+Runtime provider settings must be resolved as one D1 snapshot per HTTP request or Queue event. Bootstrap secrets, including the runtime master key and admin-bot identity, must never be writable through the admin control plane. A present but invalid encrypted override is authoritative and must not silently fall back to an older env secret.
 
 ## Architectural Boundaries
 

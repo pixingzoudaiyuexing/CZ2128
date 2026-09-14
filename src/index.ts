@@ -10,6 +10,8 @@ import { discoverChatwootAttachments, discoverTelegramAttachments } from './atta
 import { handleAttachmentProxy } from './attachments/proxy';
 import { cleanupExpiredAttachments } from './attachments/cleanup';
 import { AttachmentDescriptor } from './core/attachments';
+import { handleAdminTelegramWebhook } from './admin/handler';
+import { resolveEffectiveEnv } from './runtime-config/resolver';
 
 export type { Env } from './config/env';
 
@@ -109,6 +111,11 @@ export default {
       return handleAttachmentProxy(request, env, token);
     }
 
+    if (url.pathname.startsWith('/webhooks/admin-telegram/')) {
+      if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+      return handleAdminTelegramWebhook(request, env);
+    }
+
     if (request.method !== 'POST') {
       return new Response('Method Not Allowed', { status: 405 });
     }
@@ -141,7 +148,8 @@ export default {
       }
 
       const eventId = deliveryId || await chatwootFallbackEventId(payload.event, rawBody);
-      const event = normalizeChatwootEvent(payload, eventId, getAttachmentConfig(env));
+      const effectiveEnv = await resolveEffectiveEnv(env);
+      const event = normalizeChatwootEvent(payload, eventId, getAttachmentConfig(effectiveEnv));
       if (!event) return new Response('Ignored', { status: 200 });
       await env.QUEUE.send(event);
 
@@ -149,16 +157,17 @@ export default {
     }
 
     if (url.pathname.startsWith('/webhooks/telegram/')) {
-      if (!env.TELEGRAM_SECRET_PATH || env.TELEGRAM_SECRET_PATH === env.TELEGRAM_BOT_TOKEN) {
+      const effectiveEnv = await resolveEffectiveEnv(env);
+      if (!effectiveEnv.TELEGRAM_SECRET_PATH || effectiveEnv.TELEGRAM_SECRET_PATH === effectiveEnv.TELEGRAM_BOT_TOKEN) {
         return new Response('Webhook configuration error', { status: 500 });
       }
       const pathSegment = url.pathname.replace('/webhooks/telegram/', '');
       const { valid, payload, updateId } = await verifyTelegramWebhook(
         request,
         pathSegment,
-        env.TELEGRAM_SECRET_PATH,
-        env.TELEGRAM_WEBHOOK_SECRET,
-        env.BOT_GROUP_ID
+        effectiveEnv.TELEGRAM_SECRET_PATH,
+        effectiveEnv.TELEGRAM_WEBHOOK_SECRET,
+        effectiveEnv.BOT_GROUP_ID
       );
 
       if (!valid) {
@@ -186,7 +195,7 @@ export default {
         return new Response('Ignored', { status: 200 });
       }
 
-      const attachmentConfig = getAttachmentConfig(env);
+      const attachmentConfig = getAttachmentConfig(effectiveEnv);
       const attachments = boundedAttachments(
         discoverTelegramAttachments(telegramMessage, attachmentConfig),
         attachmentConfig.maxCountPerMessage,
@@ -199,13 +208,15 @@ export default {
       if (!hasProviderId(telegramMessage.message_id)) {
         return new Response('Ignored', { status: 200 });
       }
+      const supportProfileVersion = effectiveEnv.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;
 
       await env.QUEUE.send({
         version: 1,
         source: 'telegram',
         type: 'message_created',
-        eventId: `tg_${updateId}`,
+        eventId: `tg:${supportProfileVersion}:${updateId}`,
         payload: {
+          supportProfileVersion,
           updateRef: updateId,
           messageRef: String(telegramMessage.message_id),
           threadRef: String(telegramMessage.message_thread_id),
@@ -223,7 +234,8 @@ export default {
   async queue(batch: MessageBatch<SupportEvent>, env: Env, ctx: ExecutionContext): Promise<void> {
     for (const message of batch.messages) {
       try {
-        await handleQueueEvent(message.body, env);
+        const effectiveEnv = await resolveEffectiveEnv(env);
+        await handleQueueEvent(message.body, effectiveEnv);
         message.ack();
       } catch (error) {
         logger.error('Failed to process queue message', error, { eventId: message.body.eventId });

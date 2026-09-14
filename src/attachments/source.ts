@@ -136,6 +136,11 @@ export async function downloadChatwootAttachment(
   dataUrl: string,
   config: AttachmentConfig
 ): Promise<{ body: ReadableStream<Uint8Array>; contentLength?: number; finish: () => void }> {
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
+  ) throw new AttachmentProcessingError('SOURCE_CONFIG_ERROR', false);
   let current: URL;
   try {
     current = new URL(dataUrl);
@@ -200,6 +205,12 @@ export async function downloadTelegramAttachment(
   declaredSize: number | null,
   config: AttachmentConfig
 ): Promise<{ body: ReadableStream<Uint8Array>; contentLength?: number; finish: () => void }> {
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
+  ) {
+    throw new AttachmentProcessingError('SOURCE_CONFIG_ERROR', false);
+  }
   if (declaredSize !== null && declaredSize > config.maxBytes) {
     throw new AttachmentProcessingError('SOURCE_TOO_LARGE', false);
   }

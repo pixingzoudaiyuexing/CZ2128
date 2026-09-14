@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3 are complete and merged. Phase 4 has not started. Phase 3 code completion is not production validation.
+Phases 1-3 are complete and merged. Phase 3.5 is implemented in PR #4 and awaiting review. Phase 4 has not started. Phase 3 code completion is not production validation.
 
 ## Setup
 - `npm ci`
@@ -40,6 +40,28 @@ Optional AI configuration:
 - `AI_CONTEXT_MAX_CHARS`: context character limit, default 12000
 - `AI_GENERATION_LEASE_SECONDS`: generation lease duration
 - `AI_OPERATOR_PAUSE_TIMEOUT_SECONDS`: operator pause timeout, default 3600
+
+Bootstrap-only runtime control plane:
+- `RUNTIME_CONFIG_MASTER_KEY`: exactly 32 random bytes encoded as unpadded base64url
+- `ADMIN_TELEGRAM_BOT_TOKEN`: dedicated Admin Bot token; never reuse the Support Bot
+- `ADMIN_TELEGRAM_WEBHOOK_SECRET`: Admin Bot webhook secret token
+- `ADMIN_TELEGRAM_SECRET_PATH`: independent opaque Admin webhook path
+- `ADMIN_TELEGRAM_USER_IDS`: comma-separated exact positive Telegram user IDs
+
+Generate independent base64url values locally, then configure them as Cloudflare secrets rather than committing them:
+
+```bash
+openssl rand -base64 32 | tr -d '\n=' | tr '+/' '-_'
+npx wrangler secret put RUNTIME_CONFIG_MASTER_KEY
+npx wrangler secret put ADMIN_TELEGRAM_BOT_TOKEN
+npx wrangler secret put ADMIN_TELEGRAM_WEBHOOK_SECRET
+npx wrangler secret put ADMIN_TELEGRAM_SECRET_PATH
+npx wrangler secret put ADMIN_TELEGRAM_USER_IDS
+```
+
+The Admin Bot webhook is `/webhooks/admin-telegram/<ADMIN_TELEGRAM_SECRET_PATH>`. It also requires `X-Telegram-Bot-Api-Secret-Token`, a private chat and an allowlisted numeric user ID. Bootstrap fields, Chatwoot webhook signing and Cloudflare bindings cannot be modified through the bot.
+
+Runtime overrides cover AI provider/settings, the atomic Support Telegram profile, support-group migration, Chatwoot API settings and attachment limits. Missing keys fall back to env. Existing encrypted overrides fail closed if they cannot authenticate or decrypt. Support Bot rotation and group migration are confirmed workflows; generic rollback is intentionally unavailable for those side-effectful keys.
 
 ## Webhook Identity
 - Configure the Chatwoot webhook secret so Chatwoot sends delivery, timestamp and HMAC signature headers.

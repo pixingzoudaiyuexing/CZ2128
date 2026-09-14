@@ -38,4 +38,10 @@ export interface Env {
   AI_CONTEXT_MAX_CHARS?: string;
   AI_GENERATION_LEASE_SECONDS?: string;
   AI_OPERATOR_PAUSE_TIMEOUT_SECONDS?: string;
+  RUNTIME_CONFIG_MASTER_KEY?: string;
+  ADMIN_TELEGRAM_BOT_TOKEN?: string;
+  ADMIN_TELEGRAM_WEBHOOK_SECRET?: string;
+  ADMIN_TELEGRAM_SECRET_PATH?: string;
+  ADMIN_TELEGRAM_USER_IDS?: string;
+  runtimeConfigSnapshot?: import('../runtime-config/types').RuntimeConfigSnapshot;
 }

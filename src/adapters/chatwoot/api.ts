@@ -8,6 +8,13 @@ export async function createChatwootMessage(
   content: string,
   outboundOperationId: string
 ): Promise<{ messageId: string }> {
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
+  ) {
+    throw new ProviderDeliveryError('FINAL', 'CHATWOOT_RUNTIME_CONFIG_ERROR');
+  }
   const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
   
   const body = {

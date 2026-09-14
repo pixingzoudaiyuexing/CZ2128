@@ -26,6 +26,27 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
   if (event.version !== 1) {
     throw new Error('Unsupported queue event version');
   }
+  if (env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG) {
+    throw new RetryableProcessingError('Runtime config store is unavailable', 5);
+  }
+  if (event.source === 'telegram') {
+    const eventProfileVersion = event.payload.supportProfileVersion ?? 0;
+    if (!Number.isSafeInteger(eventProfileVersion) || eventProfileVersion < 0) {
+      throw new Error('Invalid Telegram support profile version');
+    }
+    const currentProfileVersion = env.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;
+    if (eventProfileVersion < currentProfileVersion) {
+      logger.info('Dropping event from stale Telegram support profile', {
+        source: event.source,
+        source_event_ref: event.eventId,
+        error_category: 'STALE_TELEGRAM_SUPPORT_PROFILE'
+      });
+      return;
+    }
+    if (eventProfileVersion > currentProfileVersion) {
+      throw new RetryableProcessingError('Telegram support profile version is ahead of runtime config', 5);
+    }
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const leaseSeconds = eventLeaseSeconds(event, env);

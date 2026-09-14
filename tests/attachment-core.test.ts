@@ -76,7 +76,7 @@ describe('attachment core security primitives', () => {
     }, env)).toBe(90);
     expect(eventLeaseSeconds({
       version: 1, source: 'telegram', type: 'message_created', eventId: 'tg',
-      payload: { updateRef: '1', messageRef: '1', threadRef: '1', content: 'text' }
+      payload: { supportProfileVersion: 0, updateRef: '1', messageRef: '1', threadRef: '1', content: 'text' }
     }, env)).toBe(30);
   });
 

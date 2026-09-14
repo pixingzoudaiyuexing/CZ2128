@@ -82,10 +82,10 @@ describe('attachment bridge orchestration', () => {
   it('Telegram attachment-only applies human state and queues binary without empty text', async () => {
     await processTelegramEvent({
       version: 1, source: 'telegram', type: 'message_created', eventId: 'tg',
-      payload: { updateRef: '10', messageRef: '11', threadRef: '7', attachments: [descriptor] }
+      payload: { supportProfileVersion: 0, updateRef: '10', messageRef: '11', threadRef: '7', attachments: [descriptor] }
     }, env);
 
-    expect(aiState.applyTelegramOperatorAction).toHaveBeenCalledWith(env, 'conv', '10', 'HUMAN_REPLY');
+    expect(aiState.applyTelegramOperatorAction).toHaveBeenCalledWith(env, 'conv', 0, '10', 'HUMAN_REPLY');
     expect(conversationService.insertMessage).not.toHaveBeenCalled();
     expect(outbound.executeOutboundOperation).not.toHaveBeenCalled();
     expect(attachmentRepository.enqueueAttachmentJobs).toHaveBeenCalledTimes(1);
@@ -94,12 +94,31 @@ describe('attachment bridge orchestration', () => {
   it.each(['/ai_off', '/ai_on'])('treats attachment caption %s as a human reply, not a command', async content => {
     await processTelegramEvent({
       version: 1, source: 'telegram', type: 'message_created', eventId: `tg-${content}`,
-      payload: { updateRef: '12', messageRef: '13', threadRef: '7', content, attachments: [descriptor] }
+      payload: { supportProfileVersion: 0, updateRef: '12', messageRef: '13', threadRef: '7', content, attachments: [descriptor] }
     }, env);
 
-    expect(aiState.applyTelegramOperatorAction).toHaveBeenCalledWith(env, 'conv', '12', 'HUMAN_REPLY');
-    expect(aiState.applyTelegramOperatorAction).not.toHaveBeenCalledWith(env, 'conv', '12', 'AI_OFF');
-    expect(aiState.applyTelegramOperatorAction).not.toHaveBeenCalledWith(env, 'conv', '12', 'AI_ON');
+    expect(aiState.applyTelegramOperatorAction).toHaveBeenCalledWith(env, 'conv', 0, '12', 'HUMAN_REPLY');
+    expect(aiState.applyTelegramOperatorAction).not.toHaveBeenCalledWith(env, 'conv', 0, '12', 'AI_OFF');
+    expect(aiState.applyTelegramOperatorAction).not.toHaveBeenCalledWith(env, 'conv', 0, '12', 'AI_ON');
     expect(attachmentRepository.enqueueAttachmentJobs).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes message, outbound and attachment identity to the Support Bot generation', async () => {
+    for (const supportProfileVersion of [1, 2]) {
+      await processTelegramEvent({
+        version: 1, source: 'telegram', type: 'message_created',
+        eventId: `tg:${supportProfileVersion}:10`,
+        payload: {
+          supportProfileVersion, updateRef: '10', messageRef: '11', threadRef: '7',
+          content: 'same provider ids', attachments: [descriptor]
+        }
+      }, env);
+    }
+
+    expect(vi.mocked(conversationService.insertMessage).mock.calls.map(call => call[3])).toEqual(['1:11', '2:11']);
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5])).toEqual([
+      'send_chatwoot_1:11', 'send_chatwoot_2:11'
+    ]);
+    expect(vi.mocked(attachmentRepository.enqueueAttachmentJobs).mock.calls.map(call => call[4])).toEqual(['1:11', '2:11']);
   });
 });

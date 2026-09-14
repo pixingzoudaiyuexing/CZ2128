@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3 Complete / Merged / Phase 4 Not Started**
+Status: **Phases 1-3 Complete / Phase 3.5 Implemented in PR #4 / Phase 4 Not Started**
 
 ## Purpose
 
@@ -31,6 +31,7 @@ Chatwoot, Telegram, Cloudflare, and any future business system are adapters/infr
 9. Incoming webhooks are authenticated and idempotent.
 10. Queue retries use stable event/operation identity so normal retries do not duplicate customer-visible messages; ambiguous third-party delivery outcomes are explicitly recorded rather than hidden behind a false exactly-once guarantee.
 11. Core flows have automated tests, including duplicate delivery and AI/operator race cases.
+12. Frequently changed provider and runtime limits can be managed from an authenticated Telegram admin control plane without routine Worker redeployment.
 
 ## V1 Non-Goals
 
@@ -57,6 +58,7 @@ The following are intentionally deferred:
 - **Private-by-default attachments:** R2 objects are private; access is granted through opaque expiring gateway links.
 - **Exact logical expiration:** Application-level expiry is enforced even if physical R2 lifecycle deletion happens later.
 - **No automatic unreviewed learning:** Human answers may become knowledge candidates, but publication requires review in a later phase.
+- **Bootstrap remains recoverable:** The admin bot, its administrator allowlist and the runtime encryption master key remain deployment-level settings outside the runtime control plane.
 
 ## Legacy Reference
 

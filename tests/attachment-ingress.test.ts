@@ -24,6 +24,9 @@ function env() {
   return {
     messages,
     value: {
+      DB: {
+        prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }) }), all: async () => ({ results: [] }) })
+      },
       QUEUE: { send: vi.fn(async event => { messages.push(event); }) },
       CHATWOOT_WEBHOOK_SECRET: 'secret', CHATWOOT_API_URL: 'https://chatwoot.example',
       TELEGRAM_WEBHOOK_SECRET: 'tg-secret', TELEGRAM_SECRET_PATH: 'path',
@@ -82,6 +85,9 @@ describe('attachment webhook normalization', () => {
 
     const response = await Worker.fetch(request, testEnv.value, {} as any);
     expect(response.status).toBe(200);
+    expect(testEnv.messages[0]).toMatchObject({
+      eventId: 'tg:0:9', payload: { supportProfileVersion: 0 }
+    });
     expect(testEnv.messages[0].payload.content).toBeUndefined();
     expect(testEnv.messages[0].payload.attachments).toEqual([expect.objectContaining({
       sourceAttachmentRef: 'large-u', locator: { provider: 'telegram', fileId: 'large' }
@@ -101,6 +107,9 @@ describe('attachment webhook normalization', () => {
       })
     });
     await Worker.fetch(request, testEnv.value, {} as any);
+    expect(testEnv.messages[0]).toMatchObject({
+      eventId: 'tg:0:12', payload: { supportProfileVersion: 0 }
+    });
     expect(testEnv.messages[0].payload.content).toBe('caption once');
     expect(JSON.stringify(testEnv.messages[0]).match(/caption once/g)).toHaveLength(1);
   });

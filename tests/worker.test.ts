@@ -20,7 +20,15 @@ class MockD1 {
   tables: Record<string, any[]> = {
     conversations: [], messages: [], event_receipts: [], outbound_operations: []
   };
-  prepare(query: string) { return { bind: () => this, run: async () => ({ meta: { changes: 1 } }), first: async () => null }; }
+  prepare(query: string) {
+    const statement = {
+      bind: () => statement,
+      run: async () => ({ meta: { changes: 1 } }),
+      first: async () => null,
+      all: async () => ({ results: [] })
+    };
+    return statement;
+  }
 }
 
 describe('Worker Integration', () => {
@@ -167,8 +175,8 @@ describe('Worker Integration', () => {
       version: 1,
       source: 'telegram',
       type: 'message_created',
-      eventId: 'tg_456',
-      payload: { updateRef: '456', messageRef: '9', threadRef: '8', content: 'Reply' }
+      eventId: 'tg:0:456',
+      payload: { supportProfileVersion: 0, updateRef: '456', messageRef: '9', threadRef: '8', content: 'Reply' }
     });
   });
 

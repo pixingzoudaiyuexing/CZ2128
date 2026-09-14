@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3 complete and merged — Phase 4 not started**
+Status: **Phases 1-3 complete and merged — Phase 3.5 in review — Phase 4 not started**
 
 ## Phase 0 — Architecture Freeze
 
@@ -117,6 +117,25 @@ Scope:
 - tests for access, expiry, missing/deleted objects, oversize rejection and retries
 
 Code completion does not imply production validation. Real R2, Telegram, Chatwoot, proxy, cleanup, Queue/D1 concurrency and 20 MiB memory/load behavior must pass staging validation before production rollout; the seven-day R2 lifecycle must also be applied.
+
+## Phase 3.5 — Runtime Config + Telegram Admin Control Plane
+
+Status: **IMPLEMENTED / PR #4 IN REVIEW**
+
+Scope:
+
+- D1 plain/encrypted runtime configuration with env fallback
+- AES-256-GCM secret storage and append-only history
+- coherent per-request/event configuration snapshots
+- separate bootstrap-authenticated Telegram Admin Bot
+- private-chat and exact user-ID authorization
+- update idempotency and expiring interactive sessions
+- AI/Chatwoot candidate validation
+- atomic Support Bot profile rotation with a fresh webhook identity
+- confirmed support-group migration with topic-mapping invalidation
+- versioned CAS, restore-env and safe history rollback
+
+The Cloudflare R2 account is now enabled, but Phase 3 real R2 staging has not yet been rerun. The staging bucket/lifecycle and dedicated Telegram/Chatwoot environments remain pending validation.
 
 ## Phase 4 — Reliability Hardening
 

@@ -56,17 +56,21 @@ export async function resumeManual(env: Env, convId: string): Promise<void> {
 }
 
 export type TelegramOperatorAction = 'HUMAN_REPLY' | 'AI_OFF' | 'AI_ON';
-export type OrderedActionResult = 'APPLIED' | 'CURRENT' | 'STALE';
+export type OrderedActionResult = 'APPLIED' | 'CURRENT' | 'STALE' | 'STALE_PROFILE';
 
 export async function applyTelegramOperatorAction(
   env: Env,
   convId: string,
+  supportProfileVersion: number,
   updateRef: string,
   action: TelegramOperatorAction
 ): Promise<OrderedActionResult> {
   const updateId = Number(updateRef);
   if (!Number.isSafeInteger(updateId) || updateId < 0) {
     throw new Error('Invalid Telegram operator update id');
+  }
+  if (!Number.isSafeInteger(supportProfileVersion) || supportProfileVersion < 0) {
+    throw new Error('Invalid Telegram support profile version');
   }
   const now = Math.floor(Date.now() / 1000);
   if (action === 'HUMAN_REPLY') {
@@ -78,12 +82,22 @@ export async function applyTelegramOperatorAction(
            ai_generation_started_at = NULL,
            ai_generation_message_id = NULL,
            ai_handoff_epoch = ai_handoff_epoch + 1,
+           last_telegram_operator_profile_version = ?,
            last_telegram_operator_update_id = ?,
            updated_at = ?,
            version = version + 1
        WHERE id = ?
-         AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)`
-    ).bind(now, updateId, now, convId, updateId).run();
+         AND (
+           COALESCE(last_telegram_operator_profile_version, 0) < ?
+           OR (
+             COALESCE(last_telegram_operator_profile_version, 0) = ?
+             AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)
+           )
+         )`
+    ).bind(
+      now, supportProfileVersion, updateId, now, convId,
+      supportProfileVersion, supportProfileVersion, updateId
+    ).run();
     if (result.meta.changes === 1) return 'APPLIED';
   } else {
     const setMode = action === 'AI_OFF'
@@ -92,24 +106,41 @@ export async function applyTelegramOperatorAction(
              ai_generation_started_at = NULL,
              ai_generation_message_id = NULL,
              ai_handoff_epoch = ai_handoff_epoch + 1,
+             last_telegram_operator_profile_version = ?,
              last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`
       : `SET ai_mode = 'ENABLED',
            ai_generation_id = NULL,
            ai_generation_started_at = NULL,
            ai_generation_message_id = NULL,
+             last_telegram_operator_profile_version = ?,
              last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`;
     const result = await env.DB.prepare(
       `UPDATE conversations ${setMode}
        WHERE id = ?
-         AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)`
-    ).bind(updateId, now, convId, updateId).run();
+         AND (
+           COALESCE(last_telegram_operator_profile_version, 0) < ?
+           OR (
+             COALESCE(last_telegram_operator_profile_version, 0) = ?
+             AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)
+           )
+         )`
+    ).bind(
+      supportProfileVersion, updateId, now, convId,
+      supportProfileVersion, supportProfileVersion, updateId
+    ).run();
     if (result.meta.changes === 1) return 'APPLIED';
   }
 
   const current = await env.DB.prepare(
-    'SELECT last_telegram_operator_update_id FROM conversations WHERE id = ?'
-  ).bind(convId).first<{ last_telegram_operator_update_id: number | null }>();
+    `SELECT last_telegram_operator_profile_version, last_telegram_operator_update_id
+     FROM conversations WHERE id = ?`
+  ).bind(convId).first<{
+    last_telegram_operator_profile_version: number | null;
+    last_telegram_operator_update_id: number | null;
+  }>();
   if (!current) throw new Error('Conversation not found for Telegram operator action');
+  const currentProfileVersion = Number(current.last_telegram_operator_profile_version || 0);
+  if (currentProfileVersion > supportProfileVersion) return 'STALE_PROFILE';
   return Number(current.last_telegram_operator_update_id) === updateId ? 'CURRENT' : 'STALE';
 }
 
