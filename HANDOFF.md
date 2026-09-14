@@ -41,6 +41,7 @@
 - `AMBIGUOUS` visible delivery outcomes require Phase 4 reconciliation or manual inspection and are never blindly resent.
 - Phase 4B-2C-1 now supplies internal reconciliation services, immutable outbound subject/target evidence and audited manual mark-delivered/cancel persistence. Historical `AMBIGUOUS` rows are not rewritten to `SENT`.
 - Chatwoot reconciliation can confirm only an exact unique `source_id=cz2128:<operation_id>` within a bounded read-only search. Zero matches, duplicate matches, lookup failure and Telegram operations never become automatic resend opportunities.
+- Chatwoot target evidence fingerprints the canonical full API base, including its base pathname, while keeping the raw URL absent. Message, attachment, candidate-validation and reconciliation requests share one URL builder. Reconciliation derives the current runtime identity internally and cannot be bypassed with caller-supplied old evidence.
 - Existing attempted rows without target evidence are not backfilled from current runtime configuration. Only provably pre-request rows (`attempt_count=0`, `request_started_at IS NULL`, safely unsent status) may receive CAS backfill.
 - OpenAI-compatible errors are persisted and logged only as bounded categories; raw provider bodies, exception text and API keys are not recorded.
 - Manual retry child execution, domain redrive and the AI durable retry state machine remain outside this branch.

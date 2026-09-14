@@ -7,6 +7,7 @@ import {
   visibleTransportDeliveryError
 } from '../../core/provider-retry';
 import { retryAfterHeader } from '../../core/retry';
+import { buildChatwootApiUrl } from './url';
 
 export async function createChatwootMessage(
   env: Env,
@@ -25,7 +26,10 @@ export async function createChatwootMessage(
   }
   
   
-  const url = `${env.CHATWOOT_API_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
+  const url = buildChatwootApiUrl(
+    env.CHATWOOT_API_URL,
+    `/api/v1/accounts/${encodeURIComponent(accountId)}/conversations/${encodeURIComponent(conversationId)}/messages`
+  );
   
   const body = {
     content,

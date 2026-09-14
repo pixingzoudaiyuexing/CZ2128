@@ -5,6 +5,7 @@ import {
   OutboundAttemptLifecycle
 } from '../src/core/outbound-operations';
 import { ProviderDeliveryError, RetryableProcessingError } from '../src/core/errors';
+import { buildChatwootTargetEvidence } from '../src/core/outbound-evidence';
 
 interface OperationRow {
   id: string;
@@ -287,7 +288,7 @@ function testOptions(
           conversationRef: 'conversation',
           sourceId: `cz2128:${operationId}`,
           apiUrlSource: 'ENV',
-          apiOriginFingerprint: 'a'.repeat(64)
+          apiBaseFingerprint: 'a'.repeat(64)
         }
       : {
           version: 1,
@@ -1060,11 +1061,11 @@ it('Response Evidence Tests: invalid 2xx', async () => {
   it.each([
     ['Chatwoot conversation', 'chatwoot', {
       version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'changed',
-      sourceId: 'cz2128:op-target', apiUrlSource: 'ENV', apiOriginFingerprint: 'a'.repeat(64)
+      sourceId: 'cz2128:op-target', apiUrlSource: 'ENV', apiBaseFingerprint: 'a'.repeat(64)
     }],
     ['Chatwoot API origin', 'chatwoot', {
       version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'conversation',
-      sourceId: 'cz2128:op-target', apiUrlSource: 'ENV', apiOriginFingerprint: 'b'.repeat(64)
+      sourceId: 'cz2128:op-target', apiUrlSource: 'ENV', apiBaseFingerprint: 'b'.repeat(64)
     }],
     ['Telegram group', 'telegram', {
       version: 1, provider: 'telegram', supportProfileSource: 'ENV', botGroupIdSource: 'ENV',
@@ -1100,6 +1101,43 @@ it('Response Evidence Tests: invalid 2xx', async () => {
     expect(action).not.toHaveBeenCalled();
     expect(db.auditRows).toHaveLength(1);
     expect(db.auditRows[0].reason_code).toBe('TARGET_IDENTITY_CHANGED');
+  });
+
+  it('blocks a same-origin Chatwoot base-path retry before requestStarted or provider action', async () => {
+    const db = new OperationDb();
+    const operationId = 'op-path-drift';
+    const subject = { type: 'MESSAGE' as const, ref: `test:${operationId}` };
+    const storedEvidence = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,
+      'account', 'conversation', operationId
+    );
+    const currentEvidence = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-b' } as any,
+      'account', 'conversation', operationId
+    );
+    db.rows.set(operationId, {
+      id: operationId, conversation_id: 'conv-1', destination_provider: 'chatwoot',
+      operation_type: 'SEND_MESSAGE', status: 'FAILED_RETRYABLE', provider_message_ref: null,
+      attempt_count: 1, lease_until: null, lease_token: null, last_error: 'OUTBOUND_RATE_LIMITED',
+      created_at: 1, updated_at: 1, request_started_at: 1, reconciliation_status: 'NOT_REQUIRED',
+      next_retry_at: 0, subject_type: subject.type, subject_ref: subject.ref,
+      target_evidence_json: JSON.stringify(storedEvidence)
+    });
+    const requestStarted = vi.fn();
+    const providerAction = vi.fn(async () => {
+      requestStarted();
+      return { providerMessageRef: 'unexpected' };
+    });
+
+    const response = await executeOutboundOperation(
+      makeEnv(db), 'conv-1', 'chatwoot', 'SEND_MESSAGE', providerAction, operationId,
+      { subject, targetEvidence: currentEvidence }
+    );
+
+    expect(response.status).toBe('FAILED_FINAL');
+    expect(requestStarted).not.toHaveBeenCalled();
+    expect(providerAction).not.toHaveBeenCalled();
+    expect(db.rows.get(operationId)?.last_error).toBe('TARGET_IDENTITY_CHANGED');
   });
 
   it('CAS-backfills a safely unsent legacy row and permits its first request', async () => {

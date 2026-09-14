@@ -3,11 +3,14 @@ import { resolveRetryAfterSeconds, retryAfterHeader } from './retry';
 import { OutboundOperation } from './domain';
 import { RetryableProcessingError, SafeError } from './errors';
 import {
+  buildChatwootTargetEvidence,
+  buildTelegramTargetEvidence,
   OutboundTargetEvidence,
   parseTargetEvidence,
   targetEvidenceMatches
 } from './outbound-evidence';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
+import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
 
 const CHATWOOT_MAX_PAGES = 5;
 const CHATWOOT_MAX_MESSAGES = 500;
@@ -225,9 +228,12 @@ async function reconcileChatwoot(
         provider: 'CHATWOOT', stage: 'RECONCILE'
       });
     }
-    const baseUrl = env.CHATWOOT_API_URL.replace(/\/+$/, '');
-    const url = `${baseUrl}/api/v1/accounts/${encodeURIComponent(evidence.accountRef)}` +
-      `/conversations/${encodeURIComponent(evidence.conversationRef)}/messages?page=${page}`;
+    const url = buildChatwootApiUrl(
+      env.CHATWOOT_API_URL,
+      `/api/v1/accounts/${encodeURIComponent(evidence.accountRef)}` +
+        `/conversations/${encodeURIComponent(evidence.conversationRef)}/messages`,
+      new URLSearchParams({ page: String(page) })
+    );
     const messages = await getChatwootPage(env, url, remaining);
     if (messages.length === 0) break;
     for (const message of messages) {
@@ -274,29 +280,28 @@ async function reconcileChatwoot(
 
 export async function reconcileOutboundOperation(
   env: Env,
-  operationId: string,
-  currentTargetEvidence: OutboundTargetEvidence
+  operationId: string
 ): Promise<ReconciliationResult> {
   const operation = await loadOperation(env, operationId);
   if (!isUnresolved(operation)) {
     if (operation.status === 'AMBIGUOUS') return result(operation);
     throw new SafeError('OUTBOUND_RECONCILIATION_NOT_ELIGIBLE');
   }
-  if (!operation.target_evidence_json || !targetEvidenceMatches(operation.target_evidence_json, currentTargetEvidence)) {
+  const storedEvidenceJson = operation.target_evidence_json;
+  if (!storedEvidenceJson) {
     return transition(
       env,
       operation,
       'STILL_AMBIGUOUS',
-      'TARGET_IDENTITY_REJECTED',
+      'RECONCILIATION_STILL_AMBIGUOUS',
       'SYSTEM',
       'outbound-reconciliation',
-      'TARGET_IDENTITY_CHANGED'
+      'TARGET_EVIDENCE_INVALID'
     );
   }
-
   let evidence: OutboundTargetEvidence;
   try {
-    evidence = parseTargetEvidence(operation.target_evidence_json);
+    evidence = parseTargetEvidence(storedEvidenceJson);
   } catch {
     return transition(
       env,
@@ -320,6 +325,36 @@ export async function reconcileOutboundOperation(
     );
   }
   if (evidence.provider === 'telegram') {
+    let currentTarget: OutboundTargetEvidence;
+    try {
+      currentTarget = buildTelegramTargetEvidence(
+        env,
+        env.BOT_GROUP_ID,
+        evidence.threadRef || null,
+        evidence.method
+      );
+    } catch {
+      return transition(
+        env,
+        operation,
+        'STILL_AMBIGUOUS',
+        'TARGET_IDENTITY_REJECTED',
+        'SYSTEM',
+        'outbound-reconciliation',
+        'TARGET_IDENTITY_CHANGED'
+      );
+    }
+    if (!targetEvidenceMatches(storedEvidenceJson, currentTarget)) {
+      return transition(
+        env,
+        operation,
+        'STILL_AMBIGUOUS',
+        'TARGET_IDENTITY_REJECTED',
+        'SYSTEM',
+        'outbound-reconciliation',
+        'TARGET_IDENTITY_CHANGED'
+      );
+    }
     return transition(
       env,
       operation,
@@ -328,6 +363,36 @@ export async function reconcileOutboundOperation(
       'SYSTEM',
       'telegram-conservative',
       'TELEGRAM_HISTORICAL_LOOKUP_UNAVAILABLE'
+    );
+  }
+  let currentTarget: OutboundTargetEvidence;
+  try {
+    currentTarget = await buildChatwootTargetEvidence(
+      env,
+      evidence.accountRef,
+      evidence.conversationRef,
+      operation.id
+    );
+  } catch {
+    return transition(
+      env,
+      operation,
+      'STILL_AMBIGUOUS',
+      'TARGET_IDENTITY_REJECTED',
+      'SYSTEM',
+      'outbound-reconciliation',
+      'TARGET_IDENTITY_CHANGED'
+    );
+  }
+  if (!targetEvidenceMatches(storedEvidenceJson, currentTarget)) {
+    return transition(
+      env,
+      operation,
+      'STILL_AMBIGUOUS',
+      'TARGET_IDENTITY_REJECTED',
+      'SYSTEM',
+      'outbound-reconciliation',
+      'TARGET_IDENTITY_CHANGED'
     );
   }
   if (operation.operation_type !== 'SEND_MESSAGE' && operation.operation_type !== 'SEND_ATTACHMENT') {

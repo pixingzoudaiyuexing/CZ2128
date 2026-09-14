@@ -173,13 +173,13 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 ## D-024 — Persist immutable outbound subject and target evidence
 
-**Decision:** Every new outbound operation persists one finite subject identity and one versioned, sanitized target-evidence document before a provider-visible request. The same deterministic operation ID cannot be reused with a different subject or material target identity. Existing attempted rows without evidence are never assigned historical identity from current mutable runtime configuration.
+**Decision:** Every new outbound operation persists one finite subject identity and one versioned, sanitized target-evidence document before a provider-visible request. The same deterministic operation ID cannot be reused with a different subject or material target identity. Existing attempted rows without evidence are never assigned historical identity from current mutable runtime configuration. Chatwoot identity contains a SHA-256 fingerprint of one canonical full API base: scheme, host, effective port and base pathname. The raw URL is not persisted. Normal messages, attachments, reconciliation and candidate validation use the same canonical URL builder, including identical trailing-slash semantics.
 
-**Reason:** A safe retry must prove it is addressing the same business subject and provider destination as the original attempt. Current configuration cannot prove where a historical request was sent.
+**Reason:** A safe retry must prove it is addressing the same business subject and provider destination as the original attempt. Current configuration cannot prove where a historical request was sent. Origin-only identity is insufficient because two Chatwoot deployments on the same origin may use different base paths.
 
 ## D-025 — Reconcile ambiguity without rewriting delivery history or resending
 
-**Decision:** The original delivery status remains `AMBIGUOUS`. `CONFIRMED_SENT` and `MANUAL_MARK_DELIVERED` supply effective-SENT behavior without invoking a provider action. Chatwoot may be positively confirmed only by an exact unique `source_id=cz2128:<operation_id>` found through a bounded read-only message search. Zero matches, multiple matches and Telegram operations remain `STILL_AMBIGUOUS`. Manual mark-delivered and cancel transitions use CAS plus an atomic `reliability_audit` record.
+**Decision:** The original delivery status remains `AMBIGUOUS`. `CONFIRMED_SENT` and `MANUAL_MARK_DELIVERED` supply effective-SENT behavior without invoking a provider action. Chatwoot may be positively confirmed only by an exact unique `source_id=cz2128:<operation_id>` found through a bounded read-only message search. Before any provider GET, the reconciliation service independently derives current runtime target identity from `env`; callers cannot supply or override it. Zero matches, multiple matches and Telegram operations remain `STILL_AMBIGUOUS`. Manual mark-delivered and cancel transitions use CAS plus an atomic `reliability_audit` record.
 
 **Reason:** Provider acceptance cannot be disproved by a bounded paginated search, and Telegram has no trustworthy generic historical lookup in the current architecture. Preserving historical uncertainty prevents reconciliation from becoming a blind resend path.
 

@@ -1,5 +1,6 @@
 import { Env } from '../config/env';
 import { RuntimeConfigKey, RuntimeValueSource } from '../runtime-config/types';
+import { canonicalChatwootBaseUrl } from '../adapters/chatwoot/url';
 
 export const OUTBOUND_SUBJECT_TYPES = [
   'MESSAGE',
@@ -24,7 +25,7 @@ export interface ChatwootTargetEvidenceV1 {
   sourceId: string;
   apiUrlSource: RuntimeValueSource;
   apiUrlVersion?: number;
-  apiOriginFingerprint: string;
+  apiBaseFingerprint: string;
 }
 
 export type TelegramMethod =
@@ -98,11 +99,11 @@ export async function buildChatwootTargetEvidence(
   operationId: string
 ): Promise<ChatwootTargetEvidenceV1> {
   const api = configMetadata(env, 'CHATWOOT_API_URL');
-  let origin: string;
+  let canonicalBase: string;
   try {
-    origin = new URL(env.CHATWOOT_API_URL).origin.toLowerCase();
+    canonicalBase = canonicalChatwootBaseUrl(env.CHATWOOT_API_URL);
   } catch {
-    origin = `invalid:${api.source}:${api.version || 0}`;
+    canonicalBase = `invalid:${api.source}:${api.version || 0}`;
   }
   return {
     version: 1,
@@ -112,7 +113,7 @@ export async function buildChatwootTargetEvidence(
     sourceId: `cz2128:${finiteRef(operationId, 'operationId')}`,
     apiUrlSource: api.source,
     ...(api.version === undefined ? {} : { apiUrlVersion: api.version }),
-    apiOriginFingerprint: await sha256Hex(origin)
+    apiBaseFingerprint: await sha256Hex(canonicalBase)
   };
 }
 
@@ -140,8 +141,8 @@ export function buildTelegramTargetEvidence(
 export function serializeTargetEvidence(evidence: OutboundTargetEvidence): string {
   if (evidence.version !== 1) throw new Error('Unsupported outbound target evidence version');
   if (evidence.provider === 'chatwoot') {
-    if (!/^[a-f0-9]{64}$/.test(evidence.apiOriginFingerprint)) {
-      throw new Error('Invalid Chatwoot API origin fingerprint');
+    if (!/^[a-f0-9]{64}$/.test(evidence.apiBaseFingerprint)) {
+      throw new Error('Invalid Chatwoot API base fingerprint');
     }
     return JSON.stringify({
       version: 1,
@@ -151,7 +152,7 @@ export function serializeTargetEvidence(evidence: OutboundTargetEvidence): strin
       sourceId: finiteRef(evidence.sourceId, 'sourceId'),
       apiUrlSource: runtimeSource(evidence.apiUrlSource),
       ...(runtimeVersion(evidence.apiUrlVersion) === undefined ? {} : { apiUrlVersion: evidence.apiUrlVersion }),
-      apiOriginFingerprint: evidence.apiOriginFingerprint
+      apiBaseFingerprint: evidence.apiBaseFingerprint
     });
   }
   if (!TELEGRAM_METHODS.includes(evidence.method)) throw new Error('Invalid Telegram evidence method');

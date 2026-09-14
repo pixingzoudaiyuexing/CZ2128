@@ -11,6 +11,7 @@ import { retryAfterHeader } from '../core/retry';
 import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
 import { OutboundAttemptLifecycle } from '../core/outbound-operations';
 import { TelegramMethod } from '../core/outbound-evidence';
+import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -83,10 +84,12 @@ export async function deliverAttachmentToChatwoot(
   form.set('private', 'false');
   form.set('source_id', `cz2128:${operationId}`);
   form.append('attachments[]', new Blob([bytes], { type: row.mime_type }), row.safe_filename);
-  const baseUrl = env.CHATWOOT_API_URL.replace(/\/+$/, '');
   const request = await visibleFetch(
     'CHATWOOT',
-    `${baseUrl}/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`,
+    buildChatwootApiUrl(
+      env.CHATWOOT_API_URL,
+      `/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`
+    ),
     form,
     config.destinationTimeoutMs,
     { 'api_access_token': env.CHATWOOT_API_TOKEN },

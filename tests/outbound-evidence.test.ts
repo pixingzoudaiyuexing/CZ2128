@@ -7,6 +7,37 @@ import {
 } from '../src/core/outbound-evidence';
 
 describe('outbound target evidence', () => {
+  it('distinguishes Chatwoot base paths on the same origin', async () => {
+    const first = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,
+      '1', '2', 'operation-1'
+    );
+    const second = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-b' } as any,
+      '1', '2', 'operation-1'
+    );
+
+    expect(first.apiBaseFingerprint).not.toBe(second.apiBaseFingerprint);
+  });
+
+  it('canonicalizes a trailing slash but distinguishes a different host', async () => {
+    const withoutSlash = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,
+      '1', '2', 'operation-1'
+    );
+    const withSlash = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a/' } as any,
+      '1', '2', 'operation-1'
+    );
+    const otherHost = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://other.example/tenant-a' } as any,
+      '1', '2', 'operation-1'
+    );
+
+    expect(withoutSlash.apiBaseFingerprint).toBe(withSlash.apiBaseFingerprint);
+    expect(withoutSlash.apiBaseFingerprint).not.toBe(otherHost.apiBaseFingerprint);
+  });
+
   it('persists versioned Chatwoot identity without raw URL or secrets', async () => {
     const env = {
       CHATWOOT_API_URL: 'https://support.example/private/base',
@@ -32,9 +63,11 @@ describe('outbound target evidence', () => {
       sourceId: 'cz2128:operation-1',
       apiUrlSource: 'D1',
       apiUrlVersion: 7,
-      apiOriginFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/)
+      apiBaseFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/)
     });
     expect(serialized).not.toContain('https://support.example');
+    expect(serialized).not.toContain('support.example');
+    expect(serialized).not.toContain('/private/base');
     expect(serialized).not.toContain('chatwoot-secret-token');
     expect(serialized).not.toContain('private customer message');
   });

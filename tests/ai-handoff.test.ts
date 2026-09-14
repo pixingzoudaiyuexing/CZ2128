@@ -778,7 +778,7 @@ describe('Phase 2 AI Handoff', () => {
         subject: { type: 'AI_RUN', ref: 'ai-run:op17' },
         targetEvidence: {
           version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'conversation',
-          sourceId: 'cz2128:op17', apiUrlSource: 'ENV', apiOriginFingerprint: 'a'.repeat(64)
+          sourceId: 'cz2128:op17', apiUrlSource: 'ENV', apiBaseFingerprint: 'a'.repeat(64)
         }
       });
     } catch (e) {}
@@ -795,7 +795,7 @@ describe('Phase 2 AI Handoff', () => {
         subject: { type: 'AI_RUN', ref: 'ai-run:op17' },
         targetEvidence: {
           version: 1, provider: 'chatwoot', accountRef: 'account', conversationRef: 'conversation',
-          sourceId: 'cz2128:op17', apiUrlSource: 'ENV', apiOriginFingerprint: 'a'.repeat(64)
+          sourceId: 'cz2128:op17', apiUrlSource: 'ENV', apiBaseFingerprint: 'a'.repeat(64)
         }
       });
     } catch (e) {}

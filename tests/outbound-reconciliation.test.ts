@@ -6,11 +6,12 @@ import {
   reconcileOutboundOperation
 } from '../src/core/outbound-reconciliation';
 import { OutboundOperation } from '../src/core/domain';
-import { OutboundTargetEvidence } from '../src/core/outbound-evidence';
+import { buildChatwootTargetEvidence, OutboundTargetEvidence } from '../src/core/outbound-evidence';
 
 class ReconciliationDb {
   operations = new Map<string, OutboundOperation>();
   audits: any[] = [];
+  failNextResolutionCas = false;
   private previousChanges = 0;
   private batchTail: Promise<void> = Promise.resolve();
 
@@ -30,7 +31,9 @@ class ReconciliationDb {
         if (query.includes('SET reconciliation_status = ?')) {
           const [next, providerRef, resolvedBy, resolvedAt, reason, updatedAt, id, old] = params;
           const row = this.operations.get(String(id));
-          if (row?.status === 'AMBIGUOUS' && row.reconciliation_status === old) {
+          if (this.failNextResolutionCas) {
+            this.failNextResolutionCas = false;
+          } else if (row?.status === 'AMBIGUOUS' && row.reconciliation_status === old) {
             row.reconciliation_status = next;
             if (providerRef !== null) row.provider_message_ref = String(providerRef);
             row.resolved_by = resolvedBy;
@@ -82,15 +85,10 @@ class ReconciliationDb {
   }
 }
 
-const chatwootEvidence: OutboundTargetEvidence = {
-  version: 1,
-  provider: 'chatwoot',
-  accountRef: '1',
-  conversationRef: '2',
-  sourceId: 'cz2128:op-1',
-  apiUrlSource: 'ENV',
-  apiOriginFingerprint: 'a'.repeat(64)
-};
+const chatwootEvidence: OutboundTargetEvidence = await buildChatwootTargetEvidence(
+  { CHATWOOT_API_URL: 'https://chatwoot.example' } as any,
+  '1', '2', 'op-1'
+);
 
 const telegramEvidence: OutboundTargetEvidence = {
   version: 1,
@@ -120,7 +118,8 @@ function env(db: ReconciliationDb) {
   return {
     DB: db,
     CHATWOOT_API_URL: 'https://chatwoot.example',
-    CHATWOOT_API_TOKEN: 'chatwoot-secret'
+    CHATWOOT_API_TOKEN: 'chatwoot-secret',
+    BOT_GROUP_ID: '-1001'
   } as any;
 }
 
@@ -134,7 +133,7 @@ describe('outbound reconciliation', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [{ id: 91, source_id: 'cz2128:op-1' }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [] }), { status: 200 }));
 
-    const response = await reconcileOutboundOperation(env(db), 'op-1', chatwootEvidence);
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
 
     expect(response).toMatchObject({
       operationStatus: 'AMBIGUOUS', reconciliationStatus: 'CONFIRMED_SENT', providerMessageRef: '91'
@@ -159,7 +158,7 @@ describe('outbound reconciliation', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messages }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [] }), { status: 200 }));
 
-    const response = await reconcileOutboundOperation(env(db), 'op-1', chatwootEvidence);
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
     expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
     expect(db.operations.get('op-1')?.resolution_reason).toBe(reason);
     expect(db.operations.get('op-1')?.reconciliation_status).not.toBe('CONFIRMED_NOT_SENT');
@@ -173,7 +172,7 @@ describe('outbound reconciliation', () => {
       new Response(JSON.stringify({ payload: page }), { status: 200 })
     );
 
-    const response = await reconcileOutboundOperation(env(db), 'op-1', chatwootEvidence);
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
     expect(fetchMock).toHaveBeenCalledTimes(CHATWOOT_RECONCILIATION_LIMITS.pages);
     expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
   });
@@ -188,7 +187,7 @@ describe('outbound reconciliation', () => {
     db.operations.set('op-1', operation(chatwootEvidence));
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response());
 
-    await expect(reconcileOutboundOperation(env(db), 'op-1', chatwootEvidence)).rejects.toBeTruthy();
+    await expect(reconcileOutboundOperation(env(db), 'op-1')).rejects.toBeTruthy();
     expect(db.operations.get('op-1')?.reconciliation_status).toBe('PENDING');
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
   });
@@ -198,7 +197,7 @@ describe('outbound reconciliation', () => {
     db.operations.set('op-1', operation(chatwootEvidence));
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('private provider failure'));
 
-    await expect(reconcileOutboundOperation(env(db), 'op-1', chatwootEvidence)).rejects.toMatchObject({
+    await expect(reconcileOutboundOperation(env(db), 'op-1')).rejects.toMatchObject({
       code: 'RECONCILIATION_PROVIDER_UNAVAILABLE'
     });
     expect(db.operations.get('op-1')?.reconciliation_status).toBe('PENDING');
@@ -208,12 +207,85 @@ describe('outbound reconciliation', () => {
     const db = new ReconciliationDb();
     db.operations.set('op-1', operation(chatwootEvidence));
     const fetchMock = vi.spyOn(globalThis, 'fetch');
-    const changed = { ...chatwootEvidence, conversationRef: 'changed' };
+    const changedEnv = { ...env(db), CHATWOOT_API_URL: 'https://changed.example' };
 
-    const response = await reconcileOutboundOperation(env(db), 'op-1', changed);
+    const response = await reconcileOutboundOperation(changedEnv, 'op-1');
     expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(db.audits[0].action).toBe('TARGET_IDENTITY_REJECTED');
+  });
+
+  it('rejects current runtime base-path drift even when caller supplies old stored evidence', async () => {
+    const db = new ReconciliationDb();
+    const stored = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,
+      '1', '2', 'op-1'
+    );
+    db.operations.set('op-1', operation(stored));
+    const currentEnv = {
+      ...env(db),
+      CHATWOOT_API_URL: 'https://chat.example/tenant-b'
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ payload: [{ id: 91, source_id: 'cz2128:op-1' }] }), { status: 200 })
+    );
+
+    const response = await reconcileOutboundOperation(currentEnv, 'op-1');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(db.audits[0]).toMatchObject({
+      action: 'TARGET_IDENTITY_REJECTED', reason_code: 'TARGET_IDENTITY_CHANGED'
+    });
+  });
+
+  it('treats trailing-slash-equivalent bases as the same identity and queries the canonical path', async () => {
+    const db = new ReconciliationDb();
+    const stored = await buildChatwootTargetEvidence(
+      { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,
+      '1', '2', 'op-1'
+    );
+    db.operations.set('op-1', operation(stored));
+    const currentEnv = { ...env(db), CHATWOOT_API_URL: 'https://chat.example/tenant-a/' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        payload: [{ id: 91, source_id: 'cz2128:op-1' }]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [] }), { status: 200 }));
+
+    const response = await reconcileOutboundOperation(currentEnv, 'op-1');
+
+    expect(response.reconciliationStatus).toBe('CONFIRMED_SENT');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://chat.example/tenant-a/api/v1/accounts/1/conversations/2/messages?page=1'
+    );
+  });
+
+  it('blocks Chatwoot runtime-config version drift even when the canonical base is unchanged', async () => {
+    const db = new ReconciliationDb();
+    const stored = await buildChatwootTargetEvidence({
+      CHATWOOT_API_URL: 'https://chat.example/tenant-a',
+      runtimeConfigSnapshot: {
+        sources: { CHATWOOT_API_URL: 'D1' }, versions: { CHATWOOT_API_URL: 4 }
+      }
+    } as any, '1', '2', 'op-1');
+    db.operations.set('op-1', operation(stored));
+    const currentEnv = {
+      ...env(db),
+      CHATWOOT_API_URL: 'https://chat.example/tenant-a',
+      runtimeConfigSnapshot: {
+        sources: { CHATWOOT_API_URL: 'D1' }, versions: { CHATWOOT_API_URL: 5 }, errors: {}
+      }
+    } as any;
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    const response = await reconcileOutboundOperation(currentEnv, 'op-1');
+
+    expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.audits[0]).toMatchObject({
+      action: 'TARGET_IDENTITY_REJECTED', reason_code: 'TARGET_IDENTITY_CHANGED'
+    });
   });
 
   it('keeps Telegram ambiguity manual without provider lookup', async () => {
@@ -221,7 +293,7 @@ describe('outbound reconciliation', () => {
     db.operations.set('op-1', operation(telegramEvidence));
     const fetchMock = vi.spyOn(globalThis, 'fetch');
 
-    const response = await reconcileOutboundOperation(env(db), 'op-1', telegramEvidence);
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
     expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -271,7 +343,7 @@ describe('outbound reconciliation', () => {
     const db = new ReconciliationDb();
     db.operations.set('op-1', operation(chatwootEvidence));
 
-    await Promise.all([
+    const results = await Promise.all([
       manualMarkDelivered(
         env(db), 'op-1', { type: 'ADMIN', ref: '42' }, 'OPERATOR_CONFIRMED_DELIVERY', 'provider-1'
       ),
@@ -281,6 +353,21 @@ describe('outbound reconciliation', () => {
     expect(['MANUAL_MARK_DELIVERED', 'MANUAL_CANCELLED']).toContain(
       db.operations.get('op-1')?.reconciliation_status
     );
+    expect(results.filter(value => value.changed)).toHaveLength(1);
     expect(db.audits).toHaveLength(1);
+  });
+
+  it('does not write a false audit when the resolution CAS loses', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    db.failNextResolutionCas = true;
+
+    const response = await manualCancel(
+      env(db), 'op-1', { type: 'ADMIN', ref: '43' }, 'OPERATOR_CANCELLED'
+    );
+
+    expect(response.changed).toBe(false);
+    expect(db.operations.get('op-1')?.reconciliation_status).toBe('PENDING');
+    expect(db.audits).toHaveLength(0);
   });
 });
