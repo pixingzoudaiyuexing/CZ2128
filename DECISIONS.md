@@ -187,7 +187,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-1 only. No `0006`, manual retry child, visible redrive, AI durable-state activation, Admin UI or DLQ consumer is introduced.
 
-**Status:** Phase 4B-2C-1 and Phase 4B-2C-2 are COMPLETE / FROZEN. Phase 4B-2C-3 is IMPLEMENTED / IN REVIEW. D-016 rolling compatibility remains in force.
+**Status:** Phase 4B-2C-1, Phase 4B-2C-2 and Phase 4B-2C-3 are COMPLETE / FROZEN. Phase 4B-2C overall is COMPLETE / FROZEN. D-016 rolling compatibility remains in force.
 
 ## D-026 — Manual retry creates one deterministic child and repairs domain state separately
 
@@ -201,7 +201,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-2 only. No migration `0006`, external Admin surface, DLQ consumer, `CONFIRMED_NOT_SENT` activation, AI durable retry state machine or legacy AI `FAILED` retirement.
 
-**Status:** Phase 4B-2C-2 is COMPLETE / FROZEN. Phase 4B-2C-3 is IMPLEMENTED / IN REVIEW. Phase 4B-2B and Phase 4B-2C-1 remain COMPLETE / FROZEN.
+**Status:** Phase 4B-2C-2 and Phase 4B-2C-3 are COMPLETE / FROZEN. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-2B and Phase 4B-2C-1 remain COMPLETE / FROZEN.
 
 ## D-027 — Bound durable AI generation and reuse successful results
 
@@ -215,4 +215,4 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-3 only. Migration `0006`, Admin reliability UI/commands, DLQ consumption, `CONFIRMED_NOT_SENT`, Durable Objects and Phase 4C load acceptance remain absent.
 
-**Status:** IMPLEMENTED / IN REVIEW. Phase 4B-3 remains NOT STARTED; the overall 4B-2C sequence is not yet marked complete.
+**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 remains NOT STARTED.

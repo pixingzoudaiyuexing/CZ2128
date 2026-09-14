@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C-1 complete and frozen / Phase 4B-2C-2 complete and frozen**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen**
 
 ## Phase 0 — Architecture Freeze
 
@@ -151,7 +151,8 @@ Current status:
 - Phase 4B-2B: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C-1 Outbound Reconciliation + Target Evidence: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C-2 Manual Retry Child Operations + Domain Resolution: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **COMPLETE / FROZEN / MERGED**
+- Phase 4B-2C overall: **COMPLETE / FROZEN**
 - Phase 4B-3 reliability control-plane exposure: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 

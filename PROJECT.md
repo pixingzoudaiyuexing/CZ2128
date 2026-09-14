@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C-1 Complete, Frozen / Phase 4B-2C-2 Complete, Frozen / Phase 4B-2C-3 Implemented, In Review**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen**
 
 ## Purpose
 
@@ -83,7 +83,8 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 
 - Phase 4B-2C-1 — Outbound reconciliation and target evidence: **COMPLETE / FROZEN**.
 - Phase 4B-2C-2 — Manual retry child operations and domain resolution: **COMPLETE / FROZEN**.
-- Phase 4B-2C-3 — AI durable retry state machine and legacy `FAILED` retirement: **IMPLEMENTED / IN REVIEW**.
+- Phase 4B-2C-3 — AI durable retry state machine and legacy `FAILED` retirement: **COMPLETE / FROZEN / MERGED**.
+- Phase 4B-2C overall: **COMPLETE / FROZEN**.
 - Phase 4B-3 reliability UI/control-plane exposure: **NOT STARTED**.
 
 Phase 4B-2C-2 uses the existing `0005` parent linkage and reconciliation state. An explicit operator decision creates one deterministic child operation, preserves the parent's historical ambiguity, reconstructs supported message/attachment/conversation payloads from durable state, blocks target drift, and applies idempotent attachment/topic domain repair after effective delivery. It adds no `0006`, Admin UI or command, DLQ consumption, `CONFIRMED_NOT_SENT` activation or AI durable-state behavior.
