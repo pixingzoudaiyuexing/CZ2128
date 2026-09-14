@@ -17,6 +17,19 @@ export interface Conversation {
   last_telegram_operator_profile_version: number;
   created_at: number;
   updated_at: number;
+  request_started_at?: number;
+  response_observed_at?: number;
+  response_http_status?: number;
+  next_retry_at?: number;
+  retry_after_seconds?: number;
+  reconciliation_status?: 'NOT_REQUIRED' | 'PENDING' | 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | 'STILL_AMBIGUOUS' | 'MANUAL_MARK_DELIVERED' | 'MANUAL_CANCELLED' | 'MANUAL_RETRY_CREATED';
+  resolved_by?: string;
+  resolved_at?: number;
+  resolution_reason?: string;
+  parent_operation_id?: string;
+  subject_type?: string;
+  subject_ref?: string;
+  target_evidence_json?: string;
   version: number;
 }
 
@@ -41,6 +54,10 @@ export interface EventReceipt {
   claim_token: string | null;
   last_error: SafeErrorCode | null;
   processed_at: number | null;
+  event_type?: string;
+  conversation_id?: string;
+  last_attempt_at?: number;
+  dead_lettered_at?: number;
 }
 
 export interface OutboundOperation {
