@@ -215,4 +215,8 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-3 only. Migration `0006`, Admin reliability UI/commands, DLQ consumption, `CONFIRMED_NOT_SENT`, Durable Objects and Phase 4C load acceptance remain absent.
 
-**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 remains NOT STARTED.
+**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is IMPLEMENTED / IN REVIEW. Phase 4B-4, 4B-5, and 4C remain NOT STARTED.
+
+## Phase 4B-3 Reliability Control Plane
+**Decision:** Reliability control plane uses the existing authenticated Telegram Admin Bot. No new Web Admin or public HTTP control API. Admin UI never directly mutates reliability state; frozen core services remain authoritative. Manual Retry requires explicit duplicate-risk confirmation. Operation IDs are bound through expiring Admin session state rather than unsafe long callback payloads. AI reliability state is read-only in 4B-3.
+**Status:** IMPLEMENTED / IN REVIEW.

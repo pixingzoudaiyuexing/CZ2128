@@ -9,7 +9,8 @@ import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
 const mainKeyboard: AdminKeyboard = [
   [{ text: '🤖 AI', callback_data: 'p:ai' }, { text: '💬 Telegram', callback_data: 'p:tg' }],
   [{ text: '🟦 Chatwoot', callback_data: 'p:cw' }, { text: '📎 Attachments', callback_data: 'p:att' }],
-  [{ text: '⚙️ System', callback_data: 'p:sys' }, { text: '📜 History', callback_data: 'p:hist' }]
+  [{ text: '⚙️ System', callback_data: 'p:sys' }, { text: '📜 History', callback_data: 'p:hist' }],
+  [{ text: '🛡 Reliability', callback_data: 'p:rel' }]
 ];
 
 export async function reply(
@@ -32,6 +33,8 @@ export async function showMain(bootstrap: AdminBootstrap, ctx: AdminContext): Pr
   await reply(bootstrap, ctx, 'CZ2128 控制中心', mainKeyboard);
 }
 
+import { showReliabilityMain } from './reliability';
+
 export async function showPage(
   env: Env,
   bootstrap: AdminBootstrap,
@@ -39,6 +42,10 @@ export async function showPage(
   page: string
 ): Promise<void> {
   const edit = (text: string, code: string) => ({ text, callback_data: `e:${code}` });
+  if (page === 'rel') {
+    await showReliabilityMain(env, bootstrap, ctx);
+    return;
+  }
   if (page === 'ai') {
     await reply(bootstrap, ctx, [
       valueLine(env, 'AI_BASE_URL'), valueLine(env, 'AI_MODEL'), valueLine(env, 'AI_API_KEY', true),

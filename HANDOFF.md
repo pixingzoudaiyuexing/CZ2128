@@ -19,7 +19,10 @@
 - **Phase 4B-2C-2**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
-- **Phase 4B-3**: NOT STARTED
+- **Phase 4B-3**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-4**: NOT STARTED
+- **Phase 4B-5**: NOT STARTED
+- **Phase 4C**: NOT STARTED
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
@@ -59,7 +62,7 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3, Admin reliability exposure, DLQ consumption and `CONFIRMED_NOT_SENT` activation remain not started.
+- Phase 4B-3 Admin reliability exposure is IMPLEMENTED / IN REVIEW. Phase 4B-4, 4B-5, Phase 4C, DLQ consumption, and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
