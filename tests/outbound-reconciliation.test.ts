@@ -123,15 +123,23 @@ function env(db: ReconciliationDb) {
   } as any;
 }
 
+function messagePage(startId: number, count: number, matchingIds: number[] = []) {
+  const matches = new Set(matchingIds);
+  return Array.from({ length: count }, (_, index) => {
+    const id = startId + index;
+    return { id, source_id: matches.has(id) ? 'cz2128:op-1' : 'other' };
+  });
+}
+
 describe('outbound reconciliation', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('confirms a unique exact Chatwoot source_id and persists the provider message id', async () => {
     const db = new ReconciliationDb();
     db.operations.set('op-1', operation(chatwootEvidence));
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [{ id: 91, source_id: 'cz2128:op-1' }] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [] }), { status: 200 }));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ payload: [{ id: 91, source_id: 'cz2128:op-1' }] }), { status: 200 })
+    );
 
     const response = await reconcileOutboundOperation(env(db), 'op-1');
 
@@ -141,8 +149,10 @@ describe('outbound reconciliation', () => {
     expect(db.operations.get('op-1')?.status).toBe('AMBIGUOUS');
     expect(db.operations.get('op-1')?.resolved_by).toBe('system:chatwoot-source-id');
     expect(db.audits).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('after=0');
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('page=');
   });
 
   it.each([
@@ -154,9 +164,9 @@ describe('outbound reconciliation', () => {
   ] as const)('keeps %s STILL_AMBIGUOUS', async (_label, messages, reason) => {
     const db = new ReconciliationDb();
     db.operations.set('op-1', operation(chatwootEvidence));
-    vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messages }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: [] }), { status: 200 }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ payload: messages }), { status: 200 })
+    );
 
     const response = await reconcileOutboundOperation(env(db), 'op-1');
     expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
@@ -164,17 +174,132 @@ describe('outbound reconciliation', () => {
     expect(db.operations.get('op-1')?.reconciliation_status).not.toBe('CONFIRMED_NOT_SENT');
   });
 
-  it('bounds Chatwoot pagination without inferring CONFIRMED_NOT_SENT', async () => {
+  it('keeps one match ambiguous when five full after-cursor pages reach the bound', async () => {
     const db = new ReconciliationDb();
     db.operations.set('op-1', operation(chatwootEvidence));
-    const page = Array.from({ length: 100 }, (_, index) => ({ id: index, source_id: 'other' }));
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-      new Response(JSON.stringify({ payload: page }), { status: 200 })
-    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    for (let page = 0; page < CHATWOOT_RECONCILIATION_LIMITS.pages; page++) {
+      const start = page * 100 + 1;
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        payload: messagePage(start, 100, page === 0 ? [50] : [])
+      }), { status: 200 }));
+    }
 
     const response = await reconcileOutboundOperation(env(db), 'op-1');
     expect(fetchMock).toHaveBeenCalledTimes(CHATWOOT_RECONCILIATION_LIMITS.pages);
     expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(db.operations.get('op-1')?.resolution_reason).toBe('CHATWOOT_SEARCH_BOUND_REACHED');
+  });
+
+  it('keeps one match ambiguous when the total runtime bound is reached before exhaustion', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T00:00:00Z'));
+    try {
+      const db = new ReconciliationDb();
+      db.operations.set('op-1', operation(chatwootEvidence));
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => {
+        vi.advanceTimersByTime(CHATWOOT_RECONCILIATION_LIMITS.runtimeMs + 1);
+        return new Response(JSON.stringify({ payload: messagePage(1, 100, [50]) }), { status: 200 });
+      });
+
+      const response = await reconcileOutboundOperation(env(db), 'op-1');
+
+      expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+      expect(db.operations.get('op-1')?.resolution_reason).toBe('CHATWOOT_SEARCH_RUNTIME_BOUND_REACHED');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('finds a duplicate source_id outside the first full after-cursor page', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        payload: messagePage(1, 100, [10])
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        payload: messagePage(101, 37, [120])
+      }), { status: 200 }));
+
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
+
+    expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(db.operations.get('op-1')?.resolution_reason).toBe('CHATWOOT_SOURCE_ID_DUPLICATE');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('confirms one match only after a full page followed by an exhausted partial page', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messagePage(1, 100) }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messagePage(101, 37, [120]) }), { status: 200 }));
+
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
+
+    expect(response).toMatchObject({
+      reconciliationStatus: 'CONFIRMED_SENT', providerMessageRef: '120'
+    });
+  });
+
+  it('keeps an exhausted zero-match partial page ambiguous without CONFIRMED_NOT_SENT', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ payload: messagePage(1, 37) }), { status: 200 })
+    );
+
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
+
+    expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(db.operations.get('op-1')?.reconciliation_status).not.toBe('CONFIRMED_NOT_SENT');
+  });
+
+  it('advances after using the actual maximum provider message id and never uses page', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messagePage(1, 100) }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messagePage(101, 100) }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: messagePage(201, 3) }), { status: 200 }));
+
+    await reconcileOutboundOperation(env(db), 'op-1');
+
+    expect(fetchMock.mock.calls.map(call => String(call[0]))).toEqual([
+      'https://chatwoot.example/api/v1/accounts/1/conversations/2/messages?after=0',
+      'https://chatwoot.example/api/v1/accounts/1/conversations/2/messages?after=100',
+      'https://chatwoot.example/api/v1/accounts/1/conversations/2/messages?after=200'
+    ]);
+  });
+
+  it('stops on a repeated non-advancing provider page without false confirmation', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    const firstPage = messagePage(1, 100, [50]);
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: firstPage }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ payload: firstPage }), { status: 200 }));
+
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
+
+    expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(db.operations.get('op-1')?.resolution_reason).toBe('CHATWOOT_CURSOR_NOT_ADVANCING');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops on an invalid provider message id without false confirmation', async () => {
+    const db = new ReconciliationDb();
+    db.operations.set('op-1', operation(chatwootEvidence));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      payload: [{ id: 'not-a-cursor', source_id: 'cz2128:op-1' }]
+    }), { status: 200 }));
+
+    const response = await reconcileOutboundOperation(env(db), 'op-1');
+
+    expect(response.reconciliationStatus).toBe('STILL_AMBIGUOUS');
+    expect(db.operations.get('op-1')?.resolution_reason).toBe('CHATWOOT_SOURCE_ID_INVALID_MATCH');
   });
 
   it.each([
@@ -257,7 +382,7 @@ describe('outbound reconciliation', () => {
 
     expect(response.reconciliationStatus).toBe('CONFIRMED_SENT');
     expect(fetchMock.mock.calls[0][0]).toBe(
-      'https://chat.example/tenant-a/api/v1/accounts/1/conversations/2/messages?page=1'
+      'https://chat.example/tenant-a/api/v1/accounts/1/conversations/2/messages?after=0'
     );
   });
 

@@ -14,6 +14,8 @@ import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
 
 const CHATWOOT_MAX_PAGES = 5;
 const CHATWOOT_MAX_MESSAGES = 500;
+const CHATWOOT_AFTER_PAGE_SIZE = 100;
+const CHATWOOT_MESSAGE_ID_MAX = 2_147_483_647;
 const CHATWOOT_MAX_PAGE_BYTES = 1024 * 1024;
 const CHATWOOT_RECONCILIATION_RUNTIME_MS = 10_000;
 
@@ -159,6 +161,19 @@ function pageMessages(value: unknown): unknown[] {
   throw new SafeError('RECONCILIATION_INVALID_RESPONSE');
 }
 
+function chatwootCursorId(value: unknown): number | null {
+  if (typeof value === 'string' && /^\d+$/.test(value)) value = Number(value);
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > CHATWOOT_MESSAGE_ID_MAX
+  ) {
+    return null;
+  }
+  return value;
+}
+
 async function getChatwootPage(env: Env, url: string, remainingMs: number): Promise<unknown[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(remainingMs, 3_000)));
@@ -221,36 +236,78 @@ async function reconcileChatwoot(
   const matchedIds = new Set<string>();
   let exactMatchesWithoutId = 0;
   let inspected = 0;
-  for (let page = 1; page <= CHATWOOT_MAX_PAGES && inspected < CHATWOOT_MAX_MESSAGES; page++) {
+  let cursor = 0;
+  let historyExhausted = false;
+  let incompleteReason = 'CHATWOOT_SEARCH_BOUND_REACHED';
+  for (let page = 0; page < CHATWOOT_MAX_PAGES && inspected < CHATWOOT_MAX_MESSAGES; page++) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new RetryableProcessingError('RECONCILIATION_PROVIDER_UNAVAILABLE', 5, {
-        provider: 'CHATWOOT', stage: 'RECONCILE'
-      });
+      incompleteReason = 'CHATWOOT_SEARCH_RUNTIME_BOUND_REACHED';
+      break;
     }
     const url = buildChatwootApiUrl(
       env.CHATWOOT_API_URL,
       `/api/v1/accounts/${encodeURIComponent(evidence.accountRef)}` +
         `/conversations/${encodeURIComponent(evidence.conversationRef)}/messages`,
-      new URLSearchParams({ page: String(page) })
+      new URLSearchParams({ after: String(cursor) })
     );
     const messages = await getChatwootPage(env, url, remaining);
-    if (messages.length === 0) break;
+    if (messages.length === 0) {
+      historyExhausted = true;
+      break;
+    }
+    if (messages.length > CHATWOOT_AFTER_PAGE_SIZE) {
+      incompleteReason = 'CHATWOOT_CURSOR_INVALID';
+      break;
+    }
+
+    let maximumId = cursor;
+    let invalidCursor = false;
+    let nonAdvancingCursor = false;
     for (const message of messages) {
       if (inspected >= CHATWOOT_MAX_MESSAGES) break;
       inspected += 1;
-      if (!message || typeof message !== 'object') continue;
-      const candidate = message as { id?: unknown; source_id?: unknown };
-      if (candidate.source_id !== evidence.sourceId) continue;
-      if (candidate.id === undefined || candidate.id === null) {
-        exactMatchesWithoutId += 1;
-      } else {
-        matchedIds.add(String(candidate.id));
+      if (!message || typeof message !== 'object') {
+        invalidCursor = true;
+        continue;
       }
+      const candidate = message as { id?: unknown; source_id?: unknown };
+      const isExactMatch = candidate.source_id === evidence.sourceId;
+      const messageId = chatwootCursorId(candidate.id);
+      if (messageId === null) {
+        if (isExactMatch) exactMatchesWithoutId += 1;
+        invalidCursor = true;
+        continue;
+      }
+      if (messageId <= cursor) nonAdvancingCursor = true;
+      maximumId = Math.max(maximumId, messageId);
+      if (isExactMatch) matchedIds.add(String(messageId));
     }
+
+    if (matchedIds.size > 1) {
+      incompleteReason = 'CHATWOOT_SOURCE_ID_DUPLICATE';
+      break;
+    }
+    if (exactMatchesWithoutId > 0) {
+      incompleteReason = 'CHATWOOT_SOURCE_ID_INVALID_MATCH';
+      break;
+    }
+    if (invalidCursor) {
+      incompleteReason = 'CHATWOOT_CURSOR_INVALID';
+      break;
+    }
+    if (nonAdvancingCursor || maximumId <= cursor) {
+      incompleteReason = 'CHATWOOT_CURSOR_NOT_ADVANCING';
+      break;
+    }
+    if (messages.length < CHATWOOT_AFTER_PAGE_SIZE) {
+      historyExhausted = true;
+      break;
+    }
+    cursor = maximumId;
   }
 
-  if (matchedIds.size === 1 && exactMatchesWithoutId === 0) {
+  if (historyExhausted && matchedIds.size === 1 && exactMatchesWithoutId === 0) {
     return transition(
       env,
       operation,
@@ -262,11 +319,13 @@ async function reconcileChatwoot(
       [...matchedIds][0]
     );
   }
-  const reason = matchedIds.size + exactMatchesWithoutId > 1
+  const reason = matchedIds.size > 1
     ? 'CHATWOOT_SOURCE_ID_DUPLICATE'
-    : exactMatchesWithoutId === 1
+    : exactMatchesWithoutId > 0
       ? 'CHATWOOT_SOURCE_ID_INVALID_MATCH'
-      : 'CHATWOOT_SOURCE_ID_NOT_FOUND_BOUNDED';
+      : historyExhausted
+        ? 'CHATWOOT_SOURCE_ID_NOT_FOUND_BOUNDED'
+        : incompleteReason;
   return transition(
     env,
     operation,
@@ -471,5 +530,6 @@ export async function getAmbiguousOutboundOperation(
 export const CHATWOOT_RECONCILIATION_LIMITS = {
   pages: CHATWOOT_MAX_PAGES,
   messages: CHATWOOT_MAX_MESSAGES,
+  messagesPerAfterPage: CHATWOOT_AFTER_PAGE_SIZE,
   runtimeMs: CHATWOOT_RECONCILIATION_RUNTIME_MS
 } as const;
