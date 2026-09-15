@@ -2,11 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Worker from '../src/index';
 import { RetryableProcessingError } from '../src/core/errors';
 import * as consumer from '../src/queue/consumer';
+import * as dlqConsumer from '../src/queue/dlq-consumer';
 
 vi.mock('../src/queue/consumer', () => ({
   handleQueueEvent: vi.fn(async (event: any) => {
     if (event.type === 'error_trigger') throw new Error('Simulated failure');
   })
+}));
+
+vi.mock('../src/queue/dlq-consumer', () => ({
+  captureDlqMessage: vi.fn(async () => ({ id: 'dlq:v1:test' }))
 }));
 
 class MockQueue {
@@ -39,6 +44,7 @@ describe('Worker Integration', () => {
     vi.mocked(consumer.handleQueueEvent).mockImplementation(async (event: any) => {
       if (event.type === 'error_trigger') throw new Error('Simulated failure');
     });
+    vi.mocked(dlqConsumer.captureDlqMessage).mockResolvedValue({ id: 'dlq:v1:test' } as any);
     env = {
       DB: new MockD1(),
       QUEUE: new MockQueue(),
@@ -297,7 +303,7 @@ describe('Worker Integration', () => {
     };
 
     if (Worker.queue) {
-      await Worker.queue({ messages: [message] } as any, env, ctx);
+      await Worker.queue({ queue: 'cz2128-queue', messages: [message] } as any, env, ctx);
     }
 
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 37 });
@@ -311,7 +317,7 @@ describe('Worker Integration', () => {
       ack: vi.fn(),
       retry: vi.fn()
     };
-    if (Worker.queue) await Worker.queue({ messages: [message] } as any, env, ctx);
+    if (Worker.queue) await Worker.queue({ queue: 'cz2128-queue', messages: [message] } as any, env, ctx);
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
     expect(message.ack).not.toHaveBeenCalled();
   });
@@ -320,6 +326,7 @@ describe('Worker Integration', () => {
     let acked = 0;
     let retried = 0;
     const batch = {
+      queue: 'cz2128-queue',
       messages: [
         {
           body: { version: 1, source: 'telegram', type: 'message_created', eventId: '1', payload: {} },
@@ -340,6 +347,60 @@ describe('Worker Integration', () => {
 
     expect(acked).toBe(1);
     expect(retried).toBe(1);
+  });
+
+  it('routes the main queue only to normal processing', async () => {
+    const message = {
+      id: 'main-message',
+      body: { version: 1, source: 'internal', type: 'ai_trigger', eventId: 'main', payload: {} },
+      ack: vi.fn(),
+      retry: vi.fn()
+    };
+    if (Worker.queue) await Worker.queue({ queue: 'cz2128-queue', messages: [message] } as any, env, ctx);
+    expect(consumer.handleQueueEvent).toHaveBeenCalledTimes(1);
+    expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes the DLQ only to sanitized receipt capture and ACKs after success', async () => {
+    vi.mocked(consumer.handleQueueEvent).mockClear();
+    const message = {
+      id: 'dlq-message',
+      body: { private: 'PRIVATE_DLQ_MESSAGE_BODY_123' },
+      ack: vi.fn(),
+      retry: vi.fn()
+    };
+    if (Worker.queue) await Worker.queue({ queue: 'cz2128-dlq', messages: [message] } as any, env, ctx);
+    expect(dlqConsumer.captureDlqMessage).toHaveBeenCalledWith(env, message, undefined, 'cz2128-dlq');
+    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledTimes(1);
+    expect(message.retry).not.toHaveBeenCalled();
+    expect(vi.mocked(dlqConsumer.captureDlqMessage).mock.invocationCallOrder[0])
+      .toBeLessThan(message.ack.mock.invocationCallOrder[0]);
+  });
+
+  it('does not ACK when DLQ receipt persistence fails and requests bounded retry', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(dlqConsumer.captureDlqMessage).mockRejectedValueOnce(new Error('SUPER_SECRET_DLQ_TOKEN_456'));
+    const message = { id: 'dlq-fail', body: {}, ack: vi.fn(), retry: vi.fn() };
+    if (Worker.queue) await Worker.queue({ queue: 'cz2128-dlq', messages: [message] } as any, env, ctx);
+    expect(message.ack).not.toHaveBeenCalled();
+    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
+    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(errorLog.mock.calls.flat().join(' ')).not.toContain('SUPER_SECRET_DLQ_TOKEN_456');
+    errorLog.mockRestore();
+  });
+
+  it('fails safe for an unknown queue without invoking normal or DLQ handlers', async () => {
+    vi.mocked(consumer.handleQueueEvent).mockClear();
+    vi.mocked(dlqConsumer.captureDlqMessage).mockClear();
+    const message = { id: 'unknown', body: {}, ack: vi.fn(), retry: vi.fn() };
+    if (Worker.queue) await Worker.queue({ queue: 'unexpected-queue', messages: [message] } as any, env, ctx);
+    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+    expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+    expect(message.ack).not.toHaveBeenCalled();
+    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
   });
 
   it('scheduled() registers bounded attachment cleanup with waitUntil', async () => {
