@@ -1,7 +1,7 @@
-# CZ2128 - Phase 4B-3 Complete / Frozen
+# CZ2128 - Phase 4B-4A Implemented / In Review
 
 ## 状态
-- **Current Branch**: `main`
+- **Current Branch**: `codex/phase4b4a-dlq-capture`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
@@ -21,7 +21,9 @@
 - **Phase 4B-2C-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
 - **Phase 4B-3**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-4**: NOT STARTED
+- **Phase 4B-4A**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-4B**: NOT STARTED
+- **Phase 4B-4 overall**: IN PROGRESS
 - **Phase 4B-5**: NOT STARTED
 - **Phase 4C**: NOT STARTED
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
@@ -63,7 +65,7 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4, 4B-5, Phase 4C, DLQ consumption/redrive, and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture and read-only inspection is IMPLEMENTED / IN REVIEW. Phase 4B-4B redrive, Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -104,8 +106,16 @@
 - Manual reconciliation, mark-delivered, cancel and deterministic manual-retry child operations are active through the frozen core services; the Admin layer does not perform direct reliability-state SQL mutations.
 - CREATE_TOPIC mark-delivered requires a bounded positive safe-integer provider/thread reference stored only in session state before final confirmation.
 - AI Reliability is read-only. No AI generation mutation control was added.
-- No Web Admin, public reliability API, new authentication system, migration `0006`, DLQ consumer/redrive, Durable Object or `CONFIRMED_NOT_SENT` activation was added.
-- Phase 4B-4, Phase 4B-5 and Phase 4C remain NOT STARTED.
+- No Web Admin, public reliability API, new authentication system, migration `0006`, Durable Object or `CONFIRMED_NOT_SENT` activation was added.
+
+## Phase 4B-4A DLQ Capture and Inspection
+- The same Worker consumes `cz2128-queue` and `cz2128-dlq`, discriminated only by `batch.queue`; the frozen main queue behavior is unchanged.
+- DLQ ingestion uses only `env.DB` and Cloudflare message metadata. It never calls normal event handling, runtime provider resolution, provider adapters, R2 or the main Queue producer.
+- Raw DLQ bodies remain in memory only. D1 stores deterministic hashed identities and bounded sanitized metadata through the existing `0005` schema.
+- Sanitized receipt upsert and any matching `event_receipts` dead-letter marker are one D1 batch. ACK occurs only after batch success; failure requests bounded retry.
+- Repeated logical events use one row with immutable `first_seen_at`, advancing `last_seen_at` and exact successful-delivery count. Canonical `PROCESSED` state maps the DLQ receipt to `RESOLVED` without reprocessing.
+- The existing authenticated private Admin Bot adds bounded, read-only DLQ summary, latest-ten list and detail views. Callback payloads contain only short tokens/indexes.
+- Phase 4B-4B explicit durable-state redrive is NOT STARTED. No redrive/replay/resend action exists in this phase.
 
 ### NON-BLOCKING TEST DEBT
 1. Add an explicit relative-order assertion for the recent uncertain-delivery list.

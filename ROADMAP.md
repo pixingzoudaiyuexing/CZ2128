@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A implemented and in review**
 
 ## Phase 0 — Architecture Freeze
 
@@ -154,7 +154,9 @@ Current status:
 - Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C overall: **COMPLETE / FROZEN**
 - Phase 4B-3 reliability control-plane exposure: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-4: **NOT STARTED**
+- Phase 4B-4A DLQ capture, sanitized receipt and Admin inspection: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-4B explicit durable-state redrive: **NOT STARTED**
+- Phase 4B-4 overall: **IN PROGRESS**
 - Phase 4B-5: **NOT STARTED**
 - Phase 4C: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
@@ -180,7 +182,9 @@ Phase 4B-2C-2 adds an internal explicit manual-retry service for `MESSAGE`, `ATT
 
 Phase 4B-2C-3 activates the durable AI state machine already provisioned by `0005`: three provider-boundary attempts, persisted retry deadlines, terminal exhaustion/final/handoff/stale states, generation-owned result CAS and lazy legacy `FAILED` normalization. A durable `SUCCESS` is reused for outbound continuation and explicit `AI_RUN` manual retry without regenerating text. Effective Chatwoot delivery repairs the AI message domain idempotently; Telegram mirror delivery remains context-neutral. Phase 4B-3, DLQ consumption, load/concurrency acceptance and production readiness remain outside this phase.
 
-Phase 4B-3 reuses the existing private Telegram Admin Bot to expose bounded reliability reads and confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through frozen core services. AI Reliability is read-only. No Web Admin, public API, new authentication system, migration `0006`, DLQ consumer/redrive, `CONFIRMED_NOT_SENT` activation or Durable Object was introduced. Phase 4B-4, 4B-5 and 4C remain NOT STARTED.
+Phase 4B-3 reuses the existing private Telegram Admin Bot to expose bounded reliability reads and confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through frozen core services. AI Reliability is read-only. No Web Admin, public API, new authentication system, migration `0006`, DLQ consumer/redrive, `CONFIRMED_NOT_SENT` activation or Durable Object was introduced in that phase.
+
+Phase 4B-4A adds provider-free DLQ receipt capture to the same Worker. `batch.queue` strictly separates `cz2128-queue` from `cz2128-dlq`; malformed and valid DLQ bodies are reduced in memory to bounded metadata and one deterministic hashed receipt identity. The existing `0005` tables record atomic duplicate counts and an optional canonical event dead-letter marker before ACK. The private Telegram Admin Bot exposes bounded read-only DLQ summary, latest-ten lists and detail inspection. Raw payload retention and all redrive/replay/resend actions remain prohibited. Phase 4B-4B, 4B-5 and 4C remain NOT STARTED.
 
 ## Phase 5 — Knowledge / RAG
 

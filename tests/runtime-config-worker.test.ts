@@ -23,13 +23,13 @@ describe('runtime config Worker boundary', () => {
       ack: vi.fn(), retry: vi.fn()
     });
 
-    await Worker.queue!({ messages: [message('1')] } as any, env, {} as any);
+    await Worker.queue!({ queue: 'cz2128-queue', messages: [message('1')] } as any, env, {} as any);
     expect(vi.mocked(consumer.handleQueueEvent).mock.calls[0][1]).toMatchObject({ AI_MODEL: 'model-v1' });
     expect(db.runtimeListReads).toBe(1);
 
     db.runtime[0].value_text = 'model-v2';
     db.runtime[0].version = 2;
-    await Worker.queue!({ messages: [message('2')] } as any, env, {} as any);
+    await Worker.queue!({ queue: 'cz2128-queue', messages: [message('2')] } as any, env, {} as any);
     expect(vi.mocked(consumer.handleQueueEvent).mock.calls[1][1]).toMatchObject({ AI_MODEL: 'model-v2' });
     expect(db.runtimeListReads).toBe(2);
   });

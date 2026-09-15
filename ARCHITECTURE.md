@@ -588,4 +588,14 @@ The Support Telegram profile is one encrypted atomic value containing token, web
 
 Phase 4B-3 is complete, merged and frozen. Reliability operations reuse the existing authenticated private Telegram Admin Bot; no Web Admin, public reliability API or new authentication system exists. Operation identity and action-specific confirmation state are held in expiring Admin sessions rather than callback payloads.
 
-Manual reconciliation, mark-delivered, cancel and duplicate-risk manual retry invoke the frozen reliability services. The Admin layer performs read queries but does not directly write reliability transitions, domain repair or AI durable state. AI Reliability is read-only. `CONFIRMED_NOT_SENT` remains inactive; DLQ consumption/redrive and Durable Objects remain absent. The migration set remains `0001` through `0005`.
+Manual reconciliation, mark-delivered, cancel and duplicate-risk manual retry invoke the frozen reliability services. The Admin layer performs read queries but does not directly write reliability transitions, domain repair or AI durable state. AI Reliability is read-only. `CONFIRMED_NOT_SENT`, DLQ handling and Durable Objects were outside Phase 4B-3. The migration set remains `0001` through `0005`.
+
+## 20. Phase 4B-4A DLQ Capture and Inspection
+
+The same Worker consumes `cz2128-queue` and `cz2128-dlq`, with routing determined only by Cloudflare's `batch.queue`. The main queue retains its frozen runtime configuration, normal handler, ACK and retry behavior. The DLQ path does not call `handleQueueEvent()`, resolve provider configuration, download R2 objects, enqueue messages or invoke Chatwoot, Telegram or AI adapters.
+
+The raw DLQ body exists only in memory while a bounded V1 envelope is inspected. A valid logical receipt ID is SHA-256 over a versioned canonical tuple of queue name, event source and event ID; malformed messages use the Cloudflare message ID as the hashed fallback. D1 stores only finite metadata in the existing `0005` `dlq_receipts` table. Repeated deliveries use one atomic upsert: `first_seen_at` is immutable, `last_seen_at` advances and `delivery_count` increments once for each successful durable capture.
+
+For a matching `event_receipts` row, the DLQ upsert and dead-letter marker update share one D1 batch without rewriting canonical processing status, attempt history, last error or processed time. An already `PROCESSED` event produces a `RESOLVED` DLQ receipt; all other captures remain `OPEN`. The Cloudflare message is ACKed only after this batch succeeds. Persistence failure requests a bounded retry and does not ACK.
+
+The authenticated private Telegram Admin Bot exposes bounded read-only DLQ summary, latest-ten list and detail views. Receipt identifiers are held in the existing expiring Admin session and callbacks use short indexes. No redrive, replay, resend or other provider-visible action is part of Phase 4B-4A. Phase 4B-4B remains NOT STARTED, and the migration set remains `0001` through `0005`.
