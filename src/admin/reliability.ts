@@ -254,7 +254,7 @@ export async function processReliabilityMessage(env: Env, bootstrap: AdminBootst
   }
   
   if (session.action === 'RELIABILITY_MARK_PROVIDER_REF') {
-    if (!text || !/^[1-9]\d{0,15}$/.test(text)) {
+    if (!text || !/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text)) || Number(text) <= 0) {
       await reply(bootstrap, ctx, 'Invalid provider ref format.');
       return 'RELIABILITY_MARK_PROV_REF_FAILED';
     }

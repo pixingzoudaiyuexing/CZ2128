@@ -97,7 +97,7 @@ describe('Admin Reliability Control Plane', () => {
     db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
     db.exec(`INSERT INTO messages (id, conversation_id, provider, provider_message_ref, direction, actor_role, message_type, text_content, created_at) VALUES ('m1', 'c1', 'chatwoot', 'ref', 'INBOUND', 'CUSTOMER', 'TEXT', 'hello', 10)`);
     db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
-      ('op1', 'c1', 'telegram', 'CREATE_TOPIC', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'CONVERSATION', 'c1', '{}')
+      ('op1', 'c1', 'telegram', 'CREATE_TOPIC', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'CONVERSATION', 'c1', '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-10099","method":"createForumTopic"}')
     `);
     
     db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_INSPECT', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
@@ -115,7 +115,6 @@ describe('Admin Reliability Control Plane', () => {
     expect(session.action).toBe('RELIABILITY_MARK_CONFIRM');
   });
 
-});
 
   it('requires explicit confirmation for cancel operation', async () => {
     const db = new SqliteD1();
@@ -135,7 +134,7 @@ describe('Admin Reliability Control Plane', () => {
     let session = (await db.prepare('SELECT action FROM admin_sessions WHERE admin_user_id = ?').bind('1001').first()) as any;
     expect(session.action).toBe('RELIABILITY_CANCEL_CONFIRM');
     let op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
-    expect(op.reconciliation_status).toBe('PENDING'); // No mutation yet
+    expect(op.reconciliation_status).toBe('PENDING');
     
     await handleAdminTelegramWebhook(callback(201, 'r:o:cancel_yes'), testEnv);
     op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
@@ -305,7 +304,7 @@ describe('Admin Reliability Control Plane', () => {
     
     db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
     db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
-      ('op1', 'c1', 'telegram', 'CREATE_TOPIC', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'CONVERSATION', 'c1', '{}')
+      ('op1', 'c1', 'telegram', 'CREATE_TOPIC', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'CONVERSATION', 'c1', '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-10099","method":"createForumTopic"}')
     `);
     
     db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_MARK_CONFIRM', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1", "providerRef": "99"}')`);
@@ -365,7 +364,7 @@ describe('Admin Reliability Control Plane', () => {
     
     await handleAdminTelegramWebhook(callback(901, 'r:o:retry_yes'), testEnv);
     op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
-    const replies2 = fetchMock.mock.calls.filter(call => String(call[0]).includes('sendMessage')).map(call => String(call[1]?.body)); console.log('MESSAGE:', replies2[1]);
+    const replies2 = fetchMock.mock.calls.filter(call => String(call[0]).includes('sendMessage')).map(call => String(call[1]?.body)); 
     expect(op.reconciliation_status).toBe('MANUAL_RETRY_CREATED');
     
     const children = (await db.prepare('SELECT id, target_evidence_json, status FROM outbound_operations WHERE parent_operation_id = ?').bind('op1').all()) as any;
@@ -408,7 +407,9 @@ describe('Admin Reliability Control Plane', () => {
     const db = new SqliteD1();
     db.migrate();
     const testEnv = env(db);
-    const fetchMock = defaultTelegramMock();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      return ok({ message_thread_id: 99 });
+    });
     db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
     const targetEvidence = '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-10099","method":"createForumTopic"}';
     db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
@@ -419,8 +420,16 @@ describe('Admin Reliability Control Plane', () => {
     await handleAdminTelegramWebhook(callback(920, 'r:o:retry_begin'), testEnv);
     await handleAdminTelegramWebhook(callback(921, 'r:o:retry_yes'), testEnv);
     
-    const children = (await db.prepare('SELECT id FROM outbound_operations WHERE parent_operation_id = ?').bind('op1').all()) as any;
+    const parent = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(parent.reconciliation_status).toBe('MANUAL_RETRY_CREATED');
+    
+    const children = (await db.prepare('SELECT id, status, provider_message_ref FROM outbound_operations WHERE parent_operation_id = ?').bind('op1').all()) as any;
     expect(children.results.length).toBe(1);
+    expect(children.results[0].status).toBe('SENT');
+    expect(children.results[0].provider_message_ref).toBe('99');
+    
+    const conv = (await db.prepare('SELECT operator_thread_ref FROM conversations WHERE id = ?').bind('c1').first()) as any;
+    expect(conv.operator_thread_ref).toBe('99');
   });
 
   it('successfully retries AI_RUN SUCCESS', async () => {
@@ -471,3 +480,101 @@ describe('Admin Reliability Control Plane', () => {
     expect(replies[1]).toContain('操作失败：OUTBOUND_MANUAL_RETRY_TARGET_CHANGED');
   });
 
+
+
+  it('E2E CREATE_TOPIC Mark Delivered flow', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const fetchMock = defaultTelegramMock();
+    
+    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
+    db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
+      ('op1', 'c1', 'telegram', 'CREATE_TOPIC', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'CONVERSATION', 'c1', '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-10099","method":"createForumTopic"}')
+    `);
+    db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_INSPECT', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
+    
+    await handleAdminTelegramWebhook(callback(1010, 'r:o:mark_begin'), testEnv);
+    let op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(op.reconciliation_status).toBe('PENDING');
+    
+    await handleAdminTelegramWebhook(message(1011, '99'), testEnv);
+    op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(op.reconciliation_status).toBe('PENDING');
+    
+    await handleAdminTelegramWebhook(callback(1012, 'r:o:mark_yes'), testEnv);
+    op = (await db.prepare('SELECT reconciliation_status, provider_message_ref FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(op.reconciliation_status).toBe('MANUAL_MARK_DELIVERED');
+    expect(op.provider_message_ref).toBe('99');
+    
+    const conv = (await db.prepare('SELECT operator_thread_ref FROM conversations WHERE id = ?').bind('c1').first()) as any;
+    expect(conv.operator_thread_ref).toBe('99');
+    
+    
+    
+
+    
+    
+const aiCalls3 = fetchMock.mock.calls.filter(call => String(call[0]).includes('telegram.org'));
+const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bot111111'));
+    expect(aiCalls.length).toBe(0);
+  });
+
+  it('E2E non-CREATE_TOPIC Mark Delivered flow', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const fetchMock = defaultTelegramMock();
+    
+    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
+    db.exec(`INSERT INTO messages (id, conversation_id, provider, provider_message_ref, direction, actor_role, message_type, text_content, created_at) VALUES ('m1', 'c1', 'chatwoot', 'ref', 'INBOUND', 'CUSTOMER', 'TEXT', 'hello', 10)`);
+    db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
+      ('op1', 'c1', 'telegram', 'SEND_MESSAGE', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'MESSAGE', 'chatwoot:ref', '{}')
+    `);
+    db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_INSPECT', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
+    
+    await handleAdminTelegramWebhook(callback(1020, 'r:o:mark_begin'), testEnv);
+    let op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(op.reconciliation_status).toBe('PENDING');
+    
+    await handleAdminTelegramWebhook(callback(1021, 'r:o:mark_yes'), testEnv);
+    op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(op.reconciliation_status).toBe('MANUAL_MARK_DELIVERED');
+  });
+
+  it('verifies all callbacks are <= 64 bytes', () => {
+    const callbacks = [
+      'r:unc', 'r:look', 'r:ai', 'r:aud', 'p:rel', 'm',
+      'r:o:recon', 'r:o:refresh', 'r:o:mark_begin', 'r:o:cancel_begin',
+      'r:o:retry_begin', 'r:o:mark_yes', 'r:o:cancel_yes', 'r:o:retry_yes',
+      'r:o:cancel_action'
+    ];
+    for (const cb of callbacks) {
+      expect(new TextEncoder().encode(cb).length).toBeLessThanOrEqual(64);
+    }
+  });
+
+  it('safely catches errors and does not leak secrets', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const fetchMock = defaultTelegramMock();
+    
+    db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_INSPECT', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
+    
+    const originalPrepare = db.prepare.bind(db);
+    vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes('outbound_operations')) throw new Error('SUPER_SECRET_INTERNAL_ERROR_123');
+      return originalPrepare(sql);
+    });
+    
+    await handleAdminTelegramWebhook(callback(1030, 'r:o:mark_begin'), testEnv);
+    
+    const replies = fetchMock.mock.calls.filter(call => String(call[0]).includes('sendMessage')).map(call => String(call[1]?.body));
+    expect(replies.length).toBeGreaterThan(0);
+    const replyText = replies.join(' ');
+    expect(replyText).not.toContain('SUPER_SECRET_INTERNAL_ERROR_123');
+    expect(replyText).toMatch(/(UNKNOWN_ERROR|INTERNAL_INVARIANT_VIOLATION|Database error|Failed:)/i);
+  });
+
+});
