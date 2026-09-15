@@ -1,4 +1,4 @@
-# CZ2128 - Phase 4B-2C Complete / Frozen
+# CZ2128 - Phase 4B-3 Complete / Frozen
 
 ## 状态
 - **Current Branch**: `main`
@@ -10,6 +10,7 @@
 - **PR #4**: merged; Phase 3.5 complete and frozen
 - **PR #9**: merged; Phase 4B-2C-2 complete and frozen
 - **PR #10**: merged; Phase 4B-2C-3 complete and frozen
+- **PR #11**: merged; Phase 4B-3 complete and frozen
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
@@ -19,7 +20,7 @@
 - **Phase 4B-2C-2**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
-- **Phase 4B-3**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-4**: NOT STARTED
 - **Phase 4B-5**: NOT STARTED
 - **Phase 4C**: NOT STARTED
@@ -62,7 +63,7 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is IMPLEMENTED / IN REVIEW. Phase 4B-4, 4B-5, Phase 4C, DLQ consumption, and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4, 4B-5, Phase 4C, DLQ consumption/redrive, and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -97,3 +98,17 @@
 - The Cloudflare R2 account is enabled, but real R2 staging remains incomplete and bucket/lifecycle validation is pending.
 - Real Admin Bot, Support Bot rotation, Telegram group migration, Telegram provider, Chatwoot and Queue/D1 concurrency validation remain NOT TESTED.
 - Phase 4B-2C-3 adds no `0006`, Admin reliability UI/commands, DLQ consumer, `CONFIRMED_NOT_SENT` activation or Durable Objects. Production provider/load validation remains NOT TESTED.
+
+## Phase 4B-3 Reliability Control Plane
+- Reuses the separate private Telegram Admin Bot, exact administrator allowlist, secret webhook path/token, update-receipt idempotency and expiring Admin sessions.
+- Manual reconciliation, mark-delivered, cancel and deterministic manual-retry child operations are active through the frozen core services; the Admin layer does not perform direct reliability-state SQL mutations.
+- CREATE_TOPIC mark-delivered requires a bounded positive safe-integer provider/thread reference stored only in session state before final confirmation.
+- AI Reliability is read-only. No AI generation mutation control was added.
+- No Web Admin, public reliability API, new authentication system, migration `0006`, DLQ consumer/redrive, Durable Object or `CONFIRMED_NOT_SENT` activation was added.
+- Phase 4B-4, Phase 4B-5 and Phase 4C remain NOT STARTED.
+
+### NON-BLOCKING TEST DEBT
+1. Add an explicit relative-order assertion for the recent uncertain-delivery list.
+2. Add explicit `child.status == SENT` assertions in the dedicated MESSAGE and ATTACHMENT Admin manual-retry success tests.
+
+These optional test-strength improvements are not runtime defects and are not Phase 4B-4 requirements.

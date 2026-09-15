@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 is complete, frozen and merged; Phase 4B-3 is IMPLEMENTED / IN REVIEW. Phase 4B-4, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and Phase 4B-3 are complete, frozen and merged. Phase 4B-4, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -19,7 +19,14 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - Target drift blocks child creation. Chatwoot children use a new child-scoped `source_id`; Telegram group, thread, method and runtime generation must remain compatible.
 - Effective delivery repairs attachment/topic domain state through idempotent D1 CAS without another provider action.
 - Telegram topic repair additionally requires the operation's persisted group identity to match the current effective `BOT_GROUP_ID`, preventing old-group topic references from returning after support-group migration.
-- No Admin endpoint/command exposes this service yet. DLQ consumption and reliability UI remain later phases.
+- The private Telegram Admin Bot exposes confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through the frozen core services. DLQ consumption/redrive remains a later phase.
+
+## Reliability Control Plane
+- Phase 4B-3 is complete, merged and frozen.
+- The existing private Telegram Admin Bot and authorization/session/idempotency boundaries are reused; there is no Web Admin, public reliability API or new authentication system.
+- Reliability summary, uncertain operations, operation details, audit and AI Reliability are bounded administrative reads. AI Reliability is read-only.
+- Manual reconciliation, mark-delivered, cancel and duplicate-risk manual retry are active. Operation identity and CREATE_TOPIC provider references remain in expiring Admin session state rather than callback payloads.
+- `CONFIRMED_NOT_SENT` is inactive. DLQ consumption/redrive, Durable Objects and migration `0006` are absent.
 
 ## Setup
 - `npm ci`

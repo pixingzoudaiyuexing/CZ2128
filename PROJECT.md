@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged**
 
 ## Purpose
 
@@ -85,7 +85,7 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 - Phase 4B-2C-2 — Manual retry child operations and domain resolution: **COMPLETE / FROZEN**.
 - Phase 4B-2C-3 — AI durable retry state machine and legacy `FAILED` retirement: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-2C overall: **COMPLETE / FROZEN**.
-- Phase 4B-3 reliability UI/control-plane exposure: **IMPLEMENTED / IN REVIEW**.
+- Phase 4B-3 reliability UI/control-plane exposure: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-4: **NOT STARTED**
 - Phase 4B-5: **NOT STARTED**
 - Phase 4C: **NOT STARTED**.
@@ -93,3 +93,5 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 Phase 4B-2C-2 uses the existing `0005` parent linkage and reconciliation state. An explicit operator decision creates one deterministic child operation, preserves the parent's historical ambiguity, reconstructs supported message/attachment/conversation payloads from durable state, blocks target drift, and applies idempotent attachment/topic domain repair after effective delivery. It adds no `0006`, Admin UI or command, DLQ consumption, `CONFIRMED_NOT_SENT` activation or AI durable-state behavior.
 
 Phase 4B-2C-3 activates the existing `0005` AI columns without adding `0006`. Generation attempts are capped at three and counted only immediately before the provider boundary. Retryable failures persist `next_retry_at`; exhaustion, final errors, handoff cancellation and stale-generation discard are terminal. Legacy `FAILED` remains schema-readable for rolling deploys but is no longer emitted by new runtime code. Successful AI results are reused for outbound recovery and explicit `AI_RUN` manual retry, while effective Chatwoot delivery repairs exactly one durable AI context message.
+
+Phase 4B-3 reuses the authenticated private Telegram Admin Bot and its existing allowlist, webhook-secret, update-receipt and expiring-session boundaries. It exposes manual reconciliation, mark-delivered, cancel and deterministic manual-retry child operations only through frozen core services. AI Reliability remains read-only. No Web Admin, public reliability API, new authentication system, migration `0006`, DLQ consumer/redrive, Durable Object or `CONFIRMED_NOT_SENT` activation was added.
