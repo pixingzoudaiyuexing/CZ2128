@@ -31,6 +31,7 @@ import {
 } from './telegram';
 import { AdminBootstrap, AdminContext } from './types';
 import { reply, showMain, showPage } from './ui';
+import { processReliabilityCallback, processReliabilityMessage, showReliabilityMain } from './reliability';
 import { safeErrorCode } from '../core/errors';
 
 function adminBootstrap(env: Env): AdminBootstrap | null {
@@ -341,11 +342,12 @@ async function processCallback(
     try { await answerAdminCallback(bootstrap.token, ctx.callbackId); } catch { /* mutation remains authoritative */ }
   }
   if (data === 'm') { await showMain(bootstrap, ctx); return 'MAIN'; }
-  if (/^p:(ai|air|tg|cw|cwr|att|attr|sys|hist)$/.test(data)) {
+  if (/^p:(ai|air|tg|cw|cwr|att|attr|sys|hist|rel)$/.test(data)) {
     const page = data.slice(2);
     await showPage(env, bootstrap, ctx, page);
     return `PAGE_${page.toUpperCase()}`;
   }
+  if (data.startsWith('r:')) return await processReliabilityCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3));
@@ -381,6 +383,7 @@ async function processMessage(
   if (session.action === 'SET') return processSetInput(env, bootstrap, ctx, session);
   if (session.action === 'ROTATE_BOT') return processBotToken(env, bootstrap, ctx, session.expected_version);
   if (session.action === 'MIGRATE_GROUP') return processGroupInput(env, bootstrap, ctx, session.expected_version);
+  if (session.action.startsWith('RELIABILITY_')) return await processReliabilityMessage(env, bootstrap, ctx, session);
   throw new Error('CONFIRMATION_REQUIRED');
 }
 

@@ -153,7 +153,10 @@ Current status:
 - Phase 4B-2C-2 Manual Retry Child Operations + Domain Resolution: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C overall: **COMPLETE / FROZEN**
-- Phase 4B-3 reliability control-plane exposure: **NOT STARTED**
+- Phase 4B-3 reliability control-plane exposure: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-4: **NOT STARTED**
+- Phase 4B-5: **NOT STARTED**
+- Phase 4C: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
 Scope:
