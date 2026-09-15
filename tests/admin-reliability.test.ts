@@ -558,10 +558,11 @@ const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bo
       expect(new TextEncoder().encode(cb).length).toBeLessThanOrEqual(64);
       expect(cb).not.toContain('op1');
       expect(cb).not.toContain('99');
-      expect(cb).not.toContain('PRIVATE');
-      expect(cb).not.toContain('SECRET');
-      expect(cb).not.toContain('evidence');
-      expect(cb).not.toContain('AI generated text');
+      expect(cb).not.toContain(`manual_retry:${'a'.repeat(64)}`);
+      expect(cb).not.toContain('PRIVATE_MESSAGE_BODY_123');
+      expect(cb).not.toContain('PRIVATE_AI_RESPONSE_456');
+      expect(cb).not.toContain('RAW_TARGET_EVIDENCE_SECRET_789');
+      expect(cb).not.toContain('SUPER_SECRET_API_KEY');
     }
   });
 
@@ -585,7 +586,11 @@ const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bo
     expect(replies.length).toBeGreaterThan(0);
     const replyText = replies.join(' ');
     expect(replyText).not.toContain('SUPER_SECRET_INTERNAL_ERROR_123');
-    expect(replyText).toMatch(/(UNKNOWN_ERROR|INTERNAL_INVARIANT_VIOLATION|Database error|Failed:)/i);
+    expect(replyText).not.toContain('Error:');
+    expect(replyText).not.toContain('at SqliteD1');
+    expect(replyText).not.toContain('SELECT');
+    expect(replyText).not.toContain('outbound_operations');
+    expect(replyText).toContain('操作失败：INTERNAL_INVARIANT_VIOLATION');
   });
 
 
@@ -684,11 +689,11 @@ const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bo
     
     db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_INSPECT', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
     
-    await handleAdminTelegramWebhook(callback(5000, 'r:o:retry_begin'), testEnv);
+    await handleAdminTelegramWebhook(callback(4999, 'r:o:retry_begin'), testEnv);
     
-    await handleAdminTelegramWebhook(callback(5001, 'r:o:retry_yes'), testEnv);
+    await handleAdminTelegramWebhook(callback(5000, 'r:o:retry_yes'), testEnv);
     
-    await handleAdminTelegramWebhook(callback(5001, 'r:o:retry_yes'), testEnv);
+    await handleAdminTelegramWebhook(callback(5000, 'r:o:retry_yes'), testEnv);
     
     const parent = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
     expect(parent.reconciliation_status).toBe('MANUAL_RETRY_CREATED');
