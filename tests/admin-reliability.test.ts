@@ -65,8 +65,8 @@ describe('Admin Reliability Control Plane', () => {
     const fetchMock = defaultTelegramMock();
     
     // Unresolved
-    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
-    db.exec(`INSERT INTO messages (id, conversation_id, provider, provider_message_ref, direction, actor_role, message_type, text_content, created_at) VALUES ('m1', 'c1', 'chatwoot', 'ref', 'INBOUND', 'CUSTOMER', 'TEXT', 'hello', 10)`);
+    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_ref, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', '99', 'OPEN', 1, 1, 1, 1, 1)`);
+    db.exec(`INSERT INTO messages (id, conversation_id, provider, provider_message_ref, direction, actor_role, message_type, text_content, created_at) VALUES ('ref', 'c1', 'chatwoot', 'ref', 'INBOUND', 'CUSTOMER', 'TEXT', 'hello', 10)`);
     db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count) VALUES 
       ('op1', 'c1', 'telegram', 'SEND_MESSAGE', 'AMBIGUOUS', 'PENDING', 10, 10, 0),
       ('op2', 'c1', 'telegram', 'SEND_MESSAGE', 'AMBIGUOUS', 'STILL_AMBIGUOUS', 20, 20, 0),
@@ -450,11 +450,16 @@ describe('Admin Reliability Control Plane', () => {
     await handleAdminTelegramWebhook(callback(930, 'r:o:retry_begin'), testEnv);
     await handleAdminTelegramWebhook(callback(931, 'r:o:retry_yes'), testEnv);
     
-    const children = (await db.prepare('SELECT id FROM outbound_operations WHERE parent_operation_id = ?').bind('op1').all()) as any;
+    const children = (await db.prepare('SELECT id, status FROM outbound_operations WHERE parent_operation_id = ?').bind('op1').all()) as any;
     expect(children.results.length).toBe(1);
+    expect(children.results[0].status).toBe('SENT');
     
     const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('ai.example'));
     expect(aiCalls.length).toBe(0);
+
+    const providerCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bot111111') && String(call[0]).includes('sendMessage'));
+    expect(providerCalls.length).toBe(1);
+    expect(String(providerCalls[0][1]?.body)).toContain('AI generated text');
   });
 
   it('rejects manual retry if target drift occurs', async () => {
@@ -551,6 +556,12 @@ const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bo
     ];
     for (const cb of callbacks) {
       expect(new TextEncoder().encode(cb).length).toBeLessThanOrEqual(64);
+      expect(cb).not.toContain('op1');
+      expect(cb).not.toContain('99');
+      expect(cb).not.toContain('PRIVATE');
+      expect(cb).not.toContain('SECRET');
+      expect(cb).not.toContain('evidence');
+      expect(cb).not.toContain('AI generated text');
     }
   });
 
@@ -622,6 +633,72 @@ const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bo
     expect(fullText).not.toContain('PRIVATE_MESSAGE_BODY_123');
     expect(fullText).not.toContain('PRIVATE_AI_RESPONSE_456');
     expect(fullText).not.toContain('RAW_TARGET_EVIDENCE_SECRET_789');
+  });
+
+
+  it('enforces strict boundary for CREATE_TOPIC provider ref input', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const fetchMock = defaultTelegramMock();
+    
+    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
+    db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
+      ('op1', 'c1', 'telegram', 'CREATE_TOPIC', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'CONVERSATION', 'c1', '{}')
+    `);
+    
+    const rejects = ['0', '-1', '1.5', '1e5', 'abc', '9007199254740992', '9999999999999999'];
+    for (let i = 0; i < rejects.length; i++) {
+      db.exec(`INSERT OR REPLACE INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_MARK_PROVIDER_REF', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
+      await handleAdminTelegramWebhook(message(3000 + i, rejects[i]), testEnv);
+      const session = (await db.prepare('SELECT action FROM admin_sessions WHERE admin_user_id = ?').bind('1001').first()) as any;
+      expect(session.action).not.toBe('RELIABILITY_MARK_CONFIRM');
+      const op = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+      expect(op.reconciliation_status).toBe('PENDING');
+    }
+    
+    const accepts = ['1', '99', '123456789', '9007199254740991'];
+    for (let i = 0; i < accepts.length; i++) {
+      db.exec(`INSERT OR REPLACE INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_MARK_PROVIDER_REF', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
+      await handleAdminTelegramWebhook(message(4000 + i, accepts[i]), testEnv);
+      const session = (await db.prepare('SELECT action FROM admin_sessions WHERE admin_user_id = ?').bind('1001').first()) as any;
+      expect(session.action).toBe('RELIABILITY_MARK_CONFIRM');
+    }
+    
+    const providerCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bot111111'));
+    expect(providerCalls.length).toBe(0);
+  });
+
+  it('successfully retries and idempotently handles duplicate admin update', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const fetchMock = defaultTelegramMock();
+    
+    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_ref, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'a', 'a', 'a', 'telegram', '99', 'OPEN', 1, 1, 1, 1, 1)`);
+    db.exec(`INSERT INTO messages (id, conversation_id, provider, provider_message_ref, direction, actor_role, message_type, text_content, created_at) VALUES ('m1', 'c1', 'chatwoot', 'ref', 'INBOUND', 'CUSTOMER', 'TEXT', 'hello', 10)`);
+    const targetEvidence = '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-10099","threadRef":"99","method":"sendMessage"}';
+    db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
+      ('op1', 'c1', 'telegram', 'SEND_MESSAGE', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'MESSAGE', 'chatwoot:ref', '${targetEvidence}')
+    `);
+    
+    db.exec(`INSERT INTO admin_sessions (admin_user_id, action, target, expected_version, expires_at, updated_at, context_json) VALUES ('1001', 'RELIABILITY_INSPECT', 'OPERATION', 0, 9999999999, 0, '{"operationId": "op1"}')`);
+    
+    await handleAdminTelegramWebhook(callback(5000, 'r:o:retry_begin'), testEnv);
+    
+    await handleAdminTelegramWebhook(callback(5001, 'r:o:retry_yes'), testEnv);
+    
+    await handleAdminTelegramWebhook(callback(5001, 'r:o:retry_yes'), testEnv);
+    
+    const parent = (await db.prepare('SELECT reconciliation_status FROM outbound_operations WHERE id = ?').bind('op1').first()) as any;
+    expect(parent.reconciliation_status).toBe('MANUAL_RETRY_CREATED');
+    
+    const children = (await db.prepare('SELECT id, status FROM outbound_operations WHERE parent_operation_id = ?').bind('op1').all()) as any;
+    expect(children.results.length).toBe(1);
+    expect(children.results[0].status).toBe('SENT');
+    
+    const providerCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bot111111') && String(call[0]).includes('sendMessage'));
+    expect(providerCalls.length).toBe(1);
   });
 
 });
