@@ -577,4 +577,51 @@ const aiCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('bo
     expect(replyText).toMatch(/(UNKNOWN_ERROR|INTERNAL_INVARIANT_VIOLATION|Database error|Failed:)/i);
   });
 
+
+  it('safely renders all control plane views without leaking privacy sentinels', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const fetchMock = defaultTelegramMock();
+    
+    // Seed conversations
+    db.exec(`INSERT INTO conversations (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref, operator_channel, operator_thread_status, ai_handoff_epoch, last_telegram_operator_profile_version, created_at, updated_at, version) VALUES ('c1', 'a', 'SUPER_SECRET_API_KEY', 'a', 'a', 'telegram', 'OPEN', 1, 1, 1, 1, 1)`);
+    
+    // Seed messages
+    db.exec(`INSERT INTO messages (id, conversation_id, provider, provider_message_ref, direction, actor_role, message_type, text_content, created_at) VALUES ('m1', 'c1', 'chatwoot', 'ref', 'INBOUND', 'CUSTOMER', 'TEXT', 'PRIVATE_MESSAGE_BODY_123', 10)`);
+    
+    // Seed outbound_operations
+    db.exec(`INSERT INTO outbound_operations (id, conversation_id, destination_provider, operation_type, status, reconciliation_status, created_at, updated_at, attempt_count, subject_type, subject_ref, target_evidence_json) VALUES 
+      ('op1', 'c1', 'telegram', 'SEND_MESSAGE', 'AMBIGUOUS', 'PENDING', 10, 10, 0, 'MESSAGE', 'chatwoot:ref', '{"secret":"RAW_TARGET_EVIDENCE_SECRET_789"}')
+    `);
+    
+    // Seed ai_runs
+    db.exec(`INSERT INTO ai_runs (trigger_event_ref, conversation_id, trigger_message_ref, handoff_epoch, status, attempt_count, response_text, created_at, updated_at, last_error) VALUES 
+      ('evt1', 'c1', 'msg1', 1, 'FAILED_RETRYABLE', 1, 'PRIVATE_AI_RESPONSE_456', 10, 10, 'SAFE_ERROR_CODE_NOT_SECRET')
+    `);
+    
+    // Seed reliability_audit
+    db.exec(`INSERT INTO reliability_audit (id, entity_type, entity_id, action, actor_type, actor_ref, old_state, new_state, reason_code, created_at) VALUES 
+      ('aud1', 'OUTBOUND_OPERATION', 'op1', 'DOMAIN_STATE_RESOLVED', 'SYSTEM', 'sys', 'PENDING', 'DELIVERED', 'REASON', 10)
+    `);
+    
+    // Trigger callbacks
+    await handleAdminTelegramWebhook(callback(2001, 'p:rel'), testEnv);
+    await handleAdminTelegramWebhook(callback(2002, 'r:unc'), testEnv);
+    await handleAdminTelegramWebhook(callback(2003, 'r:ai'), testEnv);
+    await handleAdminTelegramWebhook(callback(2004, 'r:aud'), testEnv);
+    
+    // Trigger lookup
+    await handleAdminTelegramWebhook(callback(2005, 'r:look'), testEnv);
+    await handleAdminTelegramWebhook(message(2006, 'op1'), testEnv);
+    
+    const replies = fetchMock.mock.calls.filter(call => String(call[0]).includes('bot111111') === false).map(call => String(call[1]?.body));
+    const fullText = replies.join(' ');
+    
+    expect(fullText).not.toContain('SUPER_SECRET_API_KEY');
+    expect(fullText).not.toContain('PRIVATE_MESSAGE_BODY_123');
+    expect(fullText).not.toContain('PRIVATE_AI_RESPONSE_456');
+    expect(fullText).not.toContain('RAW_TARGET_EVIDENCE_SECRET_789');
+  });
+
 });
