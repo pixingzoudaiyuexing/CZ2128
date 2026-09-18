@@ -14,6 +14,7 @@ import { handleAdminTelegramWebhook } from './admin/handler';
 import { resolveEffectiveEnv } from './runtime-config/resolver';
 import { boundedQueueRetryDelay } from './core/retry';
 import { captureDlqMessage } from './queue/dlq-consumer';
+import { persistDlqQuarantine } from './queue/dlq-quarantine';
 
 const MAIN_QUEUE_NAME = 'cz2128-queue';
 const DLQ_QUEUE_NAME = 'cz2128-dlq';
@@ -244,9 +245,22 @@ export default {
         try {
           await captureDlqMessage(env, message, undefined, batch.queue);
           message.ack();
-        } catch (error) {
-          logger.error('Failed to persist sanitized DLQ receipt', error, { source: batch.queue });
-          message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });
+        } catch {
+          try {
+            const quarantined = await persistDlqQuarantine(env.DLQ_QUARANTINE, message, batch.queue);
+            logger.warn('Sanitized DLQ receipt persisted to terminal quarantine', {
+              source: batch.queue,
+              operation_id: quarantined.quarantineId,
+              error_code: 'D1_WRITE_FAILED'
+            });
+            message.ack();
+          } catch (error) {
+            logger.error('DLQ receipt and terminal quarantine persistence failed', error, {
+              source: batch.queue,
+              error_code: 'D1_WRITE_FAILED'
+            });
+            message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });
+          }
         }
       }
       return;

@@ -1,4 +1,4 @@
-# CZ2128 - Phase 4B-4A Implemented / In Review
+# CZ2128 - Phase 4B-4A Hardening Implemented / In Review / Not Accepted
 
 ## 状态
 - **Current Branch**: `codex/phase4b4a-dlq-capture`
@@ -21,7 +21,7 @@
 - **Phase 4B-2C-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
 - **Phase 4B-3**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-4A**: IMPLEMENTED / IN REVIEW
+- **Phase 4B-4A**: HARDENING IMPLEMENTED / IN REVIEW / NOT ACCEPTED
 - **Phase 4B-4B**: NOT STARTED
 - **Phase 4B-4 overall**: IN PROGRESS
 - **Phase 4B-5**: NOT STARTED
@@ -110,11 +110,12 @@
 
 ## Phase 4B-4A DLQ Capture and Inspection
 - The same Worker consumes `cz2128-queue` and `cz2128-dlq`, discriminated only by `batch.queue`; the frozen main queue behavior is unchanged.
-- DLQ ingestion uses only `env.DB` and Cloudflare message metadata. It never calls normal event handling, runtime provider resolution, provider adapters, R2 or the main Queue producer.
-- Raw DLQ bodies remain in memory only. D1 stores deterministic hashed identities and bounded sanitized metadata through the existing `0005` schema.
-- Sanitized receipt upsert and any matching `event_receipts` dead-letter marker are one D1 batch. ACK occurs only after batch success; failure requests bounded retry.
-- Repeated logical events use one row with immutable `first_seen_at`, advancing `last_seen_at` and exact successful-delivery count. Canonical `PROCESSED` state maps the DLQ receipt to `RESOLVED` without reprocessing.
-- The existing authenticated private Admin Bot adds bounded, read-only DLQ summary, latest-ten list and detail views. Callback payloads contain only short tokens/indexes.
+- D1 is canonical. Raw DLQ bodies remain in memory only; D1 stores deterministic hashed identities and bounded sanitized metadata through the existing `0005` schema.
+- If D1 capture fails, the dedicated private `DLQ_QUARANTINE` R2 bucket stores one deterministic allowlisted terminal evidence object. It is not a replay source or canonical state.
+- ACK occurs only after D1 or quarantine persistence succeeds. If both fail, Queue retry remains required; simultaneous persistent D1/R2 failure plus retry exhaustion remains a residual loss risk.
+- Capture-side SQL and canonical completion-side metadata updates converge PROCESSED/RESOLVED in either commit order. OPEN may become RESOLVED; RESOLVED never regresses.
+- The private Admin Bot adds bounded read-only D1 receipt and validated R2 custom-metadata views; it never reads quarantine object bodies.
+- Real local Wrangler/workerd D1 tests execute two complete concurrent capture calls. They do not prove production multi-region scheduling, load limits or simultaneous platform availability.
 - Phase 4B-4B explicit durable-state redrive is NOT STARTED. No redrive/replay/resend action exists in this phase.
 
 ### NON-BLOCKING TEST DEBT

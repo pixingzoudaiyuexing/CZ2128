@@ -3,6 +3,7 @@ import Worker from '../src/index';
 import { RetryableProcessingError } from '../src/core/errors';
 import * as consumer from '../src/queue/consumer';
 import * as dlqConsumer from '../src/queue/dlq-consumer';
+import * as dlqQuarantine from '../src/queue/dlq-quarantine';
 
 vi.mock('../src/queue/consumer', () => ({
   handleQueueEvent: vi.fn(async (event: any) => {
@@ -12,6 +13,10 @@ vi.mock('../src/queue/consumer', () => ({
 
 vi.mock('../src/queue/dlq-consumer', () => ({
   captureDlqMessage: vi.fn(async () => ({ id: 'dlq:v1:test' }))
+}));
+
+vi.mock('../src/queue/dlq-quarantine', () => ({
+  persistDlqQuarantine: vi.fn(async () => ({ quarantineId: 'dlq-quarantine:v1:test' }))
 }));
 
 class MockQueue {
@@ -45,13 +50,17 @@ describe('Worker Integration', () => {
       if (event.type === 'error_trigger') throw new Error('Simulated failure');
     });
     vi.mocked(dlqConsumer.captureDlqMessage).mockResolvedValue({ id: 'dlq:v1:test' } as any);
+    vi.mocked(dlqQuarantine.persistDlqQuarantine).mockResolvedValue({
+      quarantineId: 'dlq-quarantine:v1:test'
+    } as any);
     env = {
       DB: new MockD1(),
       QUEUE: new MockQueue(),
       CHATWOOT_WEBHOOK_SECRET: 'secret',
       TELEGRAM_WEBHOOK_SECRET: 'tg-secret',
       TELEGRAM_SECRET_PATH: 'my-path',
-      BOT_GROUP_ID: '-100'
+      BOT_GROUP_ID: '-100',
+      DLQ_QUARANTINE: {}
     };
     ctx = {};
   });
@@ -375,20 +384,40 @@ describe('Worker Integration', () => {
     expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
     expect(message.ack).toHaveBeenCalledTimes(1);
     expect(message.retry).not.toHaveBeenCalled();
+    expect(dlqQuarantine.persistDlqQuarantine).not.toHaveBeenCalled();
     expect(vi.mocked(dlqConsumer.captureDlqMessage).mock.invocationCallOrder[0])
       .toBeLessThan(message.ack.mock.invocationCallOrder[0]);
   });
 
-  it('does not ACK when DLQ receipt persistence fails and requests bounded retry', async () => {
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  it('ACKs after sanitized quarantine persistence when D1 receipt persistence fails', async () => {
+    const warnLog = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(dlqConsumer.captureDlqMessage).mockRejectedValueOnce(new Error('SUPER_SECRET_DLQ_TOKEN_456'));
     const message = { id: 'dlq-fail', body: {}, ack: vi.fn(), retry: vi.fn() };
     if (Worker.queue) await Worker.queue({ queue: 'cz2128-dlq', messages: [message] } as any, env, ctx);
+    expect(dlqQuarantine.persistDlqQuarantine).toHaveBeenCalledWith(
+      env.DLQ_QUARANTINE,
+      message,
+      'cz2128-dlq'
+    );
+    expect(message.ack).toHaveBeenCalledTimes(1);
+    expect(message.retry).not.toHaveBeenCalled();
+    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+    expect(warnLog.mock.calls.flat().join(' ')).not.toContain('SUPER_SECRET_DLQ_TOKEN_456');
+    warnLog.mockRestore();
+  });
+
+  it('does not ACK and requests bounded retry when D1 and quarantine persistence both fail', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(dlqConsumer.captureDlqMessage).mockRejectedValueOnce(new Error('PRIVATE_D1_FAILURE'));
+    vi.mocked(dlqQuarantine.persistDlqQuarantine).mockRejectedValueOnce(new Error('SUPER_SECRET_DLQ_TOKEN_456'));
+    const message = { id: 'dlq-dual-fail', body: {}, ack: vi.fn(), retry: vi.fn() };
+    if (Worker.queue) await Worker.queue({ queue: 'cz2128-dlq', messages: [message] } as any, env, ctx);
     expect(message.ack).not.toHaveBeenCalled();
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
-    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
     expect(errorLog).toHaveBeenCalledTimes(1);
-    expect(errorLog.mock.calls.flat().join(' ')).not.toContain('SUPER_SECRET_DLQ_TOKEN_456');
+    const logs = errorLog.mock.calls.flat().join(' ');
+    expect(logs).not.toContain('PRIVATE_D1_FAILURE');
+    expect(logs).not.toContain('SUPER_SECRET_DLQ_TOKEN_456');
     errorLog.mockRestore();
   });
 
@@ -399,6 +428,7 @@ describe('Worker Integration', () => {
     if (Worker.queue) await Worker.queue({ queue: 'unexpected-queue', messages: [message] } as any, env, ctx);
     expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
     expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+    expect(dlqQuarantine.persistDlqQuarantine).not.toHaveBeenCalled();
     expect(message.ack).not.toHaveBeenCalled();
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
   });

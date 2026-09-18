@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureDlqMessage } from '../src/queue/dlq-consumer';
+import { completeEventReceipt } from '../src/queue/consumer';
 import { SqliteD1 } from './helpers/sqlite-d1';
 
 const sentinels = [
@@ -191,6 +192,63 @@ describe('DLQ sanitized receipt capture', () => {
        WHERE source = 'chatwoot' AND source_event_ref = 'event-1'`
     ).first<any>();
     expect(original).toEqual({ status: 'PROCESSED', attempt_count: 2, processed_at: 390, dead_lettered_at: 400 });
+  });
+
+  it('uses canonical state at D1 write time instead of a stale pre-write read', async () => {
+    const db = database();
+    db.exec(`
+      INSERT INTO conversations
+      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
+       operator_channel, created_at, updated_at, version)
+      VALUES ('conv-1', 'chatwoot', 'account-1', 'conversation-1', 'customer-1', 'telegram', 1, 1, 1);
+      INSERT INTO event_receipts
+      (source, source_event_ref, status, attempt_count, lease_until, claim_token)
+      VALUES ('chatwoot', 'event-1', 'PROCESSING', 1, 999, 'claim');
+    `);
+    const writeTimeDb = {
+      prepare: db.prepare.bind(db),
+      async batch(statements: any[]) {
+        db.exec(`
+          UPDATE event_receipts SET status = 'PROCESSED', processed_at = 450,
+                 lease_until = NULL, claim_token = NULL
+          WHERE source = 'chatwoot' AND source_event_ref = 'event-1';
+        `);
+        return db.batch(statements as any);
+      }
+    };
+    const captured = await captureDlqMessage(
+      { DB: writeTimeDb as any }, message('write-time-state', validChatwootEvent()), 500
+    );
+    const receipt = await db.prepare('SELECT * FROM dlq_receipts WHERE id = ?')
+      .bind(captured.id).first<any>();
+    expect(receipt).toMatchObject({ status: 'RESOLVED', resolved_at: 500 });
+  });
+
+  it('converges an existing OPEN receipt in the canonical completion batch', async () => {
+    const db = database();
+    db.exec(`
+      INSERT INTO event_receipts
+      (source, source_event_ref, status, attempt_count, lease_until, claim_token)
+      VALUES ('chatwoot', 'event-1', 'PROCESSING', 1, 999, 'claim');
+      INSERT INTO dlq_receipts
+      (id, queue_name, event_source, source_event_ref, event_type, safe_error_code,
+       status, delivery_count, first_seen_at, last_seen_at)
+      VALUES ('dlq:v1:open', 'cz2128-dlq', 'chatwoot', 'event-1', 'message_created',
+              'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 100, 100);
+    `);
+    expect(await completeEventReceipt(
+      { DB: db as any }, { source: 'chatwoot', eventId: 'event-1' }, 'claim', 600
+    )).toBe(true);
+    const receipt = await db.prepare(
+      `SELECT status, resolved_at FROM dlq_receipts WHERE id = 'dlq:v1:open'`
+    ).first<any>();
+    expect(receipt).toEqual({ status: 'RESOLVED', resolved_at: 600 });
+    expect(await completeEventReceipt(
+      { DB: db as any }, { source: 'chatwoot', eventId: 'event-1' }, 'claim', 700
+    )).toBe(false);
+    expect(await db.prepare(
+      `SELECT status, resolved_at FROM dlq_receipts WHERE id = 'dlq:v1:open'`
+    ).first<any>()).toEqual({ status: 'RESOLVED', resolved_at: 600 });
   });
 
   it('resolves internal conversation IDs for Telegram, AI and attachment events without persisting private fields', async () => {

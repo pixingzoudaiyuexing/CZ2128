@@ -13,6 +13,15 @@ const VALID_TYPES = new Set([
 ]);
 
 type DlqStatus = 'OPEN' | 'RESOLVED';
+export type DlqEventSource = 'chatwoot' | 'telegram' | 'internal';
+export type DlqEventType = 'message_created' | 'conversation_status_changed' | 'ai_trigger' | 'attachment_transfer';
+
+export interface DlqQueueMessage {
+  readonly id: string;
+  readonly body: unknown;
+  readonly attempts?: number;
+  readonly timestamp?: Date;
+}
 
 export interface DlqReceipt {
   id: string;
@@ -34,11 +43,30 @@ export interface CapturedDlqReceipt {
   id: string;
 }
 
+type DlqLookup =
+  | { kind: 'chatwoot'; accountRef: string; conversationRef: string }
+  | { kind: 'telegram'; threadRef: string }
+  | { kind: 'ai'; conversationId: string }
+  | { kind: 'attachment'; attachmentId: string };
+
 interface SanitizedEnvelope {
-  source: 'chatwoot' | 'telegram' | 'internal';
-  type: 'message_created' | 'conversation_status_changed' | 'ai_trigger' | 'attachment_transfer';
+  source: DlqEventSource;
+  type: DlqEventType;
   eventId: string;
-  payload: Record<string, unknown>;
+  lookup: DlqLookup;
+}
+
+export interface SanitizedDlqMessage {
+  receiptId: string;
+  queueName: string;
+  eventSource: DlqEventSource | null;
+  sourceEventRef: string | null;
+  eventType: DlqEventType | null;
+}
+
+interface ParsedDlqMessage {
+  sanitized: SanitizedDlqMessage;
+  lookup: DlqLookup | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -57,25 +85,36 @@ function boundedIdentity(value: unknown): string | null {
 function parseEnvelope(body: unknown): SanitizedEnvelope | null {
   if (!isRecord(body) || body.version !== 1 || !isRecord(body.payload)) return null;
   const eventId = boundedIdentity(body.eventId);
-  const source = typeof body.source === 'string' && VALID_SOURCES.has(body.source) ? body.source : null;
-  const type = typeof body.type === 'string' && VALID_TYPES.has(body.type) ? body.type : null;
+  const source = typeof body.source === 'string' && VALID_SOURCES.has(body.source)
+    ? body.source as DlqEventSource
+    : null;
+  const type = typeof body.type === 'string' && VALID_TYPES.has(body.type)
+    ? body.type as DlqEventType
+    : null;
   if (!eventId || !source || !type) return null;
 
   const payload = body.payload;
   if (source === 'chatwoot') {
     if (type !== 'message_created' && type !== 'conversation_status_changed') return null;
-    if (!boundedIdentity(payload.accountRef) || !boundedIdentity(payload.conversationRef)) return null;
+    const accountRef = boundedIdentity(payload.accountRef);
+    const conversationRef = boundedIdentity(payload.conversationRef);
+    if (!accountRef || !conversationRef) return null;
+    return { source, type, eventId, lookup: { kind: 'chatwoot', accountRef, conversationRef } };
   } else if (source === 'telegram') {
-    if (type !== 'message_created' || !boundedIdentity(payload.threadRef)) return null;
+    const threadRef = boundedIdentity(payload.threadRef);
+    if (type !== 'message_created' || !threadRef) return null;
+    return { source, type, eventId, lookup: { kind: 'telegram', threadRef } };
   } else if (type === 'ai_trigger') {
-    if (!boundedIdentity(payload.convId)) return null;
+    const conversationId = boundedIdentity(payload.convId);
+    if (!conversationId) return null;
+    return { source, type, eventId, lookup: { kind: 'ai', conversationId } };
   } else if (type === 'attachment_transfer') {
-    if (!boundedIdentity(payload.attachmentId)) return null;
+    const attachmentId = boundedIdentity(payload.attachmentId);
+    if (!attachmentId) return null;
+    return { source, type, eventId, lookup: { kind: 'attachment', attachmentId } };
   } else {
     return null;
   }
-
-  return { source, type, eventId, payload } as SanitizedEnvelope;
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -90,59 +129,79 @@ async function receiptIdentity(queueName: string, event: SanitizedEnvelope | nul
   return `dlq:v1:${await sha256Hex(canonical)}`;
 }
 
-async function resolveConversationId(env: Pick<Env, 'DB'>, event: SanitizedEnvelope): Promise<string | null> {
-  if (event.source === 'chatwoot') {
-    const accountRef = boundedIdentity(event.payload.accountRef)!;
-    const conversationRef = boundedIdentity(event.payload.conversationRef)!;
+async function parseDlqMessage(
+  message: DlqQueueMessage,
+  queueName = DLQ_QUEUE_NAME
+): Promise<ParsedDlqMessage> {
+  if (typeof message.id !== 'string' || message.id.length === 0) {
+    throw new Error('Invalid Cloudflare Queue message identity');
+  }
+  const event = parseEnvelope(message.body);
+  return {
+    sanitized: {
+      receiptId: await receiptIdentity(queueName, event, message.id),
+      queueName,
+      eventSource: event?.source || null,
+      sourceEventRef: event?.eventId || null,
+      eventType: event?.type || null
+    },
+    lookup: event?.lookup || null
+  };
+}
+
+export async function sanitizeDlqMessage(
+  message: DlqQueueMessage,
+  queueName = DLQ_QUEUE_NAME
+): Promise<SanitizedDlqMessage> {
+  return (await parseDlqMessage(message, queueName)).sanitized;
+}
+
+async function resolveConversationId(env: Pick<Env, 'DB'>, lookup: DlqLookup): Promise<string | null> {
+  if (lookup.kind === 'chatwoot') {
     const row = await env.DB.prepare(
       `SELECT id FROM conversations
        WHERE helpdesk_provider = 'chatwoot' AND helpdesk_account_ref = ? AND helpdesk_conversation_ref = ?`
-    ).bind(accountRef, conversationRef).first<{ id: string }>();
+    ).bind(lookup.accountRef, lookup.conversationRef).first<{ id: string }>();
     return boundedIdentity(row?.id);
   }
-  if (event.source === 'telegram') {
-    const threadRef = boundedIdentity(event.payload.threadRef)!;
+  if (lookup.kind === 'telegram') {
     const row = await env.DB.prepare(
       `SELECT id FROM conversations WHERE operator_channel = 'telegram' AND operator_thread_ref = ?`
-    ).bind(threadRef).first<{ id: string }>();
+    ).bind(lookup.threadRef).first<{ id: string }>();
     return boundedIdentity(row?.id);
   }
-  if (event.type === 'ai_trigger') {
-    const convId = boundedIdentity(event.payload.convId)!;
+  if (lookup.kind === 'ai') {
     const row = await env.DB.prepare('SELECT id FROM conversations WHERE id = ?')
-      .bind(convId).first<{ id: string }>();
+      .bind(lookup.conversationId).first<{ id: string }>();
     return boundedIdentity(row?.id);
   }
-  const attachmentId = boundedIdentity(event.payload.attachmentId)!;
   const row = await env.DB.prepare('SELECT conversation_id FROM attachments WHERE id = ?')
-    .bind(attachmentId).first<{ conversation_id: string }>();
+    .bind(lookup.attachmentId).first<{ conversation_id: string }>();
   return boundedIdentity(row?.conversation_id);
 }
 
 export async function captureDlqMessage(
   env: Pick<Env, 'DB'>,
-  message: Pick<Message<unknown>, 'id' | 'body'>,
+  message: DlqQueueMessage,
   now = Math.floor(Date.now() / 1000),
   queueName = DLQ_QUEUE_NAME
 ): Promise<CapturedDlqReceipt> {
-  if (typeof message.id !== 'string' || message.id.length === 0) {
-    throw new Error('Invalid Cloudflare Queue message identity');
-  }
-
-  const event = parseEnvelope(message.body);
-  const id = await receiptIdentity(queueName, event, message.id);
+  const parsed = await parseDlqMessage(message, queueName);
+  const sanitized = parsed.sanitized;
   let eventReceipt: Pick<EventReceipt, 'status' | 'last_error' | 'conversation_id'> | null = null;
   let conversationId: string | null = null;
 
-  if (event) {
+  if (sanitized.eventSource && sanitized.sourceEventRef) {
     eventReceipt = await env.DB.prepare(
       `SELECT status, last_error, conversation_id FROM event_receipts
        WHERE source = ? AND source_event_ref = ?`
-    ).bind(event.source, event.eventId).first<Pick<EventReceipt, 'status' | 'last_error' | 'conversation_id'>>();
-    conversationId = boundedIdentity(eventReceipt?.conversation_id) || await resolveConversationId(env, event);
+    ).bind(sanitized.eventSource, sanitized.sourceEventRef)
+      .first<Pick<EventReceipt, 'status' | 'last_error' | 'conversation_id'>>();
+    conversationId = boundedIdentity(eventReceipt?.conversation_id) || (
+      parsed.lookup ? await resolveConversationId(env, parsed.lookup) : null
+    );
   }
 
-  const resolved = eventReceipt?.status === 'PROCESSED';
   const safeErrorCode = isSafeErrorCode(eventReceipt?.last_error)
     ? eventReceipt.last_error
     : 'QUEUE_RETRY_EXHAUSTED';
@@ -151,7 +210,19 @@ export async function captureDlqMessage(
     `INSERT INTO dlq_receipts (
        id, queue_name, event_source, source_event_ref, event_type, conversation_id,
        operation_id, safe_error_code, status, delivery_count, first_seen_at, last_seen_at, resolved_at
-     ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?)
+     )
+     SELECT ?, ?, ?, ?, ?, ?, NULL, ?,
+            CASE WHEN canonical.processed = 1 THEN 'RESOLVED' ELSE 'OPEN' END,
+            1, ?, ?, CASE WHEN canonical.processed = 1 THEN ? ELSE NULL END
+     FROM (
+       SELECT CASE
+         WHEN ? IS NOT NULL AND EXISTS (
+           SELECT 1 FROM event_receipts
+           WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSED'
+         ) THEN 1 ELSE 0
+       END AS processed
+     ) AS canonical
+     WHERE 1
      ON CONFLICT (id) DO UPDATE SET
        event_source = COALESCE(dlq_receipts.event_source, excluded.event_source),
        source_event_ref = COALESCE(dlq_receipts.source_event_ref, excluded.source_event_ref),
@@ -166,30 +237,39 @@ export async function captureDlqMessage(
        last_seen_at = MAX(dlq_receipts.last_seen_at, excluded.last_seen_at),
        resolved_at = COALESCE(dlq_receipts.resolved_at, excluded.resolved_at)`
   ).bind(
-    id,
-    queueName,
-    event?.source || null,
-    event?.eventId || null,
-    event?.type || null,
+    sanitized.receiptId,
+    sanitized.queueName,
+    sanitized.eventSource,
+    sanitized.sourceEventRef,
+    sanitized.eventType,
     conversationId,
     safeErrorCode,
-    resolved ? 'RESOLVED' : 'OPEN',
     now,
     now,
-    resolved ? now : null
+    now,
+    sanitized.eventSource,
+    sanitized.eventSource,
+    sanitized.sourceEventRef
   );
 
   const statements: D1PreparedStatement[] = [upsert];
-  if (event) {
+  if (sanitized.eventSource && sanitized.sourceEventRef && sanitized.eventType) {
     statements.push(env.DB.prepare(
       `UPDATE event_receipts
        SET dead_lettered_at = ?, last_attempt_at = ?,
            event_type = COALESCE(event_type, ?),
            conversation_id = COALESCE(conversation_id, ?)
        WHERE source = ? AND source_event_ref = ?`
-    ).bind(now, now, event.type, conversationId, event.source, event.eventId));
+    ).bind(
+      now,
+      now,
+      sanitized.eventType,
+      conversationId,
+      sanitized.eventSource,
+      sanitized.sourceEventRef
+    ));
   }
 
   await env.DB.batch(statements);
-  return { id };
+  return { id: sanitized.receiptId };
 }

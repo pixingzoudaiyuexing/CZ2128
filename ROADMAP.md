@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A implemented and in review**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A hardening implemented, in review and not accepted**
 
 ## Phase 0 — Architecture Freeze
 
@@ -154,7 +154,7 @@ Current status:
 - Phase 4B-2C-3 AI Durable Retry State Machine + legacy FAILED retirement: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-2C overall: **COMPLETE / FROZEN**
 - Phase 4B-3 reliability control-plane exposure: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-4A DLQ capture, sanitized receipt and Admin inspection: **IMPLEMENTED / IN REVIEW**
+- Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **IMPLEMENTED / IN REVIEW / NOT ACCEPTED**
 - Phase 4B-4B explicit durable-state redrive: **NOT STARTED**
 - Phase 4B-4 overall: **IN PROGRESS**
 - Phase 4B-5: **NOT STARTED**
@@ -184,7 +184,7 @@ Phase 4B-2C-3 activates the durable AI state machine already provisioned by `000
 
 Phase 4B-3 reuses the existing private Telegram Admin Bot to expose bounded reliability reads and confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through frozen core services. AI Reliability is read-only. No Web Admin, public API, new authentication system, migration `0006`, DLQ consumer/redrive, `CONFIRMED_NOT_SENT` activation or Durable Object was introduced in that phase.
 
-Phase 4B-4A adds provider-free DLQ receipt capture to the same Worker. `batch.queue` strictly separates `cz2128-queue` from `cz2128-dlq`; malformed and valid DLQ bodies are reduced in memory to bounded metadata and one deterministic hashed receipt identity. The existing `0005` tables record atomic duplicate counts and an optional canonical event dead-letter marker before ACK. The private Telegram Admin Bot exposes bounded read-only DLQ summary, latest-ten lists and detail inspection. Raw payload retention and all redrive/replay/resend actions remain prohibited. Phase 4B-4B, 4B-5 and 4C remain NOT STARTED.
+Phase 4B-4A adds provider-free DLQ receipt capture to the same Worker. `batch.queue` strictly separates `cz2128-queue` from `cz2128-dlq`; malformed and valid DLQ bodies are reduced in memory to bounded metadata and deterministic hashed identities. D1 remains canonical through the existing `0005` tables. A dedicated private R2 quarantine stores allowlisted terminal evidence only when D1 capture fails; ACK follows either durable path, while dual failure retries. Canonical PROCESSED and DLQ RESOLVED metadata converge in both commit orders. The private Telegram Admin Bot exposes bounded read-only D1 and quarantine metadata. Raw payload retention and all import/redrive/replay/resend actions remain prohibited. Local Wrangler/workerd service tests cover complete concurrent capture calls but do not replace Phase 4C production concurrency/load validation. Phase 4B-4B, 4B-5 and 4C remain NOT STARTED.
 
 ## Phase 5 — Knowledge / RAG
 

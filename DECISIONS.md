@@ -224,14 +224,16 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Status:** COMPLETE / FROZEN / MERGED.
 
-## D-028 — Capture DLQ loss boundaries as sanitized durable receipts
+## D-028 — Capture DLQ loss boundaries as sanitized durable receipts (PROPOSED / WIP)
 
 **Decision:** The Worker discriminates the main queue and `cz2128-dlq` only through `batch.queue`. DLQ capture never invokes normal event handling or runtime provider resolution. It derives a deterministic receipt identity from bounded event metadata, with the Cloudflare message ID as the hashed malformed-envelope fallback, and persists only finite metadata through the existing migration `0005`.
 
-**Durability rule:** A raw DLQ message is ACKed only after the sanitized receipt and any matching `event_receipts` dead-letter marker succeed in one D1 batch. Duplicate delivery updates one row atomically, preserves `first_seen_at`, advances `last_seen_at` and increments `delivery_count`. Existing `PROCESSED` canonical state resolves the inspection receipt without reprocessing the event.
+**Durability rule:** The preferred path persists the sanitized receipt and matching `event_receipts` dead-letter marker through D1. If that fails, a dedicated private `DLQ_QUARANTINE` R2 binding stores one deterministic allowlisted terminal evidence object keyed by a hash of trusted Queue name/message identity. The Queue message is ACKed only after D1 or R2 persistence succeeds; both failing requires Queue retry. Quarantine is terminal evidence, not canonical application state, and simultaneous persistent D1/R2 failure plus retry exhaustion remains a residual loss risk.
 
-**Privacy and inspection rule:** Raw message bodies, customer/operator/AI text, attachment locators or tokens, private URLs, provider responses, secrets and free-form exceptions are never persisted, logged or rendered. The existing authenticated private Telegram Admin Bot supplies bounded read-only summary, list and detail views, with receipt identity held in Admin session state rather than callback payloads.
+**Convergence rule:** D1 capture determines OPEN/RESOLVED from canonical state inside the write batch. Canonical `PROCESSED` completion shares a D1 batch with a metadata-only matching OPEN→RESOLVED update. Both commit orders therefore converge monotonically; RESOLVED never regresses to OPEN.
+
+**Privacy and inspection rule:** Raw message bodies, customer/operator/AI text, attachment locators or tokens, private URLs, provider responses, secrets and free-form exceptions are never persisted, logged or rendered. The existing authenticated private Telegram Admin Bot supplies bounded read-only D1 and R2-quarantine metadata views. R2 inspection validates custom metadata and never reads object bodies.
 
 **Scope:** Phase 4B-4A only. Explicit durable-state redrive is deferred to Phase 4B-4B. No migration `0006`, Web Admin, public API, new authentication system, Durable Object, `CONFIRMED_NOT_SENT`, provider action or main-queue retry change is introduced.
 
-**Status:** IMPLEMENTED / IN REVIEW. Phase 4B-4 overall is IN PROGRESS. Phase 4B-4B, Phase 4B-5 and Phase 4C remain NOT STARTED.
+**Status:** PROPOSED / IMPLEMENTED / IN REVIEW / NOT ACCEPTED. Phase 4B-4 overall is IN PROGRESS. Phase 4B-4B, Phase 4B-5 and Phase 4C remain NOT STARTED.

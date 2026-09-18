@@ -225,6 +225,25 @@ if (this.query.includes('INSERT INTO conversations')) {
         r.status = 'PROCESSED'; r.processed_at = pat; r.lease_until = null; r.claim_token = null; meta.changes = 1;
       }
     }
+    if (this.query.includes('UPDATE dlq_receipts') && this.query.includes("status = 'RESOLVED'")) {
+      const [resolvedAt, source, sourceEventRef] = this.boundParams;
+      const canonical = this.db.tables.event_receipts.find(
+        receipt => receipt.source === source && receipt.source_event_ref === sourceEventRef
+      );
+      if (canonical?.status === 'PROCESSED') {
+        for (const receipt of this.db.tables.dlq_receipts) {
+          if (
+            receipt.event_source === source &&
+            receipt.source_event_ref === sourceEventRef &&
+            receipt.status === 'OPEN'
+          ) {
+            receipt.status = 'RESOLVED';
+            receipt.resolved_at ??= resolvedAt;
+            meta.changes += 1;
+          }
+        }
+      }
+    }
     if (this.query.includes('UPDATE event_receipts SET status = \'FAILED\'')) {
       const [err, s, ser, claimToken] = this.boundParams;
       const r = this.db.tables.event_receipts.find(x => x.source === s && x.source_event_ref === ser);
@@ -312,10 +331,23 @@ class MockD1 {
     messages: [],
     event_receipts: [],
     outbound_operations: [],
+    dlq_receipts: [],
   };
 
   prepare(query: string) {
     return new MockPreparedStatement(this, query);
+  }
+
+  async batch(statements: MockPreparedStatement[]) {
+    const snapshot = structuredClone(this.tables);
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    } catch (error) {
+      this.tables = snapshot;
+      throw error;
+    }
   }
 }
 

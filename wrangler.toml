@@ -10,6 +10,10 @@ crons = ["0 * * * *"]
 binding = "ATTACHMENTS_BUCKET"
 bucket_name = "cz2128-attachments"
 
+[[r2_buckets]]
+binding = "DLQ_QUARANTINE"
+bucket_name = "cz2128-dlq-quarantine"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "cz2128-db"

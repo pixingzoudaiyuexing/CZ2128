@@ -6,6 +6,7 @@ import { manualMarkDelivered, manualCancel, reconcileOutboundOperation } from '.
 import { manualRetryOutboundOperation, MANUAL_RETRY_REASONS } from '../core/outbound-manual-retry';
 import { saveAdminSession, getAdminSession, clearAdminSession } from '../runtime-config/repository';
 import { safeErrorCode, SafeError } from '../core/errors';
+import { listDlqQuarantine } from '../queue/dlq-quarantine';
 
 interface AdminDlqReceipt {
   id: string;
@@ -128,6 +129,34 @@ async function showDlqDetail(
   return 'REL_DLQ_DETAIL';
 }
 
+async function showDlqQuarantine(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext): Promise<string> {
+  const quarantine = await listDlqQuarantine(env.DLQ_QUARANTINE, 10);
+  const count = quarantine.truncated ? `${quarantine.visibleCount}+` : String(quarantine.visibleCount);
+  const lines = quarantine.entries.map((entry, index) => [
+    `${index + 1}. ${entry.state}`,
+    `ID: ${safeDisplay(entry.quarantineId)}`,
+    `Canonical receipt: ${safeDisplay(entry.canonicalReceiptId)}`,
+    `Source/type: ${safeDisplay(entry.eventSource, 24)} / ${safeDisplay(entry.eventType, 40)}`,
+    `Queue attempts: ${safeDisplay(entry.queueAttempts)}`,
+    `Message time: ${safeDisplay(entry.messageTimestamp)}`,
+    `Uploaded: ${entry.uploadedAt}`,
+    `Reason: ${entry.reason}`
+  ].join('\n'));
+  const text = [
+    'Terminal DLQ Quarantine',
+    '',
+    `Visible objects: ${count}`,
+    `Invalid sanitized metadata: ${quarantine.invalidMetadataCount}`,
+    '',
+    ...(lines.length > 0 ? lines : ['No sanitized quarantine evidence found.'])
+  ].join('\n\n');
+  await reply(bootstrap, ctx, text, [
+    [{ text: 'Refresh', callback_data: 'r:dlqq' }],
+    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+  ]);
+  return 'REL_DLQ_QUARANTINE';
+}
+
 export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext) {
   const unresolvedAmbiguous = await env.DB.prepare(
     `SELECT COUNT(*) as c FROM outbound_operations WHERE status = 'AMBIGUOUS' AND reconciliation_status IN ('PENDING', 'STILL_AMBIGUOUS')`
@@ -185,12 +214,14 @@ export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, c
     [{ text: '🤖 AI Reliability', callback_data: 'r:ai' }],
     [{ text: '📜 Reliability Audit', callback_data: 'r:aud' }],
     [{ text: '☠️ Open DLQ', callback_data: 'r:dlqo' }, { text: 'Recent DLQ', callback_data: 'r:dlqr' }],
+    [{ text: 'Terminal Quarantine', callback_data: 'r:dlqq' }],
     [{ text: '🔄 Refresh', callback_data: 'p:rel' }],
     [{ text: '返回', callback_data: 'm' }]
   ]);
 }
 
 export async function processReliabilityCallback(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, action: string): Promise<string> {
+  if (action === 'dlqq') return showDlqQuarantine(env, bootstrap, ctx);
   if (action === 'dlqo') return showDlqList(env, bootstrap, ctx, 'OPEN');
   if (action === 'dlqr') return showDlqList(env, bootstrap, ctx, 'RECENT');
   if (/^d:\d$/.test(action)) {

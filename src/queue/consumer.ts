@@ -22,6 +22,30 @@ export function eventLeaseSeconds(event: SupportEvent, env: Env): number {
   return NORMAL_EVENT_LEASE_SECONDS;
 }
 
+export async function completeEventReceipt(
+  env: Pick<Env, 'DB'>,
+  event: Pick<SupportEvent, 'source' | 'eventId'>,
+  claimToken: string,
+  processedAt: number
+): Promise<boolean> {
+  const [processedResult] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE event_receipts SET status = 'PROCESSED', processed_at = ?, lease_until = NULL, claim_token = NULL
+       WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSING' AND claim_token = ?`
+    ).bind(processedAt, event.source, event.eventId, claimToken),
+    env.DB.prepare(
+      `UPDATE dlq_receipts
+       SET status = 'RESOLVED', resolved_at = COALESCE(resolved_at, ?)
+       WHERE event_source = ? AND source_event_ref = ? AND status = 'OPEN'
+         AND EXISTS (
+           SELECT 1 FROM event_receipts
+           WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSED'
+         )`
+    ).bind(processedAt, event.source, event.eventId, event.source, event.eventId)
+  ]);
+  return processedResult.meta.changes === 1;
+}
+
 export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<void> {
   if (event.version !== 1) {
     throw new SafeError('QUEUE_EVENT_VERSION_UNSUPPORTED');
@@ -101,11 +125,13 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
       await processAttachmentTransfer(event, env);
     }
 
-    const processedResult = await env.DB.prepare(
-      `UPDATE event_receipts SET status = 'PROCESSED', processed_at = ?, lease_until = NULL, claim_token = NULL
-       WHERE source = ? AND source_event_ref = ? AND status = 'PROCESSING' AND claim_token = ?`
-    ).bind(Math.floor(Date.now() / 1000), event.source, event.eventId, claimToken).run();
-    if (processedResult.meta.changes !== 1) {
+    const completed = await completeEventReceipt(
+      env,
+      event,
+      claimToken,
+      Math.floor(Date.now() / 1000)
+    );
+    if (!completed) {
       throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', leaseSeconds);
     }
 

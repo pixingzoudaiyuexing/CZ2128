@@ -1,188 +1,198 @@
-import { execFile, execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { captureDlqMessage } from '../src/queue/dlq-consumer';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-const execFileAsync = promisify(execFile);
+const configPath = 'tests/fixtures/wrangler.dlq-harness.toml';
+const privateSentinels = [
+  'PRIVATE_DLQ_MESSAGE_BODY_123',
+  'SUPER_SECRET_DLQ_TOKEN_456',
+  'PRIVATE_CHATWOOT_URL_789',
+  'PRIVATE_ATTACHMENT_ACCESS_TOKEN_ABC',
+  'PRIVATE_AI_TEXT_DEF'
+];
 
-describe('real D1 DLQ receipt durability', () => {
-  const persistDir = join(tmpdir(), `cz2128-dlq-d1-${Date.now()}`);
-  let queryId = 0;
-
-  function args(file: string, json = false): string[] {
-    return [
-      'wrangler', 'd1', 'execute', 'cz2128-db', '--local', '--persist-to', persistDir,
-      '--file', file, ...(json ? ['--json'] : [])
-    ];
-  }
-
-  function runFile(file: string, json = false): string {
-    return execFileSync('npx', args(file, json), { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-  }
-
-  function runSql(sql: string): any[] {
-    const file = join(persistDir, `query-${++queryId}.sql`);
-    writeFileSync(file, sql);
-    return JSON.parse(runFile(file, true).trim().replace(/^[\s\S]*?(?=\[)/, ''));
-  }
-
-  function sqlValue(value: unknown): string {
-    if (value === null || value === undefined) return 'NULL';
-    if (typeof value === 'number' || typeof value === 'bigint') return String(value);
-    if (typeof value !== 'string') throw new Error('Unsupported real D1 test binding');
-    return `'${value.replace(/'/g, "''")}'`;
-  }
-
-  function bindSql(query: string, values: unknown[]): string {
-    let index = 0;
-    const bound = query.replace(/\?/g, () => {
-      if (index >= values.length) throw new Error('Missing real D1 test binding');
-      return sqlValue(values[index++]);
-    });
-    if (index !== values.length) throw new Error('Unused real D1 test binding');
-    return bound;
-  }
-
-  const realD1 = {
-    prepare(query: string) {
-      let values: unknown[] = [];
-      const statement = {
-        query,
-        get values() { return values; },
-        bind(...params: unknown[]) { values = params; return statement; },
-        async first<T>() {
-          const result = runSql(`${bindSql(query, values)};`)[0];
-          return (result.results?.[0] as T | undefined) || null;
-        },
-        async all<T>() {
-          const result = runSql(`${bindSql(query, values)};`)[0];
-          return { results: (result.results || []) as T[], success: true, meta: result.meta || {} };
-        },
-        async run() {
-          const result = runSql(`${bindSql(query, values)};`)[0];
-          return { success: true, meta: result.meta || { changes: 0 } };
-        }
-      };
-      return statement;
-    },
-    async batch(statements: Array<{ query: string; values: unknown[] }>) {
-      runSql(statements.map(statement => `${bindSql(statement.query, statement.values)};`).join('\n'));
-      return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+function validEvent(eventId: string) {
+  return {
+    version: 1,
+    source: 'chatwoot',
+    type: 'message_created',
+    eventId,
+    payload: {
+      accountRef: 'account-1',
+      conversationRef: 'conversation-1',
+      content: privateSentinels[0],
+      token: privateSentinels[1],
+      privateUrl: privateSentinels[2],
+      accessToken: privateSentinels[3],
+      aiText: privateSentinels[4]
     }
   };
+}
 
-  beforeAll(() => {
-    mkdirSync(persistDir, { recursive: true });
-    for (const migration of [
-      '0001_initial_schema.sql',
-      '0002_ai_handoff.sql',
-      '0003_attachments.sql',
-      '0004_runtime_config.sql',
-      '0005_reliability.sql'
-    ]) runFile(join('migrations', migration));
-    runSql(`
-      INSERT INTO conversations
-      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
-       operator_channel, created_at, updated_at, version)
-      VALUES ('conv-1', 'chatwoot', 'account-1', 'conversation-1', 'customer-1', 'telegram', 1, 1, 1);
-      INSERT INTO event_receipts
-      (source, source_event_ref, status, attempt_count, last_error, processed_at)
-      VALUES
-      ('chatwoot', 'event-failed', 'FAILED', 3, 'D1_WRITE_FAILED', NULL),
-      ('chatwoot', 'event-processed', 'PROCESSED', 2, NULL, 90);
-    `);
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('No test port allocated'));
+      server.close(error => error ? reject(error) : resolve(address.port));
+    });
+  });
+}
+
+describe('real local D1/R2 DLQ service behavior', () => {
+  const persistDir = mkdtempSync(join(tmpdir(), 'cz2128-dlq-harness-'));
+  let child: ChildProcess;
+  let baseUrl: string;
+  let output = '';
+
+  async function request(path: string, body?: unknown): Promise<any> {
+    const response = await fetch(`${baseUrl}${path}`, body === undefined ? undefined : {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${path} failed (${response.status}): ${text}`);
+    return JSON.parse(text);
+  }
+
+  beforeAll(async () => {
+    execFileSync('npx', [
+      'wrangler', 'd1', 'migrations', 'apply', 'DB', '--local', '--persist-to', persistDir,
+      '--config', configPath
+    ], { stdio: 'pipe', env: { ...process.env, CI: '1' } });
+    const port = await freePort();
+    const inspectorPort = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn('npx', [
+      'wrangler', 'dev', '--config', configPath, '--local', '--persist-to', persistDir,
+      '--ip', '127.0.0.1', '--port', String(port), '--inspector-port', String(inspectorPort),
+      '--log-level', 'error', '--show-interactive-dev-session=false'
+    ], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CI: '1' } });
+    child.stdout?.on('data', chunk => { output += String(chunk); });
+    child.stderr?.on('data', chunk => { output += String(chunk); });
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`Wrangler exited early:\n${output}`);
+      try {
+        const response = await fetch(`${baseUrl}/health`);
+        if (response.ok) return;
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    throw new Error(`Wrangler harness did not become ready:\n${output}`);
   }, 60_000);
 
-  afterAll(() => rmSync(persistDir, { recursive: true, force: true }));
-
-  it('uses only migrations 0001 through 0005', () => {
-    expect(readdirSync('migrations').filter(name => name.endsWith('.sql')).sort()).toEqual([
-      '0001_initial_schema.sql',
-      '0002_ai_handoff.sql',
-      '0003_attachments.sql',
-      '0004_runtime_config.sql',
-      '0005_reliability.sql'
-    ]);
+  beforeEach(async () => {
+    await request('/reset', {});
+    await request('/seed-conversation', {});
   });
 
-  it('serializes concurrent duplicate upserts with exact delivery count and immutable first_seen', async () => {
-    const id = 'dlq:v1:concurrent';
-    runSql(`
-      INSERT INTO dlq_receipts
-      (id, queue_name, safe_error_code, status, delivery_count, first_seen_at, last_seen_at)
-      VALUES ('${id}', 'cz2128-dlq', 'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 100, 100);
-    `);
-    const upsert = (lastSeen: number) => `
-      INSERT INTO dlq_receipts
-      (id, queue_name, safe_error_code, status, delivery_count, first_seen_at, last_seen_at)
-      VALUES ('${id}', 'cz2128-dlq', 'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, ${lastSeen}, ${lastSeen})
-      ON CONFLICT (id) DO UPDATE SET
-        delivery_count = dlq_receipts.delivery_count + 1,
-        last_seen_at = MAX(dlq_receipts.last_seen_at, excluded.last_seen_at);
-    `;
-    const first = join(persistDir, 'dlq-upsert-a.sql');
-    const second = join(persistDir, 'dlq-upsert-b.sql');
-    writeFileSync(first, upsert(200));
-    writeFileSync(second, upsert(300));
-    const attempts = await Promise.allSettled([
-      execFileAsync('npx', args(first), { encoding: 'utf8' }),
-      execFileAsync('npx', args(second), { encoding: 'utf8' })
+  afterAll(async () => {
+    if (child && child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+    rmSync(persistDir, { recursive: true, force: true });
+  });
+
+  it('runs two complete concurrent captureDlqMessage calls against one real D1 binding', async () => {
+    const event = validEvent('concurrent-event');
+    const [first, second] = await Promise.all([
+      request('/capture', { id: 'cf-a', body: event, now: 100 }),
+      request('/capture', { id: 'cf-b', body: event, now: 200 })
     ]);
-    expect(attempts.some(attempt => attempt.status === 'fulfilled')).toBe(true);
-    if (attempts[0].status === 'rejected') runFile(first);
-    if (attempts[1].status === 'rejected') runFile(second);
-    const row = runSql(
-      `SELECT delivery_count, first_seen_at, last_seen_at FROM dlq_receipts WHERE id = '${id}';`
-    )[0].results[0];
-    expect(row).toEqual({ delivery_count: 3, first_seen_at: 100, last_seen_at: 300 });
-  }, 60_000);
+    expect(first.id).toBe(second.id);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.dlq).toHaveLength(1);
+    expect(snapshot.dlq[0]).toMatchObject({
+      id: first.id,
+      status: 'OPEN',
+      delivery_count: 2,
+      last_seen_at: 200
+    });
+    expect([100, 200]).toContain(snapshot.dlq[0].first_seen_at);
+    const durable = JSON.stringify(snapshot.dlq);
+    for (const sentinel of privateSentinels) expect(durable).not.toContain(sentinel);
+  }, 30_000);
 
-  it('updates event dead-letter metadata and resolves an already processed race through the service', async () => {
-    const failedCapture = await captureDlqMessage({ DB: realD1 as any }, {
-      id: 'cf-failed',
-      body: {
-        version: 1,
-        source: 'chatwoot',
-        type: 'message_created',
-        eventId: 'event-failed',
-        payload: { accountRef: 'account-1', conversationRef: 'conversation-1' }
-      }
-    } as any, 400);
-    const failed = runSql(`SELECT * FROM dlq_receipts WHERE id = '${failedCapture.id}';`)[0].results[0];
-    expect(failed).toMatchObject({ status: 'OPEN', conversation_id: 'conv-1', safe_error_code: 'D1_WRITE_FAILED' });
+  it('records RESOLVED when canonical PROCESSED commits before capture', async () => {
+    await request('/seed-event', {
+      source: 'chatwoot', eventId: 'processed-first', status: 'PROCESSED', now: 90
+    });
+    await request('/capture', { id: 'cf-processed-first', body: validEvent('processed-first'), now: 100 });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.dlq[0]).toMatchObject({ status: 'RESOLVED', resolved_at: 100 });
+  });
 
-    const processedCapture = await captureDlqMessage({ DB: realD1 as any }, {
-      id: 'cf-processed',
-      body: {
-        version: 1,
-        source: 'chatwoot',
-        type: 'message_created',
-        eventId: 'event-processed',
-        payload: { accountRef: 'account-1', conversationRef: 'conversation-1' }
-      }
-    } as any, 500);
-    const processed = runSql(`SELECT * FROM dlq_receipts WHERE id = '${processedCapture.id}';`)[0].results[0];
-    expect(processed).toMatchObject({ status: 'RESOLVED', resolved_at: 500 });
+  it('canonical completion converges an existing OPEN receipt to RESOLVED', async () => {
+    await request('/seed-event', {
+      source: 'chatwoot', eventId: 'capture-first', status: 'PROCESSING', claimToken: 'claim-1'
+    });
+    await request('/capture', { id: 'cf-capture-first', body: validEvent('capture-first'), now: 100 });
+    expect((await request('/snapshot')).dlq[0].status).toBe('OPEN');
+    expect(await request('/complete', {
+      source: 'chatwoot', eventId: 'capture-first', claimToken: 'claim-1', now: 200
+    })).toEqual({ completed: true });
+    expect((await request('/snapshot')).dlq[0]).toMatchObject({ status: 'RESOLVED', resolved_at: 200 });
+  });
 
-    const rows = runSql(`
-      SELECT source_event_ref, status, attempt_count, last_error, processed_at,
-             last_attempt_at, dead_lettered_at
-      FROM event_receipts
-      WHERE source_event_ref IN ('event-failed', 'event-processed')
-      ORDER BY source_event_ref;
-    `)[0].results;
-    expect(rows).toEqual([
-      {
-        source_event_ref: 'event-failed', status: 'FAILED', attempt_count: 3,
-        last_error: 'D1_WRITE_FAILED', processed_at: null, last_attempt_at: 400, dead_lettered_at: 400
-      },
-      {
-        source_event_ref: 'event-processed', status: 'PROCESSED', attempt_count: 2,
-        last_error: null, processed_at: 90, last_attempt_at: 500, dead_lettered_at: 500
-      }
+  it('concurrent capture and canonical completion converge to RESOLVED', async () => {
+    await request('/seed-event', {
+      source: 'chatwoot', eventId: 'interleaved', status: 'PROCESSING', claimToken: 'claim-2'
+    });
+    await Promise.all([
+      request('/capture', { id: 'cf-interleaved', body: validEvent('interleaved'), now: 300 }),
+      request('/complete', {
+        source: 'chatwoot', eventId: 'interleaved', claimToken: 'claim-2', now: 400
+      })
     ]);
-  }, 60_000);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.events[0].status).toBe('PROCESSED');
+    expect(snapshot.dlq[0].status).toBe('RESOLVED');
+    expect(snapshot.dlq[0].resolved_at).not.toBeNull();
+  });
+
+  it('uses deterministic sanitized R2 quarantine objects with no raw payload', async () => {
+    const input = {
+      id: 'cf-quarantine', body: validEvent('quarantine-event'), attempts: 4, timestamp: 500
+    };
+    const first = await request('/quarantine', input);
+    const second = await request('/quarantine', input);
+    expect(second.quarantineId).toBe(first.quarantineId);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.quarantine.visibleCount).toBe(1);
+    expect(snapshot.quarantine.entries[0]).toMatchObject({
+      quarantineId: first.quarantineId,
+      eventSource: 'chatwoot',
+      eventType: 'message_created',
+      queueAttempts: 4,
+      messageTimestamp: 500,
+      reason: 'D1_DLQ_RECEIPT_PERSIST_FAILED',
+      state: 'QUARANTINED'
+    });
+    const durable = JSON.stringify(snapshot);
+    for (const sentinel of privateSentinels) expect(durable).not.toContain(sentinel);
+  });
+
+  it('quarantines malformed bodies using only trusted Queue metadata', async () => {
+    const receipt = await request('/quarantine', {
+      id: 'cf-malformed', body: { arbitrary: privateSentinels.join('|') }, attempts: 3, timestamp: 600
+    });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.quarantine.entries[0]).toMatchObject({
+      quarantineId: receipt.quarantineId,
+      eventSource: null,
+      eventType: null,
+      queueAttempts: 3,
+      messageTimestamp: 600
+    });
+    for (const sentinel of privateSentinels) expect(JSON.stringify(snapshot)).not.toContain(sentinel);
+  });
 });

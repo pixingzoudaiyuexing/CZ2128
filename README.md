@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and Phase 4B-3 are complete, frozen and merged. Phase 4B-4A is implemented and in review; Phase 4B-4 overall is in progress. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and Phase 4B-3 are complete, frozen and merged. Phase 4B-4A hardening is implemented, in review and not accepted; Phase 4B-4 overall is in progress. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -30,10 +30,11 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 
 ## DLQ Capture and Inspection
 - `cz2128-queue` and `cz2128-dlq` are consumed by the same Worker and separated only through `batch.queue`; normal queue handling remains unchanged.
-- The DLQ path uses only D1 and Cloudflare message metadata. It never invokes normal event processing, provider adapters, R2 downloads or Queue sends.
+- The DLQ path uses D1, trusted Queue metadata and the dedicated private `DLQ_QUARANTINE` R2 fallback. It never invokes normal event processing, provider adapters, R2 downloads or Queue sends.
 - Raw bodies, message/AI content, private URLs, attachment credentials, provider bodies and free-form exceptions are never persisted or displayed.
-- One deterministic sanitized receipt is atomically upserted through the existing `0005` schema. The raw Cloudflare message is ACKed only after durable persistence succeeds.
-- The authenticated private Telegram Admin Bot provides bounded read-only DLQ summary, latest-ten list and detail views. Redrive is deferred to Phase 4B-4B and no redrive button or action exists.
+- One deterministic sanitized receipt is atomically upserted through the existing `0005` schema. If D1 fails, one deterministic allowlisted quarantine object is written to `DLQ_QUARANTINE`. The raw Cloudflare message is ACKed only after either durable path succeeds; both failing requests Queue retry.
+- Canonical PROCESSED completion and matching DLQ RESOLVED metadata converge in either commit order. The authenticated private Telegram Admin Bot provides bounded read-only D1 and quarantine metadata views. Redrive is deferred to Phase 4B-4B and no delete/import/redrive/replay/resend action exists.
+- Simultaneous persistent D1 and R2 failure plus Queue retry exhaustion remains a residual loss risk. Local Wrangler/workerd tests cover service-level concurrency but do not establish production load or multi-region behavior.
 
 ## Setup
 - `npm ci`
@@ -42,7 +43,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - `npm run lint`
 - `npm run test`
 
-Before deployment, replace the local-only D1 database ID in `wrangler.toml` and create both `cz2128-queue` and its `cz2128-dlq` dead-letter queue.
+Before deployment, replace the local-only D1 database ID in `wrangler.toml`, create both `cz2128-queue` and its `cz2128-dlq` dead-letter queue, and provision the dedicated private `cz2128-dlq-quarantine` R2 bucket for the `DLQ_QUARANTINE` binding. This repository task does not create remote resources.
 
 ## Environment Variables
 Core:

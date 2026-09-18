@@ -50,6 +50,29 @@ function telegramOk(result: unknown = { message_id: 1 }) {
   return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
 }
 
+function quarantineBucket(options: { invalid?: boolean } = {}) {
+  const list = vi.fn(async () => ({
+    truncated: false,
+    objects: [{
+      key: `terminal-dlq/v1/${'a'.repeat(64)}.json`,
+      uploaded: new Date('2026-09-18T00:00:00Z'),
+      customMetadata: options.invalid ? { raw: privacySentinels[0] } : {
+        schemaVersion: '1',
+        quarantineId: `dlq-quarantine:v1:${'a'.repeat(64)}`,
+        canonicalReceiptId: `dlq:v1:${'b'.repeat(64)}`,
+        queueName: 'cz2128-dlq',
+        eventSource: 'chatwoot',
+        eventType: 'message_created',
+        queueAttempts: '4',
+        messageTimestamp: '1789689600',
+        reason: 'D1_DLQ_RECEIPT_PERSIST_FAILED',
+        state: 'QUARANTINED'
+      }
+    }]
+  }));
+  return { list, get: vi.fn(() => { throw new Error('quarantine body read forbidden'); }) };
+}
+
 describe('Admin DLQ inspection', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -57,6 +80,7 @@ describe('Admin DLQ inspection', () => {
     const db = new SqliteD1();
     db.migrate();
     const testEnv = env(db);
+    testEnv.DLQ_QUARANTINE = quarantineBucket() as any;
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
     db.exec(`
       INSERT INTO conversations
@@ -126,6 +150,7 @@ describe('Admin DLQ inspection', () => {
     const db = new SqliteD1();
     db.migrate();
     const testEnv = env(db);
+    testEnv.DLQ_QUARANTINE = quarantineBucket() as any;
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
     db.exec(`
       INSERT INTO dlq_receipts
@@ -135,6 +160,45 @@ describe('Admin DLQ inspection', () => {
     await handleAdminTelegramWebhook(callback(10, 'r:dlqo', 9999), testEnv);
     expect(fetchMock).not.toHaveBeenCalled();
     expect((await db.prepare('SELECT delivery_count FROM dlq_receipts').first<any>()).delivery_count).toBe(1);
+    db.close();
+  });
+
+  it('shows only sanitized quarantine metadata through the authenticated read-only surface', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const bucket = quarantineBucket();
+    testEnv.DLQ_QUARANTINE = bucket as any;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
+
+    await handleAdminTelegramWebhook(callback(20, 'r:dlqq'), testEnv);
+
+    expect(bucket.list).toHaveBeenCalledWith({
+      prefix: 'terminal-dlq/v1/',
+      limit: 1000,
+      include: ['customMetadata']
+    });
+    expect(bucket.get).not.toHaveBeenCalled();
+    const rendered = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
+    expect(rendered).toContain('Terminal DLQ Quarantine');
+    expect(rendered).toContain(`dlq-quarantine:v1:${'a'.repeat(64)}`);
+    expect(rendered).toContain('D1_DLQ_RECEIPT_PERSIST_FAILED');
+    expect(rendered).toContain('QUARANTINED');
+    for (const sentinel of privacySentinels) expect(rendered).not.toContain(sentinel);
+    expect((await db.prepare('SELECT COUNT(*) AS c FROM outbound_operations').first<any>()).c).toBe(0);
+    db.close();
+  });
+
+  it('does not expose quarantine metadata to an unauthorized user', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    const bucket = quarantineBucket();
+    testEnv.DLQ_QUARANTINE = bucket as any;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
+    await handleAdminTelegramWebhook(callback(21, 'r:dlqq', 9999), testEnv);
+    expect(bucket.list).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     db.close();
   });
 });
