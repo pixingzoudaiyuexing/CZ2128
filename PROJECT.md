@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Hardening Implemented, In Review, Not Accepted**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged**
 
 ## Purpose
 
@@ -86,7 +86,7 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 - Phase 4B-2C-3 — AI durable retry state machine and legacy `FAILED` retirement: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-2C overall: **COMPLETE / FROZEN**.
 - Phase 4B-3 reliability UI/control-plane exposure: **COMPLETE / FROZEN / MERGED**.
-- Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **IMPLEMENTED / IN REVIEW / NOT ACCEPTED**.
+- Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-4B explicit durable-state redrive: **NOT STARTED**.
 - Phase 4B-4 overall: **IN PROGRESS**.
 - Phase 4B-5: **NOT STARTED**
@@ -98,4 +98,4 @@ Phase 4B-2C-3 activates the existing `0005` AI columns without adding `0006`. Ge
 
 Phase 4B-3 reuses the authenticated private Telegram Admin Bot and its existing allowlist, webhook-secret, update-receipt and expiring-session boundaries. It exposes manual reconciliation, mark-delivered, cancel and deterministic manual-retry child operations only through frozen core services. AI Reliability remains read-only. No Web Admin, public reliability API, new authentication system, migration `0006`, DLQ consumer/redrive, Durable Object or `CONFIRMED_NOT_SENT` activation was added.
 
-Phase 4B-4A adds a second consumer for `cz2128-dlq` in the same Worker and discriminates queue ownership only through `batch.queue`. The preferred path stores one deterministic sanitized D1 receipt through the existing `0005` schema. If D1 capture fails, a dedicated private `DLQ_QUARANTINE` R2 bucket stores one deterministic allowlisted terminal evidence object; it is not canonical application state. The Queue message is ACKed only after either D1 receipt persistence or R2 quarantine persistence succeeds, and retries when both fail. Canonical `PROCESSED` completion and DLQ `RESOLVED` state converge in either commit order through metadata-only D1 batches. Raw bodies, content, attachment credentials, URLs, AI text and free-form errors are never retained. The private Admin Bot exposes bounded read-only D1 and quarantine inspection. Simultaneous persistent D1 and R2 failure remains a residual loss risk; redrive remains deferred to Phase 4B-4B.
+Phase 4B-4A was merged by PR #12 and is frozen. It adds a second consumer for `cz2128-dlq` in the same Worker and discriminates queue ownership only through `batch.queue`. The preferred path stores one deterministic sanitized D1 receipt through the existing `0005` schema. If D1 capture fails, a dedicated private `DLQ_QUARANTINE` R2 bucket stores one deterministic allowlisted terminal evidence object; it is not canonical application state. The Queue message is ACKed only after either D1 receipt persistence or R2 quarantine persistence succeeds, and retries when both fail. Canonical `PROCESSED` completion and DLQ `RESOLVED` state converge in either commit order through metadata-only D1 batches. Raw bodies, content, attachment credentials, URLs, AI text and free-form errors are never retained. The private Admin Bot exposes bounded read-only D1 and quarantine inspection. Simultaneous persistent D1 and R2 failure remains a residual loss risk; redrive remains deferred to Phase 4B-4B. Production deployment and `DLQ_QUARANTINE` provisioning remain NOT DEPLOYED / NOT PROVISIONED / NOT VALIDATED.

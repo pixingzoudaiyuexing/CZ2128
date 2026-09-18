@@ -1,7 +1,7 @@
-# CZ2128 - Phase 4B-4A Hardening Implemented / In Review / Not Accepted
+# CZ2128 - Phase 4B-4A Complete / Frozen / Merged
 
 ## 状态
-- **Current Branch**: `codex/phase4b4a-dlq-capture`
+- **Current Branch**: `main`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
@@ -11,6 +11,7 @@
 - **PR #9**: merged; Phase 4B-2C-2 complete and frozen
 - **PR #10**: merged; Phase 4B-2C-3 complete and frozen
 - **PR #11**: merged; Phase 4B-3 complete and frozen
+- **PR #12**: merged; Phase 4B-4A complete and frozen
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
@@ -21,7 +22,7 @@
 - **Phase 4B-2C-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
 - **Phase 4B-3**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-4A**: HARDENING IMPLEMENTED / IN REVIEW / NOT ACCEPTED
+- **Phase 4B-4A**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-4B**: NOT STARTED
 - **Phase 4B-4 overall**: IN PROGRESS
 - **Phase 4B-5**: NOT STARTED
@@ -65,7 +66,7 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture and read-only inspection is IMPLEMENTED / IN REVIEW. Phase 4B-4B redrive, Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and read-only inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B redrive, Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -117,6 +118,9 @@
 - The private Admin Bot adds bounded read-only D1 receipt and validated R2 custom-metadata views; it never reads quarantine object bodies.
 - Real local Wrangler/workerd D1 tests execute two complete concurrent capture calls. They do not prove production multi-region scheduling, load limits or simultaneous platform availability.
 - Phase 4B-4B explicit durable-state redrive is NOT STARTED. No redrive/replay/resend action exists in this phase.
+
+### NON-BLOCKING 4B-4A DEBT
+3. The Admin quarantine list reads one bounded R2 page. Above 1000 quarantine objects, its displayed 10 entries are not guaranteed to be globally newest. Classification: LOW / NON-BLOCKING / OBSERVABILITY ONLY. Defer to pre-production / Phase 4C unless operational evidence requires earlier work.
 
 ### NON-BLOCKING TEST DEBT
 1. Add an explicit relative-order assertion for the recent uncertain-delivery list.

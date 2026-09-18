@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and Phase 4B-3 are complete, frozen and merged. Phase 4B-4A hardening is implemented, in review and not accepted; Phase 4B-4 overall is in progress. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3 and Phase 4B-4A are complete, frozen and merged. Phase 4B-4 overall is in progress. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -35,6 +35,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - One deterministic sanitized receipt is atomically upserted through the existing `0005` schema. If D1 fails, one deterministic allowlisted quarantine object is written to `DLQ_QUARANTINE`. The raw Cloudflare message is ACKed only after either durable path succeeds; both failing requests Queue retry.
 - Canonical PROCESSED completion and matching DLQ RESOLVED metadata converge in either commit order. The authenticated private Telegram Admin Bot provides bounded read-only D1 and quarantine metadata views. Redrive is deferred to Phase 4B-4B and no delete/import/redrive/replay/resend action exists.
 - Simultaneous persistent D1 and R2 failure plus Queue retry exhaustion remains a residual loss risk. Local Wrangler/workerd tests cover service-level concurrency but do not establish production load or multi-region behavior.
+- The private `DLQ_QUARANTINE` resource is not provisioned or validated in production. Its lifecycle/retention and production outage behavior remain operational work. Above 1000 quarantine objects, the bounded Admin listing does not guarantee globally newest 10 entries; this is LOW non-blocking pre-production / Phase 4C observability debt.
 
 ## Setup
 - `npm ci`
