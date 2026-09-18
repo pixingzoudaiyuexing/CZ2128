@@ -6,6 +6,156 @@ import { manualMarkDelivered, manualCancel, reconcileOutboundOperation } from '.
 import { manualRetryOutboundOperation, MANUAL_RETRY_REASONS } from '../core/outbound-manual-retry';
 import { saveAdminSession, getAdminSession, clearAdminSession } from '../runtime-config/repository';
 import { safeErrorCode, SafeError } from '../core/errors';
+import { listDlqQuarantine } from '../queue/dlq-quarantine';
+
+interface AdminDlqReceipt {
+  id: string;
+  queue_name: string;
+  event_source: string | null;
+  source_event_ref: string | null;
+  event_type: string | null;
+  conversation_id: string | null;
+  operation_id: string | null;
+  safe_error_code: string | null;
+  status: 'OPEN' | 'RESOLVED';
+  delivery_count: number;
+  first_seen_at: number;
+  last_seen_at: number;
+  resolved_at: number | null;
+}
+
+function safeDisplay(value: string | number | null, maximum = 96): string {
+  if (value === null) return 'N/A';
+  const normalized = String(value).replace(/[\u0000-\u001f\u007f]/g, '');
+  return normalized.length <= maximum ? normalized : `${normalized.slice(0, maximum)}...`;
+}
+
+async function showDlqList(
+  env: Env,
+  bootstrap: AdminBootstrap,
+  ctx: AdminContext,
+  mode: 'OPEN' | 'RECENT'
+): Promise<string> {
+  const where = mode === 'OPEN' ? "WHERE status = 'OPEN'" : '';
+  const rows = await env.DB.prepare(
+    `SELECT id, queue_name, event_source, source_event_ref, event_type, conversation_id,
+            operation_id, safe_error_code, status, delivery_count, first_seen_at,
+            last_seen_at, resolved_at
+     FROM dlq_receipts ${where}
+     ORDER BY last_seen_at DESC, id DESC LIMIT 10`
+  ).all<AdminDlqReceipt>();
+  const receipts = rows.results || [];
+  if (receipts.length === 0) {
+    await reply(bootstrap, ctx, mode === 'OPEN' ? 'No open DLQ receipts.' : 'No DLQ receipts found.', [
+      [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+    ]);
+    return mode === 'OPEN' ? 'REL_DLQ_OPEN' : 'REL_DLQ_RECENT';
+  }
+
+  await saveAdminSession(env, {
+    admin_user_id: ctx.userId,
+    action: 'RELIABILITY_DLQ_LIST',
+    target: 'DLQ_RECEIPT',
+    expected_version: 0,
+    candidate_value_text: null,
+    candidate_ciphertext: null,
+    candidate_nonce: null,
+    context_json: JSON.stringify({ mode, receiptIds: receipts.map(receipt => receipt.id) })
+  });
+
+  const lines = receipts.map((receipt, index) => [
+    `${index + 1}. ${receipt.status} ${safeDisplay(receipt.event_source, 24)} / ${safeDisplay(receipt.event_type, 40)}`,
+    `Event: ${safeDisplay(receipt.source_event_ref, 80)}`,
+    `Seen: ${receipt.last_seen_at} | Deliveries: ${receipt.delivery_count}`
+  ].join('\n'));
+  const buttons = receipts.map((receipt, index) => [{
+    text: `${index + 1}. ${receipt.status} ${safeDisplay(receipt.event_type, 24)}`,
+    callback_data: `r:d:${index}`
+  }]);
+  await reply(bootstrap, ctx, `${mode === 'OPEN' ? 'Open' : 'Recent'} DLQ (Latest 10):\n\n${lines.join('\n\n')}`, [
+    ...buttons,
+    [{ text: 'Refresh', callback_data: mode === 'OPEN' ? 'r:dlqo' : 'r:dlqr' }],
+    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+  ]);
+  return mode === 'OPEN' ? 'REL_DLQ_OPEN' : 'REL_DLQ_RECENT';
+}
+
+async function showDlqDetail(
+  env: Env,
+  bootstrap: AdminBootstrap,
+  ctx: AdminContext,
+  receiptId: string,
+  mode: 'OPEN' | 'RECENT'
+): Promise<string> {
+  const receipt = await env.DB.prepare(
+    `SELECT id, queue_name, event_source, source_event_ref, event_type, conversation_id,
+            operation_id, safe_error_code, status, delivery_count, first_seen_at,
+            last_seen_at, resolved_at
+     FROM dlq_receipts WHERE id = ?`
+  ).bind(receiptId).first<AdminDlqReceipt>();
+  if (!receipt) return showDlqList(env, bootstrap, ctx, mode);
+
+  await saveAdminSession(env, {
+    admin_user_id: ctx.userId,
+    action: 'RELIABILITY_DLQ_DETAIL',
+    target: 'DLQ_RECEIPT',
+    expected_version: 0,
+    candidate_value_text: null,
+    candidate_ciphertext: null,
+    candidate_nonce: null,
+    context_json: JSON.stringify({ mode, receiptId: receipt.id })
+  });
+  await reply(bootstrap, ctx, [
+    'DLQ Receipt',
+    '',
+    `ID: ${safeDisplay(receipt.id)}`,
+    `Status: ${receipt.status}`,
+    `Queue: ${safeDisplay(receipt.queue_name)}`,
+    `Source: ${safeDisplay(receipt.event_source)}`,
+    `Event ref: ${safeDisplay(receipt.source_event_ref, 256)}`,
+    `Event type: ${safeDisplay(receipt.event_type)}`,
+    `Conversation: ${safeDisplay(receipt.conversation_id)}`,
+    `Operation: ${safeDisplay(receipt.operation_id)}`,
+    `Error: ${safeDisplay(receipt.safe_error_code)}`,
+    `Deliveries: ${receipt.delivery_count}`,
+    `First seen: ${receipt.first_seen_at}`,
+    `Last seen: ${receipt.last_seen_at}`,
+    `Resolved at: ${safeDisplay(receipt.resolved_at)}`
+  ].join('\n'), [
+    [{ text: 'Refresh', callback_data: 'r:dd' }],
+    [{ text: '返回 DLQ', callback_data: mode === 'OPEN' ? 'r:dlqo' : 'r:dlqr' }],
+    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+  ]);
+  return 'REL_DLQ_DETAIL';
+}
+
+async function showDlqQuarantine(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext): Promise<string> {
+  const quarantine = await listDlqQuarantine(env.DLQ_QUARANTINE, 10);
+  const count = quarantine.truncated ? `${quarantine.visibleCount}+` : String(quarantine.visibleCount);
+  const lines = quarantine.entries.map((entry, index) => [
+    `${index + 1}. ${entry.state}`,
+    `ID: ${safeDisplay(entry.quarantineId)}`,
+    `Canonical receipt: ${safeDisplay(entry.canonicalReceiptId)}`,
+    `Source/type: ${safeDisplay(entry.eventSource, 24)} / ${safeDisplay(entry.eventType, 40)}`,
+    `Queue attempts: ${safeDisplay(entry.queueAttempts)}`,
+    `Message time: ${safeDisplay(entry.messageTimestamp)}`,
+    `Uploaded: ${entry.uploadedAt}`,
+    `Reason: ${entry.reason}`
+  ].join('\n'));
+  const text = [
+    'Terminal DLQ Quarantine',
+    '',
+    `Visible objects: ${count}`,
+    `Invalid sanitized metadata: ${quarantine.invalidMetadataCount}`,
+    '',
+    ...(lines.length > 0 ? lines : ['No sanitized quarantine evidence found.'])
+  ].join('\n\n');
+  await reply(bootstrap, ctx, text, [
+    [{ text: 'Refresh', callback_data: 'r:dlqq' }],
+    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+  ]);
+  return 'REL_DLQ_QUARANTINE';
+}
 
 export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext) {
   const unresolvedAmbiguous = await env.DB.prepare(
@@ -32,6 +182,18 @@ export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, c
     `SELECT COUNT(*) as c FROM ai_runs WHERE status = 'FAILED_FINAL'`
   ).first<{ c: number }>();
 
+  const now = Math.floor(Date.now() / 1000);
+  const dlqSummary = await env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM dlq_receipts WHERE status = 'OPEN') AS open_count,
+       ((SELECT COUNT(*) FROM dlq_receipts WHERE status = 'OPEN' AND last_seen_at >= ?) +
+        (SELECT COUNT(*) FROM dlq_receipts WHERE status = 'RESOLVED' AND last_seen_at >= ?)) AS recent_count,
+       MAX(
+         COALESCE((SELECT last_seen_at FROM dlq_receipts WHERE status = 'OPEN' ORDER BY last_seen_at DESC LIMIT 1), 0),
+         COALESCE((SELECT last_seen_at FROM dlq_receipts WHERE status = 'RESOLVED' ORDER BY last_seen_at DESC LIMIT 1), 0)
+       ) AS latest_at`
+  ).bind(now - 86400, now - 86400).first<{ open_count: number; recent_count: number; latest_at: number }>();
+
   const text = [
     `🛡 Reliability Control Plane`,
     ``,
@@ -40,7 +202,10 @@ export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, c
     `Manual resolutions: ${manualResolved?.c || 0}`,
     `AI FAILED_RETRYABLE: ${aiRetryable?.c || 0}`,
     `AI RETRY_EXHAUSTED: ${aiExhausted?.c || 0}`,
-    `AI FAILED_FINAL: ${aiFinal?.c || 0}`
+    `AI FAILED_FINAL: ${aiFinal?.c || 0}`,
+    `DLQ OPEN: ${dlqSummary?.open_count || 0}`,
+    `DLQ last 24h: ${dlqSummary?.recent_count || 0}`,
+    `DLQ latest: ${dlqSummary?.latest_at || 'N/A'}`
   ].join('\n');
 
   await reply(bootstrap, ctx, text, [
@@ -48,12 +213,42 @@ export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, c
     [{ text: '🔎 Lookup Operation', callback_data: 'r:look' }],
     [{ text: '🤖 AI Reliability', callback_data: 'r:ai' }],
     [{ text: '📜 Reliability Audit', callback_data: 'r:aud' }],
+    [{ text: '☠️ Open DLQ', callback_data: 'r:dlqo' }, { text: 'Recent DLQ', callback_data: 'r:dlqr' }],
+    [{ text: 'Terminal Quarantine', callback_data: 'r:dlqq' }],
     [{ text: '🔄 Refresh', callback_data: 'p:rel' }],
     [{ text: '返回', callback_data: 'm' }]
   ]);
 }
 
 export async function processReliabilityCallback(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, action: string): Promise<string> {
+  if (action === 'dlqq') return showDlqQuarantine(env, bootstrap, ctx);
+  if (action === 'dlqo') return showDlqList(env, bootstrap, ctx, 'OPEN');
+  if (action === 'dlqr') return showDlqList(env, bootstrap, ctx, 'RECENT');
+  if (/^d:\d$/.test(action)) {
+    const session = await getAdminSession(env, ctx.userId);
+    if (session?.action !== 'RELIABILITY_DLQ_LIST' || !session.context_json) {
+      return showDlqList(env, bootstrap, ctx, 'OPEN');
+    }
+    const context = JSON.parse(session.context_json) as { mode?: string; receiptIds?: unknown };
+    const mode = context.mode === 'RECENT' ? 'RECENT' : 'OPEN';
+    const receiptIds = Array.isArray(context.receiptIds)
+      ? context.receiptIds.filter((value): value is string => typeof value === 'string')
+      : [];
+    const receiptId = receiptIds[Number(action.slice(2))];
+    if (!receiptId) return showDlqList(env, bootstrap, ctx, mode);
+    return showDlqDetail(env, bootstrap, ctx, receiptId, mode);
+  }
+  if (action === 'dd') {
+    const session = await getAdminSession(env, ctx.userId);
+    if (session?.action !== 'RELIABILITY_DLQ_DETAIL' || !session.context_json) {
+      return showDlqList(env, bootstrap, ctx, 'OPEN');
+    }
+    const context = JSON.parse(session.context_json) as { mode?: string; receiptId?: unknown };
+    const mode = context.mode === 'RECENT' ? 'RECENT' : 'OPEN';
+    return typeof context.receiptId === 'string'
+      ? showDlqDetail(env, bootstrap, ctx, context.receiptId, mode)
+      : showDlqList(env, bootstrap, ctx, mode);
+  }
   if (action === 'unc') {
     const ops = await env.DB.prepare(
       `SELECT id, destination_provider, operation_type, subject_type FROM outbound_operations WHERE status = 'AMBIGUOUS' AND reconciliation_status IN ('PENDING', 'STILL_AMBIGUOUS') ORDER BY updated_at DESC LIMIT 10`
@@ -123,7 +318,14 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
   if (action.startsWith('o:')) {
     const cmd = action.slice(2);
     const session = await getAdminSession(env, ctx.userId);
-    if (!session || !session.context_json || !session.action.startsWith('RELIABILITY_')) {
+    const operationSessions = new Set([
+      'RELIABILITY_INSPECT',
+      'RELIABILITY_MARK_PROVIDER_REF',
+      'RELIABILITY_MARK_CONFIRM',
+      'RELIABILITY_CANCEL_CONFIRM',
+      'RELIABILITY_RETRY_CONFIRM'
+    ]);
+    if (!session || !session.context_json || !operationSessions.has(session.action)) {
       await reply(bootstrap, ctx, 'Session expired or invalid.', [[{ text: '返回', callback_data: 'p:rel' }]]);
       return 'REL_EXPIRED';
     }

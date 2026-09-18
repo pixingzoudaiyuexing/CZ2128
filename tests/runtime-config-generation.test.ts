@@ -36,6 +36,18 @@ class ReceiptDb {
     };
     return statement;
   }
+
+  async batch(statements: Array<{ run(): Promise<any> }>) {
+    const snapshot = structuredClone(this.receipts);
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    } catch (error) {
+      this.receipts = snapshot;
+      throw error;
+    }
+  }
 }
 
 class OrderingDb {

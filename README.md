@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and Phase 4B-3 are complete, frozen and merged. Phase 4B-4, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3 and Phase 4B-3 are complete, frozen and merged. Phase 4B-4A hardening is implemented, in review and not accepted; Phase 4B-4 overall is in progress. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -19,14 +19,22 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - Target drift blocks child creation. Chatwoot children use a new child-scoped `source_id`; Telegram group, thread, method and runtime generation must remain compatible.
 - Effective delivery repairs attachment/topic domain state through idempotent D1 CAS without another provider action.
 - Telegram topic repair additionally requires the operation's persisted group identity to match the current effective `BOT_GROUP_ID`, preventing old-group topic references from returning after support-group migration.
-- The private Telegram Admin Bot exposes confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through the frozen core services. DLQ consumption/redrive remains a later phase.
+- The private Telegram Admin Bot exposes confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through the frozen core services. It also provides read-only sanitized DLQ inspection; redrive remains a later phase.
 
 ## Reliability Control Plane
 - Phase 4B-3 is complete, merged and frozen.
 - The existing private Telegram Admin Bot and authorization/session/idempotency boundaries are reused; there is no Web Admin, public reliability API or new authentication system.
 - Reliability summary, uncertain operations, operation details, audit and AI Reliability are bounded administrative reads. AI Reliability is read-only.
 - Manual reconciliation, mark-delivered, cancel and duplicate-risk manual retry are active. Operation identity and CREATE_TOPIC provider references remain in expiring Admin session state rather than callback payloads.
-- `CONFIRMED_NOT_SENT` is inactive. DLQ consumption/redrive, Durable Objects and migration `0006` are absent.
+- `CONFIRMED_NOT_SENT` is inactive. DLQ redrive, Durable Objects and migration `0006` are absent.
+
+## DLQ Capture and Inspection
+- `cz2128-queue` and `cz2128-dlq` are consumed by the same Worker and separated only through `batch.queue`; normal queue handling remains unchanged.
+- The DLQ path uses D1, trusted Queue metadata and the dedicated private `DLQ_QUARANTINE` R2 fallback. It never invokes normal event processing, provider adapters, R2 downloads or Queue sends.
+- Raw bodies, message/AI content, private URLs, attachment credentials, provider bodies and free-form exceptions are never persisted or displayed.
+- One deterministic sanitized receipt is atomically upserted through the existing `0005` schema. If D1 fails, one deterministic allowlisted quarantine object is written to `DLQ_QUARANTINE`. The raw Cloudflare message is ACKed only after either durable path succeeds; both failing requests Queue retry.
+- Canonical PROCESSED completion and matching DLQ RESOLVED metadata converge in either commit order. The authenticated private Telegram Admin Bot provides bounded read-only D1 and quarantine metadata views. Redrive is deferred to Phase 4B-4B and no delete/import/redrive/replay/resend action exists.
+- Simultaneous persistent D1 and R2 failure plus Queue retry exhaustion remains a residual loss risk. Local Wrangler/workerd tests cover service-level concurrency but do not establish production load or multi-region behavior.
 
 ## Setup
 - `npm ci`
@@ -35,7 +43,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - `npm run lint`
 - `npm run test`
 
-Before deployment, replace the local-only D1 database ID in `wrangler.toml` and create both `cz2128-queue` and its `cz2128-dlq` dead-letter queue.
+Before deployment, replace the local-only D1 database ID in `wrangler.toml`, create both `cz2128-queue` and its `cz2128-dlq` dead-letter queue, and provision the dedicated private `cz2128-dlq-quarantine` R2 bucket for the `DLQ_QUARANTINE` binding. This repository task does not create remote resources.
 
 ## Environment Variables
 Core:

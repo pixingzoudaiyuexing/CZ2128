@@ -215,11 +215,25 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-3 only. Migration `0006`, Admin reliability UI/commands, DLQ consumption, `CONFIRMED_NOT_SENT`, Durable Objects and Phase 4C load acceptance remain absent.
 
-**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is COMPLETE / FROZEN / MERGED. Phase 4B-4, 4B-5, and 4C remain NOT STARTED.
+**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is COMPLETE / FROZEN / MERGED. Phase 4B-4A is IMPLEMENTED / IN REVIEW; Phase 4B-4B, 4B-5, and 4C remain NOT STARTED.
 
 ## Phase 4B-3 Reliability Control Plane
 **Decision:** Reliability control plane uses the existing authenticated Telegram Admin Bot. No new Web Admin, public HTTP control API or authentication system is introduced. Admin UI never directly mutates reliability state; frozen core services remain authoritative. Manual reconciliation, mark-delivered, cancel and deterministic manual-retry child operations are active. Destructive actions use action-specific expiring confirmation sessions, and Manual Retry requires explicit duplicate-risk confirmation. Operation IDs and CREATE_TOPIC provider references are bound through session state rather than callback payloads. AI Reliability is read-only.
 
-**Scope:** `CONFIRMED_NOT_SENT` remains inactive. DLQ consumption/redrive, Durable Objects, migration `0006`, Phase 4B-4, Phase 4B-5 and Phase 4C remain absent or NOT STARTED.
+**Scope:** `CONFIRMED_NOT_SENT`, DLQ handling, Durable Objects, migration `0006`, Phase 4B-4, Phase 4B-5 and Phase 4C were outside Phase 4B-3.
 
 **Status:** COMPLETE / FROZEN / MERGED.
+
+## D-028 — Capture DLQ loss boundaries as sanitized durable receipts (PROPOSED / WIP)
+
+**Decision:** The Worker discriminates the main queue and `cz2128-dlq` only through `batch.queue`. DLQ capture never invokes normal event handling or runtime provider resolution. It derives a deterministic receipt identity from bounded event metadata, with the Cloudflare message ID as the hashed malformed-envelope fallback, and persists only finite metadata through the existing migration `0005`.
+
+**Durability rule:** The preferred path persists the sanitized receipt and matching `event_receipts` dead-letter marker through D1. If that fails, a dedicated private `DLQ_QUARANTINE` R2 binding stores one deterministic allowlisted terminal evidence object keyed by a hash of trusted Queue name/message identity. The Queue message is ACKed only after D1 or R2 persistence succeeds; both failing requires Queue retry. Quarantine is terminal evidence, not canonical application state, and simultaneous persistent D1/R2 failure plus retry exhaustion remains a residual loss risk.
+
+**Convergence rule:** D1 capture determines OPEN/RESOLVED from canonical state inside the write batch. Canonical `PROCESSED` completion shares a D1 batch with a metadata-only matching OPEN→RESOLVED update. Both commit orders therefore converge monotonically; RESOLVED never regresses to OPEN.
+
+**Privacy and inspection rule:** Raw message bodies, customer/operator/AI text, attachment locators or tokens, private URLs, provider responses, secrets and free-form exceptions are never persisted, logged or rendered. The existing authenticated private Telegram Admin Bot supplies bounded read-only D1 and R2-quarantine metadata views. R2 inspection validates custom metadata and never reads object bodies.
+
+**Scope:** Phase 4B-4A only. Explicit durable-state redrive is deferred to Phase 4B-4B. No migration `0006`, Web Admin, public API, new authentication system, Durable Object, `CONFIRMED_NOT_SENT`, provider action or main-queue retry change is introduced.
+
+**Status:** PROPOSED / IMPLEMENTED / IN REVIEW / NOT ACCEPTED. Phase 4B-4 overall is IN PROGRESS. Phase 4B-4B, Phase 4B-5 and Phase 4C remain NOT STARTED.

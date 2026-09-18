@@ -18,7 +18,8 @@ function makeEnv(db: SqliteD1, bucketGet = vi.fn()): Env {
     TELEGRAM_WEBHOOK_SECRET: 'telegram-webhook',
     TELEGRAM_SECRET_PATH: 'telegram-path',
     BOT_GROUP_ID: '-1001',
-    ATTACHMENTS_BUCKET: { get: bucketGet } as any
+    ATTACHMENTS_BUCKET: { get: bucketGet } as any,
+    DLQ_QUARANTINE: {} as any
   };
 }
 

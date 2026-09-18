@@ -13,6 +13,11 @@ import { AttachmentDescriptor } from './core/attachments';
 import { handleAdminTelegramWebhook } from './admin/handler';
 import { resolveEffectiveEnv } from './runtime-config/resolver';
 import { boundedQueueRetryDelay } from './core/retry';
+import { captureDlqMessage } from './queue/dlq-consumer';
+import { persistDlqQuarantine } from './queue/dlq-quarantine';
+
+const MAIN_QUEUE_NAME = 'cz2128-queue';
+const DLQ_QUEUE_NAME = 'cz2128-dlq';
 
 export type { Env } from './config/env';
 
@@ -234,14 +239,52 @@ export default {
     return new Response('Not Found', { status: 404 });
   },
 
-  async queue(batch: MessageBatch<SupportEvent>, env: Env, ctx: ExecutionContext): Promise<void> {
+  async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (batch.queue === DLQ_QUEUE_NAME) {
+      for (const message of batch.messages) {
+        try {
+          await captureDlqMessage(env, message, undefined, batch.queue);
+          message.ack();
+        } catch {
+          try {
+            const quarantined = await persistDlqQuarantine(env.DLQ_QUARANTINE, message, batch.queue);
+            logger.warn('Sanitized DLQ receipt persisted to terminal quarantine', {
+              source: batch.queue,
+              operation_id: quarantined.quarantineId,
+              error_code: 'D1_WRITE_FAILED'
+            });
+            message.ack();
+          } catch (error) {
+            logger.error('DLQ receipt and terminal quarantine persistence failed', error, {
+              source: batch.queue,
+              error_code: 'D1_WRITE_FAILED'
+            });
+            message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });
+          }
+        }
+      }
+      return;
+    }
+
+    if (batch.queue !== MAIN_QUEUE_NAME) {
+      logger.warn('Unknown queue batch rejected', { source: batch.queue });
+      for (const message of batch.messages) {
+        message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });
+      }
+      return;
+    }
+
     for (const message of batch.messages) {
       try {
         const effectiveEnv = await resolveEffectiveEnv(env);
-        await handleQueueEvent(message.body, effectiveEnv);
+        await handleQueueEvent(message.body as SupportEvent, effectiveEnv);
         message.ack();
       } catch (error) {
-        logger.error('Failed to process queue message', error, { eventId: message.body.eventId });
+        const eventId = message.body && typeof message.body === 'object' && 'eventId' in message.body
+          && typeof message.body.eventId === 'string'
+          ? message.body.eventId
+          : undefined;
+        logger.error('Failed to process queue message', error, { eventId });
         if (error instanceof RetryableProcessingError) {
           message.retry({ delaySeconds: error.retryAfterSeconds });
         } else {

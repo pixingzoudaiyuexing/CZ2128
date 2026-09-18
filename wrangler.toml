@@ -10,6 +10,10 @@ crons = ["0 * * * *"]
 binding = "ATTACHMENTS_BUCKET"
 bucket_name = "cz2128-attachments"
 
+[[r2_buckets]]
+binding = "DLQ_QUARANTINE"
+bucket_name = "cz2128-dlq-quarantine"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "cz2128-db"
@@ -25,3 +29,8 @@ max_batch_size = 10
 max_batch_timeout = 1
 max_retries = 3
 dead_letter_queue = "cz2128-dlq"
+
+[[queues.consumers]]
+queue = "cz2128-dlq"
+max_batch_size = 10
+max_batch_timeout = 1

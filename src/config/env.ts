@@ -25,6 +25,7 @@ export interface Env {
   TELEGRAM_SECRET_PATH: string;
   BOT_GROUP_ID: string;
   ATTACHMENTS_BUCKET: R2Bucket;
+  DLQ_QUARANTINE: R2Bucket;
   ATTACHMENT_MAX_BYTES?: string;
   ATTACHMENT_MAX_COUNT_PER_MESSAGE?: string;
   ATTACHMENT_TTL_SECONDS?: string;
