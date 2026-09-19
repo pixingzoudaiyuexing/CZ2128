@@ -379,4 +379,24 @@ describe('real local D1/R2 DLQ service behavior', () => {
     });
     expect(snapshot.dlq[0].status).toBe('RESOLVED');
   });
+
+  it('fails closed on real-D1 malformed Chatwoot SENT provider evidence', async () => {
+    await request('/seed-ai-redrive', {});
+    await request('/seed-success-with-mirror', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/malform-redrive-chatwoot-sent', {});
+    await request('/seed-newer-customer', {});
+    expect(await request('/process-redrive', {})).toEqual({
+      ok: false, error: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+    const snapshot = await request('/snapshot');
+    const chatwoot = snapshot.outbound.find((row: any) => row.destination_provider === 'chatwoot');
+    expect(chatwoot).toMatchObject({ status: 'SENT', provider_message_ref: null });
+    expect(snapshot.events[0].status).toBe('FAILED');
+    expect(snapshot.dlq[0].status).toBe('OPEN');
+    expect(snapshot.audits.filter((row: any) =>
+      row.action === 'HISTORICAL_AI_STALE_DISCARDED'
+    )).toHaveLength(0);
+  });
 });

@@ -160,6 +160,10 @@ function staleTerminationIsSafe(operation: OutboundOperation): boolean {
     Number.isSafeInteger(operation.next_retry_at);
 }
 
+function sentDeliveryEvidenceIsValid(operation: OutboundOperation): boolean {
+  return operation.status === 'SENT' && boundedIdentity(operation.provider_message_ref);
+}
+
 function abandonmentAuditAction(reason: AiOutboundAbandonmentReason): string {
   return reason === 'DISCARDED_STALE'
     ? 'HISTORICAL_AI_STALE_DISCARDED'
@@ -236,7 +240,13 @@ export async function convergeAbandonedAiOutboundOperations(
     if (!kind || !validateAbandonedOperationIdentity(operation, event, kind)) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
-    if (operation.status === 'SENT' || operation.status === 'FAILED_FINAL') continue;
+    if (operation.status === 'SENT') {
+      if (!sentDeliveryEvidenceIsValid(operation)) {
+        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      }
+      continue;
+    }
+    if (operation.status === 'FAILED_FINAL') continue;
     if (!staleTerminationIsSafe(operation)) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
@@ -294,7 +304,13 @@ export async function convergeAbandonedAiOutboundOperations(
     )) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
-    if (current.status === 'SENT' || current.status === 'FAILED_FINAL') continue;
+    if (current.status === 'SENT') {
+      if (!sentDeliveryEvidenceIsValid(current)) {
+        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      }
+      continue;
+    }
+    if (current.status === 'FAILED_FINAL') continue;
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
   }
   return { changed };

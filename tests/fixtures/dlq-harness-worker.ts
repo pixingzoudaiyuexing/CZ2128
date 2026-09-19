@@ -286,6 +286,13 @@ export default {
       );
       return json({ ok: true });
     }
+    if (path === '/malform-redrive-chatwoot-sent') {
+      await env.DB.prepare(
+        `UPDATE outbound_operations SET provider_message_ref = NULL
+         WHERE id = ? AND status = 'SENT'`
+      ).bind(`ai_reply:${redriveEventId}`).run();
+      return json({ ok: true });
+    }
     if (path === '/converge-stale') {
       const result = await convergeStaleAiOutboundOperations(redriveEnv(env), {
         version: 1,

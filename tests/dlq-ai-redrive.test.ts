@@ -1426,4 +1426,95 @@ describe('DLQ AI redrive request idempotency', () => {
       db.close();
     }
   );
+
+  it.each([
+    ['DISCARDED_STALE', 'CHATWOOT'],
+    ['CANCELLED_BY_HANDOFF', 'CHATWOOT'],
+    ['DISCARDED_STALE', 'TELEGRAM'],
+    ['CANCELLED_BY_HANDOFF', 'TELEGRAM']
+  ] as const)('fails closed for %s cleanup with malformed %s SENT evidence', async (reason, kind) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    if (kind === 'TELEGRAM') await seedOutbound(db, env, 'TELEGRAM', 'SENT');
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', `87${reason.length}${kind.length}`, NOW);
+    const operationId = kind === 'CHATWOOT'
+      ? `ai_reply:${EVENT_ID}`
+      : `ai_tg_mirror:${EVENT_ID}`;
+    await db.prepare('UPDATE outbound_operations SET provider_message_ref = NULL WHERE id = ?')
+      .bind(operationId).run();
+    if (reason === 'DISCARDED_STALE') {
+      await db.prepare(
+        `INSERT INTO messages
+         (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+          message_type, text_content, created_at)
+         VALUES ('newer-malformed-sent', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+                 'TEXT', 'New customer text', 101)`
+      ).bind(CONVERSATION_ID).run();
+    } else {
+      await db.prepare('UPDATE conversations SET ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = ?')
+        .bind(CONVERSATION_ID).run();
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(handleQueueEvent(bodies[0], env)).rejects.toMatchObject({
+      code: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, provider_message_ref FROM outbound_operations WHERE id = ?')
+      .bind(operationId).first<any>())).toMatchObject({ status: 'SENT', provider_message_ref: null });
+    expect((await db.prepare('SELECT status FROM event_receipts WHERE source_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('FAILED');
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action IN ('HISTORICAL_AI_STALE_DISCARDED', 'AI_HANDOFF_CANCELLED')"
+    ).first<any>()).c).toBe(0);
+    db.close();
+  });
+
+  it.each([
+    ['valid', 'provider-race-ref', true],
+    ['malformed', null, false]
+  ] as const)('handles CAS-lost PENDING to %s SENT with the same integrity rule', async (_label, providerRef, accepted) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const env = makeEnv(db);
+    env.hooks = {
+      beforeAbandonedOutboundConvergence: async innerEnv => {
+        await innerEnv.DB.prepare(
+          `UPDATE outbound_operations
+           SET status = 'SENT', provider_message_ref = ?
+           WHERE id = ? AND status = 'PENDING'`
+        ).bind(providerRef, `ai_reply:${EVENT_ID}`).run();
+      }
+    };
+    const abandonedEvent = {
+      version: 1 as const,
+      source: 'internal' as const,
+      type: 'ai_trigger' as const,
+      eventId: EVENT_ID,
+      payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+    };
+
+    const convergence = convergeAbandonedAiOutboundOperations(
+      env, abandonedEvent, 'CANCELLED_BY_HANDOFF'
+    );
+    if (accepted) await expect(convergence).resolves.toEqual({ changed: 0 });
+    else await expect(convergence).rejects.toMatchObject({ code: 'OUTBOUND_PRECONDITION_FAILED' });
+
+    expect((await db.prepare('SELECT status, provider_message_ref FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'SENT', provider_message_ref: providerRef
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'AI_HANDOFF_CANCELLED'"
+    ).first<any>()).c).toBe(0);
+    db.close();
+  });
 });
