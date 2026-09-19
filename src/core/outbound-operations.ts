@@ -18,7 +18,7 @@ import {
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 
 const OUTBOUND_LEASE_SECONDS = 30;
-const MAX_OUTBOUND_ATTEMPTS = 3;
+export const MAX_OUTBOUND_ATTEMPTS = 3;
 
 export interface OutboundAttemptLifecycle {
   requestStarted(): Promise<void>;

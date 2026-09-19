@@ -3,6 +3,7 @@ import type { SupportEvent } from '../core/events';
 export interface Env {
   hooks?: {
     beforeGenerationLeaseClaim?: (env: Env, convId: string) => Promise<void>;
+    beforeAiLeaseAcquire?: (env: Env, convId: string) => Promise<void>;
     beforeAiContextBuild?: (env: Env, convId: string) => Promise<void>;
     beforeAiRunSuccessPersist?: (env: Env, convId: string) => Promise<void>;
     beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>;

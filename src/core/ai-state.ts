@@ -412,6 +412,7 @@ export async function claimDurableAiRun(
          next_retry_at = NULL, last_error = NULL, updated_at = excluded.updated_at
      WHERE ai_runs.conversation_id = excluded.conversation_id
        AND ai_runs.trigger_message_ref = excluded.trigger_message_ref
+       AND ai_runs.handoff_epoch = excluded.handoff_epoch
        AND ai_runs.attempt_count < ?
        AND (
          ai_runs.status = 'PENDING'

@@ -7,6 +7,11 @@ import { manualRetryOutboundOperation, MANUAL_RETRY_REASONS } from '../core/outb
 import { saveAdminSession, getAdminSession, clearAdminSession } from '../runtime-config/repository';
 import { safeErrorCode, SafeError } from '../core/errors';
 import { listDlqQuarantine } from '../queue/dlq-quarantine';
+import {
+  DlqAiRedriveReason,
+  getDlqAiRedriveEligibility,
+  requestDlqAiRedrive
+} from '../core/dlq-ai-redrive';
 
 interface AdminDlqReceipt {
   id: string;
@@ -29,6 +34,36 @@ function safeDisplay(value: string | number | null, maximum = 96): string {
   const normalized = String(value).replace(/[\u0000-\u001f\u007f]/g, '');
   return normalized.length <= maximum ? normalized : `${normalized.slice(0, maximum)}...`;
 }
+
+const REDRIVE_REASON_LABELS: Record<DlqAiRedriveReason, string> = {
+  ELIGIBLE: 'eligible',
+  RECEIPT_NOT_FOUND: 'receipt missing',
+  RECEIPT_RESOLVED: 'resolved',
+  NOT_AI_TRIGGER: 'not AI trigger',
+  RECEIPT_MALFORMED: 'receipt malformed',
+  EVENT_ID_INVALID: 'payload not reconstructable',
+  CONVERSATION_MISSING: 'conversation missing',
+  MESSAGE_MISSING: 'message missing',
+  STALE_TRIGGER: 'stale trigger',
+  AI_RUN_MISSING: 'AI run missing',
+  AI_RUN_IDENTITY_MISMATCH: 'AI run mismatch',
+  AI_RUN_STATE_INELIGIBLE: 'AI run state ineligible',
+  AI_RETRY_NOT_DUE: 'retry deadline not reached',
+  AI_ATTEMPTS_EXHAUSTED: 'attempts exhausted',
+  AI_PAUSED: 'AI paused',
+  HANDOFF_EPOCH_CHANGED: 'handoff epoch changed',
+  ACTIVE_GENERATION: 'active generation',
+  EVENT_RECEIPT_MISSING: 'event receipt missing',
+  EVENT_RECEIPT_ACTIVE: 'active processing',
+  EVENT_RECEIPT_PROCESSED: 'already processed',
+  EVENT_RECEIPT_INCONSISTENT: 'event receipt inconsistent',
+  OUTBOUND_ACTIVE: 'outbound active',
+  OUTBOUND_RETRY_NOT_DUE: 'outbound retry not due',
+  OUTBOUND_ATTEMPTS_EXHAUSTED: 'outbound attempts exhausted',
+  OUTBOUND_AMBIGUOUS: 'outbound ambiguous; use reconciliation/manual retry',
+  OUTBOUND_FINAL: 'outbound final',
+  OUTBOUND_INCONSISTENT: 'outbound state inconsistent'
+};
 
 async function showDlqList(
   env: Env,
@@ -85,7 +120,8 @@ async function showDlqDetail(
   bootstrap: AdminBootstrap,
   ctx: AdminContext,
   receiptId: string,
-  mode: 'OPEN' | 'RECENT'
+  mode: 'OPEN' | 'RECENT',
+  alert?: string
 ): Promise<string> {
   const receipt = await env.DB.prepare(
     `SELECT id, queue_name, event_source, source_event_ref, event_type, conversation_id,
@@ -94,6 +130,7 @@ async function showDlqDetail(
      FROM dlq_receipts WHERE id = ?`
   ).bind(receiptId).first<AdminDlqReceipt>();
   if (!receipt) return showDlqList(env, bootstrap, ctx, mode);
+  const eligibility = await getDlqAiRedriveEligibility(env, receipt.id);
 
   await saveAdminSession(env, {
     admin_user_id: ctx.userId,
@@ -106,6 +143,7 @@ async function showDlqDetail(
     context_json: JSON.stringify({ mode, receiptId: receipt.id })
   });
   await reply(bootstrap, ctx, [
+    ...(alert ? [alert, ''] : []),
     'DLQ Receipt',
     '',
     `ID: ${safeDisplay(receipt.id)}`,
@@ -120,8 +158,10 @@ async function showDlqDetail(
     `Deliveries: ${receipt.delivery_count}`,
     `First seen: ${receipt.first_seen_at}`,
     `Last seen: ${receipt.last_seen_at}`,
-    `Resolved at: ${safeDisplay(receipt.resolved_at)}`
+    `Resolved at: ${safeDisplay(receipt.resolved_at)}`,
+    `AI redrive: ${eligibility.eligible ? 'ELIGIBLE' : `NOT ELIGIBLE (${REDRIVE_REASON_LABELS[eligibility.reason]})`}`
   ].join('\n'), [
+    ...(eligibility.eligible ? [[{ text: 'Redrive AI', callback_data: 'r:dr' }]] : []),
     [{ text: 'Refresh', callback_data: 'r:dd' }],
     [{ text: '返回 DLQ', callback_data: mode === 'OPEN' ? 'r:dlqo' : 'r:dlqr' }],
     [{ text: '返回 Reliability', callback_data: 'p:rel' }]
@@ -248,6 +288,65 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
     return typeof context.receiptId === 'string'
       ? showDlqDetail(env, bootstrap, ctx, context.receiptId, mode)
       : showDlqList(env, bootstrap, ctx, mode);
+  }
+  if (action === 'dr') {
+    const session = await getAdminSession(env, ctx.userId);
+    if (session?.action !== 'RELIABILITY_DLQ_DETAIL' || !session.context_json) {
+      return showDlqList(env, bootstrap, ctx, 'OPEN');
+    }
+    const context = JSON.parse(session.context_json) as { mode?: string; receiptId?: unknown };
+    const mode = context.mode === 'RECENT' ? 'RECENT' : 'OPEN';
+    if (typeof context.receiptId !== 'string') return showDlqList(env, bootstrap, ctx, mode);
+    const eligibility = await getDlqAiRedriveEligibility(env, context.receiptId);
+    if (!eligibility.eligible) {
+      return showDlqDetail(
+        env,
+        bootstrap,
+        ctx,
+        context.receiptId,
+        mode,
+        `Redrive unavailable: ${REDRIVE_REASON_LABELS[eligibility.reason]}`
+      );
+    }
+    await saveAdminSession(env, {
+      ...session,
+      action: 'RELIABILITY_DLQ_REDRIVE_CONFIRM'
+    });
+    await reply(bootstrap, ctx, [
+      'Confirm AI redrive request?',
+      '',
+      `Receipt: ${safeDisplay(context.receiptId)}`,
+      `Event: ${safeDisplay(eligibility.event?.eventId || null, 256)}`,
+      'The receipt remains OPEN until canonical processing succeeds.'
+    ].join('\n'), [
+      [{ text: 'Confirm Redrive', callback_data: 'r:dy' }],
+      [{ text: 'Cancel', callback_data: 'r:dn' }]
+    ]);
+    return 'REL_DLQ_REDRIVE_CONFIRM_BEGIN';
+  }
+  if (action === 'dy' || action === 'dn') {
+    const session = await getAdminSession(env, ctx.userId);
+    if (session?.action !== 'RELIABILITY_DLQ_REDRIVE_CONFIRM' || !session.context_json) {
+      return showDlqList(env, bootstrap, ctx, 'OPEN');
+    }
+    const context = JSON.parse(session.context_json) as { mode?: string; receiptId?: unknown };
+    const mode = context.mode === 'RECENT' ? 'RECENT' : 'OPEN';
+    if (typeof context.receiptId !== 'string') return showDlqList(env, bootstrap, ctx, mode);
+    if (action === 'dn') {
+      return showDlqDetail(env, bootstrap, ctx, context.receiptId, mode, 'Redrive cancelled.');
+    }
+    const result = await requestDlqAiRedrive(
+      env,
+      context.receiptId,
+      ctx.userId,
+      ctx.updateId
+    );
+    const alert = result.status === 'ENQUEUED'
+      ? 'AI redrive requested.'
+      : result.status === 'ALREADY_REQUESTED'
+        ? 'This Admin command was already recorded.'
+        : `Redrive unavailable: ${REDRIVE_REASON_LABELS[result.eligibility.reason]}`;
+    return showDlqDetail(env, bootstrap, ctx, context.receiptId, mode, alert);
   }
   if (action === 'unc') {
     const ops = await env.DB.prepare(

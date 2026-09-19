@@ -114,12 +114,31 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     throw new Error('AI run identity collision');
   }
 
+  if (existingRun && Number(existingRun.handoff_epoch) !== Number(conv.ai_handoff_epoch)) {
+    if (existingRun.status === 'PENDING' || existingRun.status === 'FAILED_RETRYABLE') {
+      await cancelDurableAiRunForHandoff(
+        env,
+        stableAiJobId,
+        convId,
+        messageId,
+        existingRun.handoff_epoch
+      );
+    }
+    logger.info('Historical AI trigger fenced by newer handoff epoch', {
+      conversation_id: convId,
+      operation_id: stableAiJobId,
+      result: existingRun.status
+    });
+    return;
+  }
+
   let aiContent: string | undefined;
   let responseId: string | undefined;
   let generationId: string | null = existingRun?.generation_id || null;
   let handoffEpoch = Number(existingRun?.handoff_epoch ?? conv.ai_handoff_epoch ?? 0);
+  const reusedDurableSuccess = existingRun?.status === 'SUCCESS' && existingRun.response_text !== null;
 
-  if (existingRun?.status === 'SUCCESS' && existingRun.response_text) {
+  if (existingRun?.status === 'SUCCESS' && existingRun.response_text !== null) {
     existingRun = await ensureAiRunProviderResponseRef(env, existingRun);
     logger.info('Found existing durable AI run, skipping generation', {
       conversation_id: convId,
@@ -176,6 +195,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       }
     }
 
+    if (env.hooks?.beforeAiLeaseAcquire) {
+      await env.hooks.beforeAiLeaseAcquire(env, convId);
+    }
     const lease = await acquireGenerationLease(env, convId, messageId);
     if (!lease.success) {
       await cancelDurableAiRunForHandoff(env, stableAiJobId, convId, messageId, lease.handoffEpoch);
@@ -195,6 +217,21 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       );
       if (!runClaimed) {
         const current = await getDurableAiRun(env, stableAiJobId);
+        const currentConversation = await loadConversation(env, convId);
+        if (
+          current && currentConversation &&
+          (current.status === 'PENDING' || current.status === 'FAILED_RETRYABLE') &&
+          Number(current.handoff_epoch) !== Number(currentConversation.ai_handoff_epoch)
+        ) {
+          await cancelDurableAiRunForHandoff(
+            env,
+            stableAiJobId,
+            convId,
+            messageId,
+            current.handoff_epoch
+          );
+          return;
+        }
         if (current && isAiRunTerminal(current.status)) return;
         const retryDelay = current ? aiRunRetryDelay(current) : null;
         throw new RetryableProcessingError(
@@ -288,7 +325,15 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     }
   }
 
-  if (!aiContent || !responseId) return;
+  if (aiContent === undefined || !responseId) return;
+
+  if (reusedDurableSuccess && !await verifyHandoffEpoch(env, convId, handoffEpoch)) {
+    logger.info('Historical durable AI success fenced before outbound recovery', {
+      conversation_id: convId,
+      operation_id: stableAiJobId
+    });
+    return;
+  }
 
   const chatwootOperationId = `ai_reply:${stableAiJobId}`;
   const chatwootDelivery = await executeOutboundOperation(
@@ -302,7 +347,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       }
       const isEpochValid = await verifyHandoffEpoch(env, convId, handoffEpoch);
       if (!isEpochValid) {
-        await cancelOwnedAiRunAfterHandoff(env, stableAiJobId, generationId);
+        if (!reusedDurableSuccess) {
+          await cancelOwnedAiRunAfterHandoff(env, stableAiJobId, generationId);
+        }
         logger.warn('AI result cancelled by human handoff before delivery', {
           conversation_id: convId,
           operation_id: generationId || stableAiJobId

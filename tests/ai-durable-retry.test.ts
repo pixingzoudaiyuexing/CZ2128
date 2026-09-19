@@ -461,6 +461,102 @@ describe('durable AI retry state machine', () => {
       .first<{ count: number }>()).toEqual({ count: 1 });
     db.close();
   });
+
+  it('cancels an old-epoch retryable run before lease acquisition after AI is turned off then on', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `INSERT INTO ai_runs
+       (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+        status, attempt_count, next_retry_at, last_error, created_at, updated_at)
+       VALUES ('old-epoch-retry', 'conv', 'message-old-epoch-retry', 'generation-old', 0,
+               'FAILED_RETRYABLE', 1, 0, 'AI_PROVIDER_5XX', 1, 1)`
+    ).run();
+    await db.prepare(
+      `UPDATE conversations
+       SET ai_mode = 'PAUSED_MANUAL', ai_handoff_epoch = 1,
+           ai_generation_id = NULL, ai_generation_started_at = NULL, ai_generation_message_id = NULL
+       WHERE id = 'conv'`
+    ).run();
+    await db.prepare("UPDATE conversations SET ai_mode = 'ENABLED' WHERE id = 'conv'").run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await processAiTrigger(event('old-epoch-retry'), makeEnv(db));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await loadRun(db, 'old-epoch-retry')).toMatchObject({
+      status: 'CANCELLED_BY_HANDOFF',
+      handoff_epoch: 0,
+      attempt_count: 1
+    });
+    expect((await db.prepare('SELECT ai_generation_id FROM conversations WHERE id = ?')
+      .bind('conv').first<any>()).ai_generation_id).toBeNull();
+    db.close();
+  });
+
+  it('atomically refuses to rebind a retryable run when handoff advances after the initial read', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `INSERT INTO ai_runs
+       (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+        status, attempt_count, next_retry_at, last_error, created_at, updated_at)
+       VALUES ('epoch-race', 'conv', 'message-epoch-race', 'generation-old', 0,
+               'FAILED_RETRYABLE', 1, 0, 'AI_PROVIDER_5XX', 1, 1)`
+    ).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const env = makeEnv(db, {
+      hooks: {
+        beforeAiLeaseAcquire: async innerEnv => {
+          await innerEnv.DB.prepare(
+            `UPDATE conversations
+             SET ai_mode = 'ENABLED', ai_handoff_epoch = ai_handoff_epoch + 1,
+                 ai_generation_id = NULL, ai_generation_started_at = NULL,
+                 ai_generation_message_id = NULL
+             WHERE id = 'conv'`
+          ).run();
+        }
+      }
+    });
+
+    await processAiTrigger(event('epoch-race'), env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await loadRun(db, 'epoch-race')).toMatchObject({
+      status: 'CANCELLED_BY_HANDOFF', handoff_epoch: 0, attempt_count: 1
+    });
+    expect((await db.prepare('SELECT ai_handoff_epoch, ai_generation_id FROM conversations WHERE id = ?')
+      .bind('conv').first<any>())).toMatchObject({ ai_handoff_epoch: 1, ai_generation_id: null });
+    db.close();
+  });
+
+  it('preserves an old-epoch durable SUCCESS without regeneration or revived delivery', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `INSERT INTO ai_runs
+       (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+        provider_response_ref, response_text, status, attempt_count, created_at, updated_at)
+       VALUES ('old-epoch-success', 'conv', 'message-old-epoch-success', 'generation-old', 0,
+               'response-old', 'Historical answer', 'SUCCESS', 1, 1, 1)`
+    ).run();
+    await db.prepare("UPDATE conversations SET ai_handoff_epoch = 1, ai_mode = 'ENABLED' WHERE id = 'conv'").run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await processAiTrigger(event('old-epoch-success'), makeEnv(db));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await loadRun(db, 'old-epoch-success')).toMatchObject({
+      status: 'SUCCESS',
+      handoff_epoch: 0,
+      response_text: 'Historical answer'
+    });
+    expect((await db.prepare('SELECT COUNT(*) AS c FROM outbound_operations').first<any>()).c).toBe(0);
+    db.close();
+  });
 });
 
 describe('legacy FAILED normalization', () => {

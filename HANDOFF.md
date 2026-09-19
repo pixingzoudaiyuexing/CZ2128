@@ -1,7 +1,7 @@
-# CZ2128 - Phase 4B-4A Complete / Frozen / Merged
+# CZ2128 - Phase 4B-4B Implemented / In Review
 
 ## 状态
-- **Current Branch**: `main`
+- **Current Branch**: `codex/phase4b4b-ai-durable-redrive`
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
@@ -23,7 +23,7 @@
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
 - **Phase 4B-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-4A**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-4B**: NOT STARTED
+- **Phase 4B-4B**: IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED
 - **Phase 4B-4 overall**: IN PROGRESS
 - **Phase 4B-5**: NOT STARTED
 - **Phase 4C**: NOT STARTED
@@ -66,7 +66,7 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and read-only inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B redrive, Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is implemented and in review but not accepted, frozen or merged. Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -117,7 +117,19 @@
 - Capture-side SQL and canonical completion-side metadata updates converge PROCESSED/RESOLVED in either commit order. OPEN may become RESOLVED; RESOLVED never regresses.
 - The private Admin Bot adds bounded read-only D1 receipt and validated R2 custom-metadata views; it never reads quarantine object bodies.
 - Real local Wrangler/workerd D1 tests execute two complete concurrent capture calls. They do not prove production multi-region scheduling, load limits or simultaneous platform availability.
-- Phase 4B-4B explicit durable-state redrive is NOT STARTED. No redrive/replay/resend action exists in this phase.
+- Phase 4B-4A itself remains frozen; its capture and quarantine paths still perform no redrive/replay/resend action.
+
+## Phase 4B-4B Explicit Durable-State AI Recovery
+- Only OPEN D1 `internal / ai_trigger` receipts can expose Redrive AI. External messages, lifecycle events, `attachment_transfer` and quarantine evidence remain inspection-only.
+- `src/core/dlq-ai-redrive.ts` is authoritative for eligibility and request execution. It reconstructs the exact original event from the receipt identity, canonical conversation, newest durable Chatwoot customer text, matching `ai_runs`, reclaimable `event_receipts` and safe outbound state.
+- Eligible runs are due `FAILED_RETRYABLE` with `attempt_count < 3`, or `SUCCESS` with durable response text. AI attempt history is never reset and SUCCESS never regenerates content.
+- Retry reclaim now requires `ai_runs.handoff_epoch` to equal the current lease epoch inside the D1 CAS. A newer handoff epoch permanently fences old work, including AI OFF then ON. Retryable old work becomes `CANCELLED_BY_HANDOFF`; historical SUCCESS remains SUCCESS and performs no revived delivery.
+- SUCCESS outbound recovery uses explicit safe states: no operation, `PENDING`, due in-budget `FAILED_RETRYABLE`, or `SENT`. `SENDING`, `AMBIGUOUS`, `FAILED_FINAL`, exhausted/not-due retries and malformed/contradictory evidence fail closed. Manual Retry remains the only duplicate-risk resend workflow.
+- Admin inspection shows the action only when the core service reports eligibility. Redrive requires an expiring confirmation, revalidates on confirmation, writes one deterministic `DLQ_RECEIPT / DLQ_REDRIVE_REQUESTED` intent audit per Admin update, then sends the exact event through the existing main Queue.
+- Same-update execution is deduplicated by both `admin_update_receipts` and deterministic audit identity. Distinct commands may enqueue identical physical events; existing event/run/generation/outbound identities keep processing safe.
+- DLQ receipts remain OPEN after a request and become RESOLVED only through canonical event completion. No migration `0006`, outbox, new Queue, Durable Object, KV correctness state, public API, Web Admin, new auth or production resource change was added.
+- Local Wrangler/workerd evidence covers complete concurrent same-command requests, distinct-command identical enqueue and the handoff race on real local D1. This is not production multi-region/load/outage proof.
+- Required independent Gemini code review remains mandatory before any acceptance, merge or freeze decision.
 
 ### NON-BLOCKING 4B-4A DEBT
 3. The Admin quarantine list reads one bounded R2 page. Above 1000 quarantine objects, its displayed 10 entries are not guaranteed to be globally newest. Classification: LOW / NON-BLOCKING / OBSERVABILITY ONLY. Defer to pre-production / Phase 4C unless operational evidence requires earlier work.

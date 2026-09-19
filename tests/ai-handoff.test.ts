@@ -1084,7 +1084,7 @@ describe('Phase 2 AI Handoff', () => {
     expect(env.DB.tables.ai_runs[0].status).toBe('SUCCESS');
   });
 
-  it('terminally cancels a durable result when its trigger is handled while paused', async () => {
+  it('preserves historical SUCCESS while an old-epoch trigger completes as a no-op', async () => {
     env.DB.tables.conversations.push({ id: 'c26', ai_mode: 'PAUSED_OPERATOR', ai_handoff_epoch: 4 });
     env.DB.tables.ai_runs.push({
       trigger_event_ref: 'ai_paused_existing', conversation_id: 'c26', trigger_message_ref: 'm26',
@@ -1102,7 +1102,9 @@ describe('Phase 2 AI Handoff', () => {
     await resumeManual(env, 'c26');
     await handleQueueEvent(event, env);
 
-    expect(env.DB.tables.ai_runs[0].status).toBe('CANCELLED_BY_HANDOFF');
+    expect(env.DB.tables.ai_runs[0].status).toBe('SUCCESS');
+    expect(env.DB.tables.ai_runs[0].handoff_epoch).toBe(3);
+    expect(env.DB.tables.event_receipts[0].status).toBe('PROCESSED');
     expect(counts.ai).toBe(0);
     expect(counts.chatwoot).toBe(0);
     expect(counts.telegram).toBe(0);

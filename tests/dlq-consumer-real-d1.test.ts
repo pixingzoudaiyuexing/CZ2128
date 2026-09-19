@@ -195,4 +195,58 @@ describe('real local D1/R2 DLQ service behavior', () => {
     });
     for (const sentinel of privateSentinels) expect(JSON.stringify(snapshot)).not.toContain(sentinel);
   });
+
+  it('deduplicates two complete concurrent same-command redrive requests on real D1', async () => {
+    const seeded = await request('/seed-ai-redrive', {});
+    const eligibility = await request('/redrive-eligibility', { now: 1_800_000_000 });
+    expect(eligibility).toMatchObject({
+      eligible: true,
+      event: {
+        eventId: seeded.eventId,
+        payload: { convId: 'conv-redrive', messageId: 'message-redrive' }
+      }
+    });
+
+    const results = await Promise.all([
+      request('/redrive-request', { commandId: '7001', now: 1_800_000_000 }),
+      request('/redrive-request', { commandId: '7001', now: 1_800_000_000 })
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual(['ALREADY_REQUESTED', 'ENQUEUED']);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.audits).toHaveLength(1);
+    expect(snapshot.audits[0]).toMatchObject({
+      entity_type: 'DLQ_RECEIPT',
+      entity_id: seeded.receiptId,
+      action: 'DLQ_REDRIVE_REQUESTED',
+      reason_code: 'OPERATOR_REQUESTED_REDRIVE'
+    });
+    expect(snapshot.redriveQueueBodies).toHaveLength(1);
+    expect(snapshot.redriveQueueBodies[0].eventId).toBe(seeded.eventId);
+  }, 30_000);
+
+  it('allows distinct commands to enqueue the exact same logical event on real D1', async () => {
+    const seeded = await request('/seed-ai-redrive', {});
+    await request('/redrive-request', { commandId: '7101', now: 1_800_000_000 });
+    await request('/redrive-request', { commandId: '7102', now: 1_800_000_000 });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.audits).toHaveLength(2);
+    expect(snapshot.redriveQueueBodies).toHaveLength(2);
+    expect(snapshot.redriveQueueBodies[1]).toEqual(snapshot.redriveQueueBodies[0]);
+    expect(snapshot.redriveQueueBodies[0].eventId).toBe(seeded.eventId);
+  });
+
+  it('blocks the Primary handoff race in the real processing service path', async () => {
+    await request('/seed-ai-redrive', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/advance-handoff', {});
+    await request('/process-redrive', {});
+    const snapshot = await request('/snapshot');
+    expect(snapshot.runs[0]).toMatchObject({
+      status: 'CANCELLED_BY_HANDOFF',
+      handoff_epoch: 0,
+      attempt_count: 1
+    });
+    expect(snapshot.redriveQueueBodies).toHaveLength(0);
+  });
 });
