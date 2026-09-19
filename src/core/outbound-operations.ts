@@ -4,6 +4,8 @@ import {
   CancelledBeforeDeliveryError,
   ProviderDeliveryError,
   RetryableProcessingError,
+  SafeError,
+  StaleAiTriggerBeforeDeliveryError,
   retryExhaustionSemantic,
   safeErrorCode
 } from './errors';
@@ -27,14 +29,78 @@ export interface OutboundAttemptLifecycle {
 
 export interface ExecuteOutboundOperationOptions {
   leaseSeconds?: number;
+  allowCreate?: boolean;
   subject: OutboundSubjectIdentity;
   targetEvidence: OutboundTargetEvidence;
 }
 
-async function loadOperation(env: DatabaseEnv, id: string): Promise<OutboundOperation> {
-  const operation = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
+export async function getOutboundOperation(
+  env: DatabaseEnv,
+  id: string
+): Promise<OutboundOperation | null> {
+  return env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
     .bind(id).first<OutboundOperation>();
+}
+
+async function loadOperation(env: DatabaseEnv, id: string): Promise<OutboundOperation> {
+  const operation = await getOutboundOperation(env, id);
   if (!operation) throw new Error('Outbound operation could not be loaded');
+  return operation;
+}
+
+export async function prepareOutboundOperation(
+  env: DatabaseEnv,
+  conversationId: string,
+  destinationProvider: string,
+  operationType: string,
+  deterministicOperationId: string,
+  options: ExecuteOutboundOperationOptions
+): Promise<OutboundOperation | null> {
+  const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
+  let operation = await getOutboundOperation(env, deterministicOperationId);
+  if (!operation && options.allowCreate === false) return null;
+
+  if (!operation) {
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO outbound_operations
+       (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
+        subject_type, subject_ref, target_evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    ).bind(
+      deterministicOperationId,
+      conversationId,
+      destinationProvider,
+      operationType,
+      'PENDING',
+      now,
+      now,
+      options.subject.type,
+      options.subject.ref,
+      targetEvidenceJson
+    ).run();
+    operation = await loadOperation(env, deterministicOperationId);
+  }
+
+  if (
+    operation.conversation_id !== conversationId ||
+    operation.destination_provider !== destinationProvider ||
+    operation.operation_type !== operationType
+  ) {
+    throw new Error('Outbound operation identity collision');
+  }
+  assertSubjectIdentity(operation, options.subject);
+  operation = await establishEvidence(env, operation, options.subject, targetEvidenceJson);
+  if (
+    operation.status !== 'SENT' &&
+    operation.status !== 'AMBIGUOUS' &&
+    operation.status !== 'FAILED_FINAL' &&
+    (!operation.target_evidence_json ||
+      !targetEvidenceMatches(operation.target_evidence_json, options.targetEvidence))
+  ) {
+    operation = await rejectTargetIdentity(env, operation, 'TARGET_IDENTITY_CHANGED');
+  }
   return operation;
 }
 
@@ -141,19 +207,23 @@ export async function executeOutboundOperation(
   const id = deterministicOperationId;
   const now = Math.floor(Date.now() / 1000);
   const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
-  
-  await env.DB.prepare(
-    `INSERT INTO outbound_operations
-     (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-      subject_type, subject_ref, target_evidence_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (id) DO NOTHING`
-  ).bind(
-    id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
-    options.subject.type, options.subject.ref, targetEvidenceJson
-  ).run();
-
-  let op = await loadOperation(env, id);
+  let op = await getOutboundOperation(env, id);
+  if (!op && options.allowCreate === false) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+  if (!op) {
+    await env.DB.prepare(
+      `INSERT INTO outbound_operations
+       (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
+        subject_type, subject_ref, target_evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    ).bind(
+      id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
+      options.subject.type, options.subject.ref, targetEvidenceJson
+    ).run();
+    op = await loadOperation(env, id);
+  }
   if (
     op.conversation_id !== conversationId ||
     op.destination_provider !== destinationProvider ||
@@ -327,7 +397,8 @@ let result: { providerMessageRef?: string };
       throw error;
     }
 
-    const outcome = error instanceof CancelledBeforeDeliveryError
+    const outcome = error instanceof CancelledBeforeDeliveryError ||
+      error instanceof StaleAiTriggerBeforeDeliveryError
       ? 'FINAL'
       : error instanceof ProviderDeliveryError
         ? error.outcome
@@ -345,7 +416,11 @@ let result: { providerMessageRef?: string };
     let retryAfterSecs = 0;
 
     if (!hasStarted) {
-      if (error instanceof CancelledBeforeDeliveryError || (error instanceof ProviderDeliveryError && outcome === 'FINAL')) {
+      if (
+        error instanceof CancelledBeforeDeliveryError ||
+        error instanceof StaleAiTriggerBeforeDeliveryError ||
+        (error instanceof ProviderDeliveryError && outcome === 'FINAL')
+      ) {
         nextStatus = 'FAILED_FINAL';
         errorCode = safeErrorCode(error);
       } else {

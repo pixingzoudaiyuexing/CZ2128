@@ -214,6 +214,49 @@ describe('durable AI retry state machine', () => {
     db.close();
   });
 
+  it('keeps the normal fresh AI path able to create first Chatwoot and Telegram operations', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'conv', '77');
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let aiCalls = 0;
+    let chatwootCalls = 0;
+    let telegramCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('ai.example')) {
+        aiCalls += 1;
+        await gate;
+        return new Response(JSON.stringify({
+          id: 'fresh-response', choices: [{ message: { content: 'Fresh response' } }]
+        }), { status: 200 });
+      }
+      if (String(url).includes('chat.example')) {
+        chatwootCalls += 1;
+        return new Response(JSON.stringify({ id: 1001 }), { status: 200 });
+      }
+      telegramCalls += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1002 } }), { status: 200 });
+    });
+    const env = makeEnv(db);
+    const processing = processAiTrigger(event('fresh-normal'), env);
+    while (aiCalls === 0) await new Promise(resolve => setTimeout(resolve, 1));
+
+    expect((await db.prepare('SELECT status, target_evidence_json FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:fresh-normal').first<any>())).toMatchObject({ status: 'PENDING' });
+    release();
+    await processing;
+
+    expect(aiCalls).toBe(1);
+    expect(chatwootCalls).toBe(1);
+    expect(telegramCalls).toBe(1);
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:fresh-normal').first<any>()).status).toBe('SENT');
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind('ai_tg_mirror:fresh-normal').first<any>()).status).toBe('SENT');
+    db.close();
+  });
+
   it('prevents generation A from overwriting or marking generation B stale', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);

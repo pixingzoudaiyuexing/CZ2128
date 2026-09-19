@@ -43,6 +43,7 @@ async function seedEligible(
     responseText?: string | null;
     eventStatus?: string;
     eventLeaseUntil?: number | null;
+    withChatwootEvidence?: boolean;
   } = {}
 ): Promise<void> {
   const runStatus = options.runStatus || 'FAILED_RETRYABLE';
@@ -93,6 +94,9 @@ async function seedEligible(
      VALUES (?, 'cz2128-dlq', 'internal', ?, 'ai_trigger', ?,
              'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 100, 100)`
   ).bind(RECEIPT_ID, EVENT_ID, CONVERSATION_ID).run();
+  if (runStatus === 'FAILED_RETRYABLE' && options.withChatwootEvidence !== false) {
+    await seedOutbound(db, makeEnv(db), 'CHATWOOT', 'PENDING');
+  }
 }
 
 async function seedOutbound(
@@ -234,12 +238,23 @@ describe('DLQ durable-state AI redrive eligibility', () => {
     db.close();
   });
 
-  it('accepts SUCCESS with no existing outbound operation as a safe candidate', async () => {
+  it('rejects SUCCESS with no historical Chatwoot target evidence even when current target is unchanged', async () => {
     const db = new SqliteD1();
     db.migrate();
     await seedEligible(db, { runStatus: 'SUCCESS' });
     expect(await getDlqAiRedriveEligibility(makeEnv(db), RECEIPT_ID, NOW))
-      .toMatchObject({ eligible: true, aiRunStatus: 'SUCCESS' });
+      .toMatchObject({ eligible: false, reason: 'OUTBOUND_EVIDENCE_MISSING' });
+    db.close();
+  });
+
+  it('rejects SUCCESS with no historical Chatwoot evidence after the current endpoint changes', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const changedEnv = makeEnv(db);
+    changedEnv.CHATWOOT_API_URL = 'https://changed-chatwoot.example/api/v1';
+    expect(await getDlqAiRedriveEligibility(changedEnv, RECEIPT_ID, NOW))
+      .toMatchObject({ eligible: false, reason: 'OUTBOUND_EVIDENCE_MISSING' });
     db.close();
   });
 
@@ -340,7 +355,7 @@ describe('DLQ durable-state AI redrive eligibility', () => {
     db.close();
   });
 
-  it('fails closed on malformed outbound evidence and impossible pre-success outbound state', async () => {
+  it('fails closed on malformed outbound evidence and accepts prepared retry evidence', async () => {
     const successDb = new SqliteD1();
     successDb.migrate();
     await seedEligible(successDb, { runStatus: 'SUCCESS' });
@@ -354,9 +369,8 @@ describe('DLQ durable-state AI redrive eligibility', () => {
     retryDb.migrate();
     await seedEligible(retryDb);
     const retryEnv = makeEnv(retryDb);
-    await seedOutbound(retryDb, retryEnv, 'CHATWOOT', 'PENDING');
     expect(await getDlqAiRedriveEligibility(retryEnv, RECEIPT_ID, NOW))
-      .toMatchObject({ reason: 'OUTBOUND_INCONSISTENT' });
+      .toMatchObject({ eligible: true, reason: 'ELIGIBLE' });
     retryDb.close();
   });
 
@@ -476,6 +490,302 @@ describe('DLQ AI redrive request idempotency', () => {
       .bind(`ai_reply:${EVENT_ID}`).first<any>()).c).toBe(1);
     expect((await db.prepare('SELECT status FROM event_receipts WHERE source_event_ref = ?')
       .bind(EVENT_ID).first<any>()).status).toBe('PROCESSED');
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it('converges a SENT Chatwoot reply without creating a missing mirror after Bot rotation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const originalEnv = makeEnv(db);
+    await seedOutbound(db, originalEnv, 'CHATWOOT', 'SENT');
+    const bodies: any[] = [];
+    originalEnv.QUEUE = { send: vi.fn(async body => { bodies.push(body); }) } as any;
+    expect((await requestDlqAiRedrive(originalEnv, RECEIPT_ID, '1001', '8101', NOW)).status)
+      .toBe('ENQUEUED');
+
+    const rotatedEnv = makeEnv(db);
+    rotatedEnv.TELEGRAM_BOT_TOKEN = 'rotated-token';
+    rotatedEnv.runtimeConfigSnapshot = {
+      values: {},
+      sources: {
+        AI_BASE_URL: 'ENV', AI_MODEL: 'ENV', AI_API_KEY: 'ENV', AI_SYSTEM_PROMPT: 'ENV',
+        AI_REQUEST_TIMEOUT_MS: 'ENV', AI_CONTEXT_MAX_MESSAGES: 'ENV', AI_CONTEXT_MAX_CHARS: 'ENV',
+        AI_GENERATION_LEASE_SECONDS: 'ENV', AI_OPERATOR_PAUSE_TIMEOUT_SECONDS: 'ENV',
+        TELEGRAM_SUPPORT_PROFILE: 'D1', BOT_GROUP_ID: 'ENV', CHATWOOT_API_URL: 'ENV',
+        CHATWOOT_API_TOKEN: 'ENV', CHATWOOT_ATTACHMENT_ALLOWED_HOSTS: 'ENV',
+        ATTACHMENT_MAX_BYTES: 'ENV', ATTACHMENT_MAX_COUNT_PER_MESSAGE: 'ENV',
+        ATTACHMENT_TTL_SECONDS: 'ENV', ATTACHMENT_SOURCE_TIMEOUT_MS: 'ENV',
+        ATTACHMENT_DESTINATION_TIMEOUT_MS: 'ENV'
+      },
+      versions: { TELEGRAM_SUPPORT_PROFILE: 2 },
+      errors: {},
+      overrideCount: 1,
+      health: 'AVAILABLE'
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], rotatedEnv);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await db.prepare('SELECT id FROM outbound_operations WHERE id = ?')
+      .bind(`ai_tg_mirror:${EVENT_ID}`).first()).toBeNull();
+    expect((await db.prepare('SELECT status FROM event_receipts WHERE source_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('PROCESSED');
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it('continues an existing matching Telegram mirror without resending SENT Chatwoot', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, env, 'TELEGRAM', 'PENDING');
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8102', NOW);
+    let chatwootCalls = 0;
+    let telegramCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('chatwoot')) chatwootCalls += 1;
+      if (String(url).includes('telegram')) telegramCalls += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 902 } }), { status: 200 });
+    });
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(chatwootCalls).toBe(0);
+    expect(telegramCalls).toBe(1);
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind(`ai_tg_mirror:${EVENT_ID}`).first<any>()).status).toBe('SENT');
+    db.close();
+  });
+
+  it('revalidates target evidence at consumption after Admin approval and fails closed on endpoint change', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const originalEnv = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, originalEnv, 'CHATWOOT', 'PENDING');
+    expect((await requestDlqAiRedrive(originalEnv, RECEIPT_ID, '1001', '8103', NOW)).status)
+      .toBe('ENQUEUED');
+    const changedEnv = makeEnv(db);
+    changedEnv.CHATWOOT_API_URL = 'https://changed-chatwoot.example/api/v1';
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(handleQueueEvent(bodies[0], changedEnv)).rejects.toMatchObject({
+      code: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'TARGET_IDENTITY_CHANGED'
+    });
+    expect((await db.prepare('SELECT status FROM event_receipts WHERE source_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('FAILED');
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+    db.close();
+  });
+
+  it('blocks FAILED_RETRYABLE before another AI attempt when its prepared Chatwoot target changed', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const originalEnv = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(originalEnv, RECEIPT_ID, '1001', '8104', NOW);
+    await db.prepare('UPDATE ai_runs SET next_retry_at = 0 WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).run();
+    const changedEnv = makeEnv(db);
+    changedEnv.CHATWOOT_API_URL = 'https://changed-chatwoot.example/api/v1';
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(handleQueueEvent(bodies[0], changedEnv)).rejects.toMatchObject({
+      code: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT attempt_count, status FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>())).toMatchObject({ attempt_count: 1, status: 'PENDING' });
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'TARGET_IDENTITY_CHANGED'
+    });
+    db.close();
+  });
+
+  it('fails closed when another flow changes the prepared Chatwoot operation after Admin approval', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'PENDING');
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8105', NOW);
+    await db.prepare(
+      `UPDATE outbound_operations
+       SET status = 'AMBIGUOUS', reconciliation_status = 'PENDING'
+       WHERE id = ?`
+    ).bind(`ai_reply:${EVENT_ID}`).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(handleQueueEvent(bodies[0], env)).rejects.toMatchObject({
+      code: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+    db.close();
+  });
+
+  it('does not send an existing historical mirror after its Telegram group target changes', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const originalEnv = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, originalEnv, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, originalEnv, 'TELEGRAM', 'PENDING');
+    await requestDlqAiRedrive(originalEnv, RECEIPT_ID, '1001', '8106', NOW);
+    const changedEnv = makeEnv(db);
+    changedEnv.BOT_GROUP_ID = '-2002';
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], changedEnv);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_tg_mirror:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'TARGET_IDENTITY_CHANGED'
+    });
+    expect((await db.prepare("SELECT COUNT(*) AS c FROM messages WHERE actor_role = 'AI'")
+      .first<any>()).c).toBe(1);
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it('drops a redrive when a newer customer message is durable before consumption', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8201', NOW);
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-before-consume', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('DISCARDED_STALE');
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it('discards a redrive when a newer customer message arrives during generation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8202', NOW);
+    await db.prepare('UPDATE ai_runs SET next_retry_at = 0 WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).run();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let aiCalls = 0;
+    let chatwootCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('ai.example')) {
+        aiCalls += 1;
+        await gate;
+        return new Response(JSON.stringify({
+          id: 'response-stale', choices: [{ message: { content: 'Stale response' } }]
+        }), { status: 200 });
+      }
+      chatwootCalls += 1;
+      return new Response(JSON.stringify({ id: 901 }), { status: 200 });
+    });
+
+    const processing = handleQueueEvent(bodies[0], env);
+    while (aiCalls === 0) await new Promise(resolve => setTimeout(resolve, 1));
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-during-generation', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
+    release();
+    await processing;
+
+    expect(aiCalls).toBe(1);
+    expect(chatwootCalls).toBe(0);
+    expect((await db.prepare('SELECT status FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('DISCARDED_STALE');
+    db.close();
+  });
+
+  it('rechecks freshness immediately before historical Chatwoot dispatch', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8203', NOW);
+    await db.prepare('UPDATE ai_runs SET next_retry_at = 0 WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).run();
+    env.hooks = {
+      beforeAiDispatchPreflight: async innerEnv => {
+        await innerEnv.DB.prepare(
+          `INSERT INTO messages
+           (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+            message_type, text_content, created_at)
+           VALUES ('newer-before-dispatch', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+                   'TEXT', 'New customer text', 101)`
+        ).bind(CONVERSATION_ID).run();
+      }
+    };
+    let aiCalls = 0;
+    let chatwootCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('ai.example')) {
+        aiCalls += 1;
+        return new Response(JSON.stringify({
+          id: 'response-before-dispatch', choices: [{ message: { content: 'Generated response' } }]
+        }), { status: 200 });
+      }
+      chatwootCalls += 1;
+      return new Response(JSON.stringify({ id: 901 }), { status: 200 });
+    });
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(aiCalls).toBe(1);
+    expect(chatwootCalls).toBe(0);
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'DISCARDED_STALE'
+    });
     expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
       .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
     db.close();

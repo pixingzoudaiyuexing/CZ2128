@@ -57,6 +57,7 @@ const REDRIVE_REASON_LABELS: Record<DlqAiRedriveReason, string> = {
   EVENT_RECEIPT_ACTIVE: 'active processing',
   EVENT_RECEIPT_PROCESSED: 'already processed',
   EVENT_RECEIPT_INCONSISTENT: 'event receipt inconsistent',
+  OUTBOUND_EVIDENCE_MISSING: 'historical outbound target evidence missing',
   OUTBOUND_ACTIVE: 'outbound active',
   OUTBOUND_RETRY_NOT_DUE: 'outbound retry not due',
   OUTBOUND_ATTEMPTS_EXHAUSTED: 'outbound attempts exhausted',

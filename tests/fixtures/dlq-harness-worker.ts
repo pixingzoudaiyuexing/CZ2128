@@ -7,6 +7,9 @@ import {
 } from '../../src/core/dlq-ai-redrive';
 import { processAiTrigger } from '../../src/queue/ai-handler';
 import { SupportEvent } from '../../src/core/events';
+import { buildChatwootTargetEvidence } from '../../src/core/outbound-evidence';
+import { prepareOutboundOperation } from '../../src/core/outbound-operations';
+import { safeErrorCode } from '../../src/core/errors';
 
 interface HarnessEnv {
   DB: D1Database;
@@ -24,6 +27,7 @@ interface HarnessRequest {
   status?: 'PROCESSING' | 'PROCESSED' | 'FAILED';
   claimToken?: string;
   commandId?: string;
+  chatwootApiUrl?: string;
 }
 
 const redriveQueueBodies: SupportEvent[] = [];
@@ -69,6 +73,8 @@ async function snapshot(env: HarnessEnv): Promise<unknown> {
   ).all();
   const audits = await env.DB.prepare('SELECT * FROM reliability_audit ORDER BY id').all();
   const runs = await env.DB.prepare('SELECT * FROM ai_runs ORDER BY trigger_event_ref').all();
+  const outbound = await env.DB.prepare('SELECT * FROM outbound_operations ORDER BY id').all();
+  const messages = await env.DB.prepare('SELECT * FROM messages ORDER BY created_at, rowid').all();
   const quarantine = await listDlqQuarantine(env.DLQ_QUARANTINE, 10);
   const objects = await env.DLQ_QUARANTINE.list({ prefix: 'terminal-dlq/v1/' });
   const bodies = [];
@@ -81,13 +87,15 @@ async function snapshot(env: HarnessEnv): Promise<unknown> {
     events: events.results,
     audits: audits.results,
     runs: runs.results,
+    outbound: outbound.results,
+    messages: messages.results,
     redriveQueueBodies,
     quarantine,
     quarantineBodies: bodies
   };
 }
 
-function redriveEnv(env: HarnessEnv): any {
+function redriveEnv(env: HarnessEnv, chatwootApiUrl = 'https://chatwoot.example/api/v1'): any {
   return {
     ...env,
     QUEUE: {
@@ -95,7 +103,7 @@ function redriveEnv(env: HarnessEnv): any {
         redriveQueueBodies.push(structuredClone(event));
       }
     },
-    CHATWOOT_API_URL: 'https://chatwoot.example/api/v1',
+    CHATWOOT_API_URL: chatwootApiUrl,
     CHATWOOT_API_TOKEN: 'chatwoot-token',
     TELEGRAM_BOT_TOKEN: 'telegram-token',
     BOT_GROUP_ID: '-1001',
@@ -179,10 +187,31 @@ export default {
                    'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 100, 100)`
         ).bind(redriveReceiptId, redriveEventId, redriveConversationId)
       ]);
+      const currentEnv = redriveEnv(env);
+      await prepareOutboundOperation(
+        currentEnv,
+        redriveConversationId,
+        'chatwoot',
+        'SEND_MESSAGE',
+        `ai_reply:${redriveEventId}`,
+        {
+          subject: { type: 'AI_RUN', ref: redriveEventId },
+          targetEvidence: await buildChatwootTargetEvidence(
+            currentEnv,
+            'account-redrive',
+            'conversation-redrive',
+            `ai_reply:${redriveEventId}`
+          )
+        }
+      );
       return json({ receiptId: redriveReceiptId, eventId: redriveEventId });
     }
     if (path === '/redrive-eligibility') {
-      return json(await getDlqAiRedriveEligibility(redriveEnv(env), redriveReceiptId, input.now));
+      return json(await getDlqAiRedriveEligibility(
+        redriveEnv(env, input.chatwootApiUrl),
+        redriveReceiptId,
+        input.now
+      ));
     }
     if (path === '/redrive-request') {
       return json(await requestDlqAiRedrive(
@@ -203,15 +232,34 @@ export default {
       ).bind(redriveConversationId).run();
       return json({ ok: true });
     }
-    if (path === '/process-redrive') {
-      await processAiTrigger({
-        version: 1,
-        source: 'internal',
-        type: 'ai_trigger',
-        eventId: redriveEventId,
-        payload: { convId: redriveConversationId, messageId: redriveMessageId }
-      }, redriveEnv(env));
+    if (path === '/delete-redrive-chatwoot-operation') {
+      await env.DB.prepare('DELETE FROM outbound_operations WHERE id = ?')
+        .bind(`ai_reply:${redriveEventId}`).run();
       return json({ ok: true });
+    }
+    if (path === '/seed-newer-customer') {
+      await env.DB.prepare(
+        `INSERT INTO messages
+         (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+          message_type, text_content, created_at)
+         VALUES ('message-row-newer', ?, 'chatwoot', 'message-newer', 'INBOUND', 'CUSTOMER',
+                 'TEXT', 'newer private durable text', 101)`
+      ).bind(redriveConversationId).run();
+      return json({ ok: true });
+    }
+    if (path === '/process-redrive') {
+      try {
+        await processAiTrigger({
+          version: 1,
+          source: 'internal',
+          type: 'ai_trigger',
+          eventId: redriveEventId,
+          payload: { convId: redriveConversationId, messageId: redriveMessageId }
+        }, redriveEnv(env, input.chatwootApiUrl));
+        return json({ ok: true });
+      } catch (error) {
+        return json({ ok: false, error: safeErrorCode(error) });
+      }
     }
     if (path === '/capture') {
       const captured = await captureDlqMessage({ DB: env.DB }, {

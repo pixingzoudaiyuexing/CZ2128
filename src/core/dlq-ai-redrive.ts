@@ -5,6 +5,7 @@ import { AiTriggerEvent } from './events';
 import {
   buildChatwootTargetEvidence,
   buildTelegramTargetEvidence,
+  parseTargetEvidence,
   targetEvidenceMatches
 } from './outbound-evidence';
 import { MAX_OUTBOUND_ATTEMPTS } from './outbound-operations';
@@ -37,6 +38,7 @@ export type DlqAiRedriveReason =
   | 'EVENT_RECEIPT_ACTIVE'
   | 'EVENT_RECEIPT_PROCESSED'
   | 'EVENT_RECEIPT_INCONSISTENT'
+  | 'OUTBOUND_EVIDENCE_MISSING'
   | 'OUTBOUND_ACTIVE'
   | 'OUTBOUND_RETRY_NOT_DUE'
   | 'OUTBOUND_ATTEMPTS_EXHAUSTED'
@@ -114,7 +116,8 @@ async function validateOutboundOperation(
   conversation: Conversation,
   eventId: string,
   kind: 'CHATWOOT' | 'TELEGRAM',
-  now: number
+  now: number,
+  allowTargetDriftAsSafeSkip = false
 ): Promise<DlqAiRedriveIneligibleReason | null> {
   const expectedId = kind === 'CHATWOOT' ? `ai_reply:${eventId}` : `ai_tg_mirror:${eventId}`;
   const expectedProvider = kind === 'CHATWOOT' ? 'chatwoot' : 'telegram';
@@ -135,20 +138,15 @@ async function validateOutboundOperation(
   }
 
   try {
-    const expectedEvidence = kind === 'CHATWOOT'
-      ? await buildChatwootTargetEvidence(
-        env,
-        conversation.helpdesk_account_ref,
-        conversation.helpdesk_conversation_ref,
-        expectedId
-      )
-      : buildTelegramTargetEvidence(
-        env,
-        env.BOT_GROUP_ID,
-        conversation.operator_thread_ref,
-        'sendMessage'
-      );
-    if (!targetEvidenceMatches(operation.target_evidence_json, expectedEvidence)) {
+    const storedEvidence = parseTargetEvidence(operation.target_evidence_json);
+    if (kind === 'CHATWOOT') {
+      if (
+        storedEvidence.provider !== 'chatwoot' ||
+        storedEvidence.accountRef !== conversation.helpdesk_account_ref ||
+        storedEvidence.conversationRef !== conversation.helpdesk_conversation_ref ||
+        storedEvidence.sourceId !== `cz2128:${expectedId}`
+      ) return 'OUTBOUND_INCONSISTENT';
+    } else if (storedEvidence.provider !== 'telegram' || storedEvidence.method !== 'sendMessage') {
       return 'OUTBOUND_INCONSISTENT';
     }
   } catch {
@@ -162,12 +160,32 @@ async function validateOutboundOperation(
     return boundedIdentity(operation.provider_message_ref) ? null : 'OUTBOUND_INCONSISTENT';
   }
   if (operation.attempt_count >= MAX_OUTBOUND_ATTEMPTS) return 'OUTBOUND_ATTEMPTS_EXHAUSTED';
-  if (operation.status === 'PENDING') return null;
   if (operation.status === 'FAILED_RETRYABLE') {
     if (!Number.isSafeInteger(operation.next_retry_at)) return 'OUTBOUND_INCONSISTENT';
-    return Number(operation.next_retry_at) <= now ? null : 'OUTBOUND_RETRY_NOT_DUE';
+    if (Number(operation.next_retry_at) > now) return 'OUTBOUND_RETRY_NOT_DUE';
+  } else if (operation.status !== 'PENDING') {
+    return 'OUTBOUND_INCONSISTENT';
   }
-  return 'OUTBOUND_INCONSISTENT';
+
+  try {
+    const expectedEvidence = kind === 'CHATWOOT'
+      ? await buildChatwootTargetEvidence(
+        env,
+        conversation.helpdesk_account_ref,
+        conversation.helpdesk_conversation_ref,
+        expectedId
+      )
+      : buildTelegramTargetEvidence(
+        env,
+        env.BOT_GROUP_ID,
+        conversation.operator_thread_ref,
+        'sendMessage'
+      );
+    if (targetEvidenceMatches(operation.target_evidence_json, expectedEvidence)) return null;
+    return allowTargetDriftAsSafeSkip ? null : 'OUTBOUND_INCONSISTENT';
+  } catch {
+    return 'OUTBOUND_INCONSISTENT';
+  }
 }
 
 async function outboundEligibility(
@@ -185,22 +203,50 @@ async function outboundEligibility(
   const chatwoot = rows.results.find(row => row.id === chatwootId);
   const telegram = rows.results.find(row => row.id === telegramId);
 
-  if (aiRunStatus === 'FAILED_RETRYABLE') {
-    return chatwoot || telegram ? 'OUTBOUND_INCONSISTENT' : null;
-  }
+  if (!chatwoot) return 'OUTBOUND_EVIDENCE_MISSING';
+  const chatwootReason = await validateOutboundOperation(
+    env,
+    chatwoot,
+    conversation,
+    eventId,
+    'CHATWOOT',
+    now
+  );
+  if (chatwootReason) return chatwootReason;
 
-  if (chatwoot) {
-    const reason = await validateOutboundOperation(env, chatwoot, conversation, eventId, 'CHATWOOT', now);
-    if (reason) return reason;
+  if (aiRunStatus === 'FAILED_RETRYABLE' && chatwoot.status !== 'PENDING') {
+    return 'OUTBOUND_INCONSISTENT';
   }
   if (telegram) {
-    if (!chatwoot || chatwoot.status !== 'SENT' || !conversation.operator_thread_ref) {
+    if (aiRunStatus === 'FAILED_RETRYABLE' && telegram.status !== 'PENDING') {
       return 'OUTBOUND_INCONSISTENT';
     }
-    const reason = await validateOutboundOperation(env, telegram, conversation, eventId, 'TELEGRAM', now);
+    if (telegram.status === 'SENT' && chatwoot.status !== 'SENT') return 'OUTBOUND_INCONSISTENT';
+    const reason = await validateOutboundOperation(
+      env,
+      telegram,
+      conversation,
+      eventId,
+      'TELEGRAM',
+      now,
+      chatwoot.status === 'SENT'
+    );
     if (reason) return reason;
   }
   return null;
+}
+
+export async function isOpenDlqAiRecoveryEvent(
+  env: Pick<Env, 'DB'>,
+  event: AiTriggerEvent
+): Promise<boolean> {
+  const receipt = await env.DB.prepare(
+    `SELECT id FROM dlq_receipts
+     WHERE queue_name = ? AND event_source = 'internal' AND source_event_ref = ?
+       AND event_type = 'ai_trigger' AND conversation_id = ? AND status = 'OPEN'
+     LIMIT 1`
+  ).bind(DLQ_QUEUE_NAME, event.eventId, event.payload.convId).first<{ id: string }>();
+  return boundedIdentity(receipt?.id);
 }
 
 export async function getDlqAiRedriveEligibility(

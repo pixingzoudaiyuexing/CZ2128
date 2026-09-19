@@ -12,24 +12,37 @@ import {
   checkAutoResume,
   claimDurableAiRun,
   discardOwnedStaleAiRun,
+  discardRetryableAiRunAsStale,
   ensureAiRunProviderResponseRef,
   exhaustAiRunWithoutAttempt,
   getDurableAiRun,
   isAiRunTerminal,
+  isLatestCustomerTextMessage,
   MAX_AI_GENERATION_ATTEMPTS,
   normalizeLegacyAiRun,
   releaseGenerationLease,
   saveAiGenerationFailure,
   saveGeneratedAiResult,
+  saveGeneratedAiResultForLatestTrigger,
   startAiGenerationAttempt,
   verifyHandoffEpoch
 } from '../core/ai-state';
 import { AiRun, Conversation } from '../core/domain';
-import { CancelledBeforeDeliveryError, RetryableProcessingError, SafeError } from '../core/errors';
+import {
+  CancelledBeforeDeliveryError,
+  RetryableProcessingError,
+  SafeError,
+  StaleAiTriggerBeforeDeliveryError
+} from '../core/errors';
 import { AiTriggerEvent } from '../core/events';
 import { resolveOutboundDomainState } from '../core/outbound-domain-resolution';
 import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
-import { executeOutboundOperation } from '../core/outbound-operations';
+import {
+  executeOutboundOperation,
+  getOutboundOperation,
+  prepareOutboundOperation
+} from '../core/outbound-operations';
+import { isOpenDlqAiRecoveryEvent } from '../core/dlq-ai-redrive';
 import { logger } from '../observability/logger';
 
 async function loadConversation(env: Env, convId: string): Promise<Conversation | null> {
@@ -101,6 +114,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   }
   const { convId, messageId } = event.payload;
   const stableAiJobId = event.eventId;
+  const isDlqRecovery = await isOpenDlqAiRecoveryEvent(env, event);
 
   let conv = await loadConversation(env, convId);
   if (!conv) return;
@@ -112,6 +126,23 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     (existingRun.conversation_id !== convId || existingRun.trigger_message_ref !== messageId)
   ) {
     throw new Error('AI run identity collision');
+  }
+
+  if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
+    if (existingRun?.status === 'FAILED_RETRYABLE') {
+      await discardRetryableAiRunAsStale(env, stableAiJobId);
+    } else if (existingRun?.status === 'SUCCESS') {
+      const delivered = await getOutboundOperation(env, `ai_reply:${stableAiJobId}`);
+      if (delivered?.status === 'SENT') {
+        await resolveOutboundDomainState(env, delivered.id);
+      }
+    }
+    logger.info('Historical AI trigger fenced by newer customer text', {
+      conversation_id: convId,
+      operation_id: stableAiJobId,
+      result: existingRun?.status || 'MISSING'
+    });
+    return;
   }
 
   if (existingRun && Number(existingRun.handoff_epoch) !== Number(conv.ai_handoff_epoch)) {
@@ -241,6 +272,30 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         );
       }
 
+      const currentConv = await loadConversation(env, convId);
+      if (!currentConv) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      const chatwootOperationId = `ai_reply:${stableAiJobId}`;
+      const preparedChatwoot = await prepareOutboundOperation(
+        env,
+        convId,
+        'chatwoot',
+        'SEND_MESSAGE',
+        chatwootOperationId,
+        {
+          allowCreate: !isDlqRecovery,
+          subject: { type: 'AI_RUN', ref: stableAiJobId },
+          targetEvidence: await buildChatwootTargetEvidence(
+            env,
+            currentConv.helpdesk_account_ref,
+            currentConv.helpdesk_conversation_ref,
+            chatwootOperationId
+          )
+        }
+      );
+      if (!preparedChatwoot || preparedChatwoot.status !== 'PENDING') {
+        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      }
+
       const messages = await buildAIContext(env, convId, config);
       const attemptCount = await startAiGenerationAttempt(
         env,
@@ -298,15 +353,26 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       if (env.hooks?.beforeAiRunSuccessPersist) {
         await env.hooks.beforeAiRunSuccessPersist(env, convId);
       }
-      const resultSaved = await saveGeneratedAiResult(
-        env,
-        stableAiJobId,
-        convId,
-        generationId,
-        handoffEpoch,
-        responseId,
-        aiContent
-      );
+      const resultSaved = isDlqRecovery
+        ? await saveGeneratedAiResultForLatestTrigger(
+          env,
+          stableAiJobId,
+          convId,
+          messageId,
+          generationId,
+          handoffEpoch,
+          responseId,
+          aiContent
+        )
+        : await saveGeneratedAiResult(
+          env,
+          stableAiJobId,
+          convId,
+          generationId,
+          handoffEpoch,
+          responseId,
+          aiContent
+        );
       if (!resultSaved) {
         await retireLateGeneration(env, stableAiJobId, convId, generationId, handoffEpoch);
         aiContent = undefined;
@@ -356,6 +422,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         });
         throw new CancelledBeforeDeliveryError();
       }
+      if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
+        throw new StaleAiTriggerBeforeDeliveryError();
+      }
 
       const currentConv = await loadConversation(env, convId);
       if (!currentConv) throw new CancelledBeforeDeliveryError();
@@ -380,6 +449,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     },
     chatwootOperationId,
     {
+      allowCreate: !isDlqRecovery,
       subject: { type: 'AI_RUN', ref: stableAiJobId },
       targetEvidence: await buildChatwootTargetEvidence(
         env,
@@ -396,6 +466,11 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       operation_id: stableAiJobId,
       result: chatwootDelivery.status
     });
+    if (isDlqRecovery) {
+      const currentOperation = await getOutboundOperation(env, chatwootOperationId);
+      if (currentOperation?.last_error === 'DISCARDED_STALE') return;
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
     return;
   }
   await resolveOutboundDomainState(env, chatwootOperationId);
@@ -403,12 +478,28 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   conv = await loadConversation(env, convId);
   if (!conv?.operator_thread_ref) return;
   const telegramOperationId = `ai_tg_mirror:${stableAiJobId}`;
-  await executeOutboundOperation(
+  if (isDlqRecovery) {
+    const historicalMirror = await getOutboundOperation(env, telegramOperationId);
+    if (!historicalMirror) {
+      logger.info('Skipping missing historical Telegram AI mirror without target evidence', {
+        conversation_id: convId,
+        operation_id: stableAiJobId
+      });
+      return;
+    }
+    if (['SENDING', 'AMBIGUOUS', 'FAILED_FINAL'].includes(historicalMirror.status)) {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
+  }
+  const telegramDelivery = await executeOutboundOperation(
     env,
     convId,
     'telegram',
     'SEND_MESSAGE',
     async (_opId, lifecycle) => {
+      if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
+        throw new StaleAiTriggerBeforeDeliveryError();
+      }
       const res = await sendTelegramMessage(
         env,
         env.BOT_GROUP_ID,
@@ -420,6 +511,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     },
     telegramOperationId,
     {
+      allowCreate: !isDlqRecovery,
       subject: { type: 'AI_RUN', ref: stableAiJobId },
       targetEvidence: buildTelegramTargetEvidence(
         env,
@@ -429,4 +521,12 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       )
     }
   );
+  if (isDlqRecovery && telegramDelivery.status !== 'SENT') {
+    const currentOperation = await getOutboundOperation(env, telegramOperationId);
+    if (
+      currentOperation?.last_error === 'DISCARDED_STALE' ||
+      currentOperation?.last_error === 'TARGET_IDENTITY_CHANGED'
+    ) return;
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
 }

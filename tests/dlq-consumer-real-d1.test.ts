@@ -249,4 +249,42 @@ describe('real local D1/R2 DLQ service behavior', () => {
     });
     expect(snapshot.redriveQueueBodies).toHaveLength(0);
   });
+
+  it('blocks real-D1 redrive eligibility when historical Chatwoot evidence is missing', async () => {
+    await request('/seed-ai-redrive', {});
+    await request('/delete-redrive-chatwoot-operation', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 })).toMatchObject({
+      eligible: false,
+      reason: 'OUTBOUND_EVIDENCE_MISSING'
+    });
+  });
+
+  it('rechecks prepared Chatwoot target evidence before a real-D1 retry generation', async () => {
+    await request('/seed-ai-redrive', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    expect(await request('/process-redrive', {
+      chatwootApiUrl: 'https://changed-chatwoot.example/api/v1'
+    })).toEqual({ ok: false, error: 'OUTBOUND_PRECONDITION_FAILED' });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.runs[0]).toMatchObject({ attempt_count: 1, status: 'PENDING' });
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'TARGET_IDENTITY_CHANGED'
+    });
+  });
+
+  it('rechecks latest customer text in the real-D1 processing path', async () => {
+    await request('/seed-ai-redrive', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/seed-newer-customer', {});
+    expect(await request('/process-redrive', {})).toEqual({ ok: true });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.runs[0]).toMatchObject({
+      status: 'DISCARDED_STALE',
+      attempt_count: 1
+    });
+    expect(snapshot.outbound[0].status).toBe('PENDING');
+  });
 });

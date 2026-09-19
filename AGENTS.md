@@ -57,6 +57,8 @@ Runtime provider settings must be resolved as one D1 snapshot per HTTP request o
 - New AI runtime writes use `FAILED_RETRYABLE`, `RETRY_EXHAUSTED` or `FAILED_FINAL`; legacy `FAILED` is read-compatible only and lazily normalized.
 - `AI_RUN` manual retry is allowed only from a matching durable `SUCCESS` response and never regenerates AI; `CONTROL_ACK` is not manually retried.
 - Effective Chatwoot delivery of an `AI_RUN` repairs one durable AI message idempotently; Telegram mirror delivery alone does not create another context message.
+- Normal fresh AI processing persists deterministic Chatwoot target evidence before the AI provider boundary; historical DLQ recovery never creates missing target evidence from current configuration.
+- Historical AI recovery rechecks newest customer text during consumption and never creates a missing Telegram mirror after Chatwoot delivery.
 
 ## Telegram Topic Rule
 

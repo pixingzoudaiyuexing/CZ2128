@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleAdminTelegramWebhook } from '../src/admin/handler';
 import { captureDlqMessage } from '../src/queue/dlq-consumer';
 import { SqliteD1 } from './helpers/sqlite-d1';
+import { buildChatwootTargetEvidence } from '../src/core/outbound-evidence';
+import { prepareOutboundOperation } from '../src/core/outbound-operations';
 
 const adminPath = 'p'.repeat(43);
 const adminSecret = 's'.repeat(43);
@@ -60,6 +62,23 @@ async function seedEligibleAiReceipt(db: SqliteD1): Promise<string> {
     VALUES ('${receiptId}', 'cz2128-dlq', 'internal', '${eventId}', 'ai_trigger', '${conversationId}',
             'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 1, 1);
   `);
+  const testEnv = env(db);
+  await prepareOutboundOperation(
+    testEnv,
+    conversationId,
+    'chatwoot',
+    'SEND_MESSAGE',
+    `ai_reply:${eventId}`,
+    {
+      subject: { type: 'AI_RUN', ref: eventId },
+      targetEvidence: await buildChatwootTargetEvidence(
+        testEnv,
+        'account-1',
+        'conversation-1',
+        `ai_reply:${eventId}`
+      )
+    }
+  );
   return receiptId;
 }
 

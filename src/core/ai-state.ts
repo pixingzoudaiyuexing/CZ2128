@@ -592,6 +592,92 @@ export async function saveGeneratedAiResult(
   return result.meta.changes === 1;
 }
 
+export async function saveGeneratedAiResultForLatestTrigger(
+  env: Env,
+  triggerEventRef: string,
+  convId: string,
+  triggerMessageRef: string,
+  generationId: string,
+  handoffEpoch: number,
+  providerResponseRef: string,
+  responseText: string
+): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  const leaseExpiryThreshold = now - getAIConfig(env).generationLeaseSeconds;
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = 'SUCCESS', provider_response_ref = ?, response_text = ?,
+         next_retry_at = NULL, last_error = NULL, updated_at = ?
+     WHERE trigger_event_ref = ? AND generation_id = ? AND handoff_epoch = ? AND status = 'PENDING'
+       AND EXISTS (
+         SELECT 1 FROM conversations
+         WHERE id = ? AND ai_mode = 'ENABLED' AND ai_generation_id = ?
+           AND ai_handoff_epoch = ? AND ai_generation_started_at >= ?
+       )
+       AND EXISTS (
+         SELECT 1 FROM messages AS target
+         WHERE target.conversation_id = ? AND target.provider = 'chatwoot'
+           AND target.provider_message_ref = ? AND target.direction = 'INBOUND'
+           AND target.actor_role = 'CUSTOMER' AND target.message_type = 'TEXT'
+           AND target.text_content IS NOT NULL
+           AND target.rowid = (
+             SELECT rowid FROM messages
+             WHERE conversation_id = ? AND actor_role = 'CUSTOMER'
+               AND message_type = 'TEXT' AND text_content IS NOT NULL
+             ORDER BY created_at DESC, rowid DESC LIMIT 1
+           )
+       )`
+  ).bind(
+    providerResponseRef,
+    responseText,
+    now,
+    triggerEventRef,
+    generationId,
+    handoffEpoch,
+    convId,
+    generationId,
+    handoffEpoch,
+    leaseExpiryThreshold,
+    convId,
+    triggerMessageRef,
+    convId
+  ).run();
+  return result.meta.changes === 1;
+}
+
+export async function isLatestCustomerTextMessage(
+  env: Pick<Env, 'DB'>,
+  convId: string,
+  triggerMessageRef: string
+): Promise<boolean> {
+  const latest = await env.DB.prepare(
+    `SELECT provider, provider_message_ref, direction
+     FROM messages
+     WHERE conversation_id = ? AND actor_role = 'CUSTOMER'
+       AND message_type = 'TEXT' AND text_content IS NOT NULL
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`
+  ).bind(convId).first<{
+    provider: string;
+    provider_message_ref: string | null;
+    direction: string;
+  }>();
+  return latest?.provider === 'chatwoot' &&
+    latest.provider_message_ref === triggerMessageRef &&
+    latest.direction === 'INBOUND';
+}
+
+export async function discardRetryableAiRunAsStale(
+  env: Pick<Env, 'DB'>,
+  triggerEventRef: string
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = 'DISCARDED_STALE', next_retry_at = NULL, last_error = NULL, updated_at = ?
+     WHERE trigger_event_ref = ? AND status = 'FAILED_RETRYABLE'`
+  ).bind(Math.floor(Date.now() / 1000), triggerEventRef).run();
+  return result.meta.changes === 1;
+}
+
 export async function cancelOwnedAiRunAfterHandoff(
   env: Env,
   triggerEventRef: string,
