@@ -34,6 +34,15 @@ export interface ExecuteOutboundOperationOptions {
   targetEvidence: OutboundTargetEvidence;
 }
 
+async function staleFailureAuditId(operationId: string, oldState: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify([operationId, oldState, 'DISCARDED_STALE']))
+  );
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `stale-ai:${hex}`;
+}
+
 export async function getOutboundOperation(
   env: DatabaseEnv,
   id: string
@@ -454,7 +463,7 @@ let result: { providerMessageRef?: string };
     });
     
     const ts = Math.floor(Date.now() / 1000);
-    const failureResult = await env.DB.prepare(
+    const failureStatement = env.DB.prepare(
       `UPDATE outbound_operations
        SET status = ?, last_error = ?, lease_until = NULL, lease_token = NULL, reconciliation_status = ?,
            retry_after_seconds = ?, next_retry_at = ?, updated_at = ?
@@ -466,7 +475,32 @@ let result: { providerMessageRef?: string };
       setRetryAfter ? retryAfterSecs : null,
       setRetryAfter ? ts + retryAfterSecs : null,
       ts, id, leaseToken
-    ).run();
+    );
+
+    let failureResult: D1Result;
+    if (error instanceof StaleAiTriggerBeforeDeliveryError) {
+      const results = await env.DB.batch([
+        failureStatement,
+        auditAfterPreviousChange(env, {
+          id: await staleFailureAuditId(id, 'SENDING'),
+          entityType: 'OUTBOUND_OPERATION',
+          entityId: id,
+          action: 'HISTORICAL_AI_STALE_DISCARDED',
+          actorType: 'SYSTEM',
+          actorRef: 'system:dlq-ai-redrive',
+          oldState: 'SENDING',
+          newState: 'FAILED_FINAL',
+          reasonCode: 'DISCARDED_STALE',
+          createdAt: ts
+        })
+      ]);
+      if (d1Changed(results[0]) !== d1Changed(results[1])) {
+        throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
+      }
+      failureResult = results[0];
+    } else {
+      failureResult = await failureStatement.run();
+    }
 
     if (failureResult.meta.changes !== 1) {
       throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);

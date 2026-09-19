@@ -7,6 +7,8 @@ export interface Env {
     beforeAiContextBuild?: (env: Env, convId: string) => Promise<void>;
     beforeAiRunSuccessPersist?: (env: Env, convId: string) => Promise<void>;
     beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
+    beforeAiTelegramDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
+    beforeStaleOutboundConvergence?: (env: Env, eventId: string) => Promise<void>;
     beforeVisibleSend?: (
       env: Env,
       accountRef: string,

@@ -285,6 +285,54 @@ describe('real local D1/R2 DLQ service behavior', () => {
       status: 'DISCARDED_STALE',
       attempt_count: 1
     });
-    expect(snapshot.outbound[0].status).toBe('PENDING');
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'DISCARDED_STALE'
+    });
+    expect(snapshot.audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entity_id: snapshot.outbound[0].id,
+        action: 'HISTORICAL_AI_STALE_DISCARDED',
+        reason_code: 'DISCARDED_STALE'
+      })
+    ]));
+  });
+
+  it('converges real-D1 SENT Chatwoot and PENDING mirror after freshness becomes stale', async () => {
+    await request('/seed-ai-redrive', {});
+    await request('/seed-success-with-mirror', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/seed-newer-customer', {});
+    expect(await request('/process-redrive', {})).toEqual({ ok: true });
+    const snapshot = await request('/snapshot');
+    const chatwoot = snapshot.outbound.find((row: any) => row.destination_provider === 'chatwoot');
+    const telegram = snapshot.outbound.find((row: any) => row.destination_provider === 'telegram');
+    expect(chatwoot).toMatchObject({ status: 'SENT', provider_message_ref: 'chatwoot-sent' });
+    expect(telegram).toMatchObject({ status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE' });
+    expect(snapshot.messages.filter((row: any) => row.actor_role === 'AI')).toHaveLength(1);
+    expect(snapshot.audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entity_id: telegram.id,
+        action: 'HISTORICAL_AI_STALE_DISCARDED',
+        reason_code: 'DISCARDED_STALE'
+      })
+    ]));
+  });
+
+  it('deduplicates concurrent real-D1 stale convergence and its audit', async () => {
+    await request('/seed-ai-redrive', {});
+    const results = await Promise.all([
+      request('/converge-stale', {}),
+      request('/converge-stale', {})
+    ]);
+    expect(results.reduce((sum, result) => sum + Number(result.changed), 0)).toBe(1);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE'
+    });
+    expect(snapshot.audits.filter((row: any) =>
+      row.action === 'HISTORICAL_AI_STALE_DISCARDED'
+    )).toHaveLength(1);
   });
 });

@@ -2,12 +2,16 @@ import { completeEventReceipt } from '../../src/queue/consumer';
 import { captureDlqMessage } from '../../src/queue/dlq-consumer';
 import { listDlqQuarantine, persistDlqQuarantine } from '../../src/queue/dlq-quarantine';
 import {
+  convergeStaleAiOutboundOperations,
   getDlqAiRedriveEligibility,
   requestDlqAiRedrive
 } from '../../src/core/dlq-ai-redrive';
 import { processAiTrigger } from '../../src/queue/ai-handler';
 import { SupportEvent } from '../../src/core/events';
-import { buildChatwootTargetEvidence } from '../../src/core/outbound-evidence';
+import {
+  buildChatwootTargetEvidence,
+  buildTelegramTargetEvidence
+} from '../../src/core/outbound-evidence';
 import { prepareOutboundOperation } from '../../src/core/outbound-operations';
 import { safeErrorCode } from '../../src/core/errors';
 
@@ -246,6 +250,44 @@ export default {
                  'TEXT', 'newer private durable text', 101)`
       ).bind(redriveConversationId).run();
       return json({ ok: true });
+    }
+    if (path === '/seed-success-with-mirror') {
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE ai_runs
+           SET status = 'SUCCESS', provider_response_ref = 'response-redrive',
+               response_text = 'durable response', next_retry_at = NULL, last_error = NULL
+           WHERE trigger_event_ref = ?`
+        ).bind(redriveEventId),
+        env.DB.prepare(
+          `UPDATE outbound_operations
+           SET status = 'SENT', provider_message_ref = 'chatwoot-sent', attempt_count = 1
+           WHERE id = ?`
+        ).bind(`ai_reply:${redriveEventId}`)
+      ]);
+      const currentEnv = redriveEnv(env);
+      await prepareOutboundOperation(
+        currentEnv,
+        redriveConversationId,
+        'telegram',
+        'SEND_MESSAGE',
+        `ai_tg_mirror:${redriveEventId}`,
+        {
+          subject: { type: 'AI_RUN', ref: redriveEventId },
+          targetEvidence: buildTelegramTargetEvidence(currentEnv, '-1001', '77', 'sendMessage')
+        }
+      );
+      return json({ ok: true });
+    }
+    if (path === '/converge-stale') {
+      const result = await convergeStaleAiOutboundOperations(redriveEnv(env), {
+        version: 1,
+        source: 'internal',
+        type: 'ai_trigger',
+        eventId: redriveEventId,
+        payload: { convId: redriveConversationId, messageId: redriveMessageId }
+      });
+      return json(result);
     }
     if (path === '/process-redrive') {
       try {

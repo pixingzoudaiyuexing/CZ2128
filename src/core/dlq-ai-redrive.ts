@@ -9,8 +9,12 @@ import {
   targetEvidenceMatches
 } from './outbound-evidence';
 import { MAX_OUTBOUND_ATTEMPTS } from './outbound-operations';
-import { insertReliabilityAuditOnce } from './reliability-audit';
-import { SafeError } from './errors';
+import {
+  auditAfterPreviousChange,
+  d1Changed,
+  insertReliabilityAuditOnce
+} from './reliability-audit';
+import { RetryableProcessingError, SafeError } from './errors';
 import { MAX_AI_GENERATION_ATTEMPTS } from './ai-state';
 
 const DLQ_QUEUE_NAME = 'cz2128-dlq';
@@ -76,6 +80,12 @@ interface DurableMessageRow {
   provider_message_ref: string;
 }
 
+interface StaleOutboundPlan {
+  operation: OutboundOperation;
+  statement: D1PreparedStatement;
+  audit: D1PreparedStatement;
+}
+
 function ineligible(reason: DlqAiRedriveIneligibleReason): DlqAiRedriveEligibility {
   return { eligible: false, reason };
 }
@@ -91,6 +101,182 @@ function reconstructMessageId(eventId: string, conversationId: string): string |
   if (!eventId.startsWith(prefix)) return null;
   const messageId = eventId.slice(prefix.length);
   return boundedIdentity(messageId) ? messageId : null;
+}
+
+function validateStaleOperationIdentity(
+  operation: OutboundOperation,
+  conversation: Conversation,
+  eventId: string,
+  kind: 'CHATWOOT' | 'TELEGRAM'
+): boolean {
+  const expectedId = kind === 'CHATWOOT' ? `ai_reply:${eventId}` : `ai_tg_mirror:${eventId}`;
+  const expectedProvider = kind === 'CHATWOOT' ? 'chatwoot' : 'telegram';
+  if (
+    operation.id !== expectedId ||
+    operation.conversation_id !== conversation.id ||
+    operation.destination_provider !== expectedProvider ||
+    operation.operation_type !== 'SEND_MESSAGE' ||
+    operation.subject_type !== 'AI_RUN' ||
+    operation.subject_ref !== eventId ||
+    !operation.target_evidence_json
+  ) return false;
+  try {
+    const evidence = parseTargetEvidence(operation.target_evidence_json);
+    if (kind === 'CHATWOOT') {
+      return evidence.provider === 'chatwoot' &&
+        evidence.accountRef === conversation.helpdesk_account_ref &&
+        evidence.conversationRef === conversation.helpdesk_conversation_ref &&
+        evidence.sourceId === `cz2128:${expectedId}`;
+    }
+    return evidence.provider === 'telegram' &&
+      evidence.method === 'sendMessage' &&
+      boundedIdentity(evidence.groupRef) &&
+      boundedIdentity(evidence.threadRef);
+  } catch {
+    return false;
+  }
+}
+
+function staleTerminationIsSafe(operation: OutboundOperation): boolean {
+  if (
+    operation.provider_message_ref !== null ||
+    operation.lease_until !== null ||
+    operation.lease_token !== null ||
+    operation.reconciliation_status !== 'NOT_REQUIRED'
+  ) return false;
+  if (operation.status === 'PENDING') {
+    return operation.request_started_at === null &&
+      operation.response_observed_at === null &&
+      operation.response_http_status === null;
+  }
+  return operation.status === 'FAILED_RETRYABLE' &&
+    Number.isSafeInteger(operation.request_started_at) &&
+    Number.isSafeInteger(operation.response_observed_at) &&
+    operation.response_http_status === 429 &&
+    operation.last_error === 'OUTBOUND_RATE_LIMITED' &&
+    Number.isSafeInteger(operation.next_retry_at);
+}
+
+async function staleAuditId(operationId: string, oldState: string): Promise<string> {
+  return `stale-ai:${await sha256Hex(JSON.stringify([operationId, oldState, 'DISCARDED_STALE']))}`;
+}
+
+function staleUpdateStatement(
+  env: Pick<Env, 'DB'>,
+  operation: OutboundOperation,
+  now: number
+): D1PreparedStatement {
+  const common = `UPDATE outbound_operations
+     SET status = 'FAILED_FINAL', last_error = 'DISCARDED_STALE',
+         lease_until = NULL, lease_token = NULL,
+         retry_after_seconds = NULL, next_retry_at = NULL, updated_at = ?
+     WHERE id = ? AND conversation_id = ? AND destination_provider = ?
+       AND operation_type = 'SEND_MESSAGE' AND subject_type = 'AI_RUN'
+       AND subject_ref = ? AND target_evidence_json = ? AND status = ?
+       AND provider_message_ref IS NULL AND lease_until IS NULL AND lease_token IS NULL
+       AND reconciliation_status = 'NOT_REQUIRED'`;
+  const stateFence = operation.status === 'PENDING'
+    ? ` AND request_started_at IS NULL AND response_observed_at IS NULL
+        AND response_http_status IS NULL`
+    : ` AND request_started_at IS NOT NULL AND response_observed_at IS NOT NULL
+        AND response_http_status = 429 AND last_error = 'OUTBOUND_RATE_LIMITED'
+        AND next_retry_at IS NOT NULL`;
+  return env.DB.prepare(common + stateFence).bind(
+    now,
+    operation.id,
+    operation.conversation_id,
+    operation.destination_provider,
+    operation.subject_ref,
+    operation.target_evidence_json,
+    operation.status
+  );
+}
+
+export async function convergeStaleAiOutboundOperations(
+  env: Env,
+  event: AiTriggerEvent
+): Promise<{ changed: number }> {
+  const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
+    .bind(event.payload.convId).first<Conversation>();
+  if (!conversation) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  const chatwootId = `ai_reply:${event.eventId}`;
+  const telegramId = `ai_tg_mirror:${event.eventId}`;
+  const result = await env.DB.prepare(
+    'SELECT * FROM outbound_operations WHERE id IN (?, ?)'
+  ).bind(chatwootId, telegramId).all<OutboundOperation>();
+  const operations = result.results || [];
+  const plans: StaleOutboundPlan[] = [];
+  const now = Math.floor(Date.now() / 1000);
+
+  for (const operation of operations) {
+    const kind = operation.id === chatwootId
+      ? 'CHATWOOT'
+      : operation.id === telegramId
+        ? 'TELEGRAM'
+        : null;
+    if (!kind || !validateStaleOperationIdentity(operation, conversation, event.eventId, kind)) {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
+    if (operation.status === 'SENT' || operation.status === 'FAILED_FINAL') continue;
+    if (!staleTerminationIsSafe(operation)) {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
+    plans.push({
+      operation,
+      statement: staleUpdateStatement(env, operation, now),
+      audit: auditAfterPreviousChange(env, {
+        id: await staleAuditId(operation.id, operation.status),
+        entityType: 'OUTBOUND_OPERATION',
+        entityId: operation.id,
+        action: 'HISTORICAL_AI_STALE_DISCARDED',
+        actorType: 'SYSTEM',
+        actorRef: 'system:dlq-ai-redrive',
+        oldState: operation.status,
+        newState: 'FAILED_FINAL',
+        reasonCode: 'DISCARDED_STALE',
+        createdAt: now
+      })
+    });
+  }
+
+  if (env.hooks?.beforeStaleOutboundConvergence) {
+    await env.hooks.beforeStaleOutboundConvergence(env, event.eventId);
+  }
+  if (plans.length === 0) return { changed: 0 };
+
+  const statements = plans.flatMap(plan => [plan.statement, plan.audit]);
+  let results: D1Result[];
+  try {
+    results = await env.DB.batch(statements);
+  } catch {
+    throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', 5);
+  }
+
+  let changed = 0;
+  for (let index = 0; index < plans.length; index += 1) {
+    const updateChanged = d1Changed(results[index * 2]);
+    const auditChanged = d1Changed(results[index * 2 + 1]);
+    if (updateChanged !== auditChanged) {
+      throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', 5);
+    }
+    if (updateChanged) {
+      changed += 1;
+      continue;
+    }
+    const current = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
+      .bind(plans[index].operation.id).first<OutboundOperation>();
+    if (!current || !validateStaleOperationIdentity(
+      current,
+      conversation,
+      event.eventId,
+      current.id === chatwootId ? 'CHATWOOT' : 'TELEGRAM'
+    )) {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
+    if (current.status === 'SENT' || current.status === 'FAILED_FINAL') continue;
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+  return { changed };
 }
 
 function activeGenerationReason(

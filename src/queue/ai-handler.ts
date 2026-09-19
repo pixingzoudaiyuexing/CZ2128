@@ -42,11 +42,26 @@ import {
   getOutboundOperation,
   prepareOutboundOperation
 } from '../core/outbound-operations';
-import { isOpenDlqAiRecoveryEvent } from '../core/dlq-ai-redrive';
+import {
+  convergeStaleAiOutboundOperations,
+  isOpenDlqAiRecoveryEvent
+} from '../core/dlq-ai-redrive';
 import { logger } from '../observability/logger';
 
 async function loadConversation(env: Env, convId: string): Promise<Conversation | null> {
   return env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first<Conversation>();
+}
+
+async function convergeStaleAiRecovery(
+  env: Env,
+  event: AiTriggerEvent
+): Promise<void> {
+  const chatwootOperationId = `ai_reply:${event.eventId}`;
+  await convergeStaleAiOutboundOperations(env, event);
+  const chatwoot = await getOutboundOperation(env, chatwootOperationId);
+  if (chatwoot?.status === 'SENT') {
+    await resolveOutboundDomainState(env, chatwootOperationId);
+  }
 }
 
 function activeGenerationDelay(
@@ -142,6 +157,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       operation_id: stableAiJobId,
       result: existingRun?.status || 'MISSING'
     });
+    await convergeStaleAiRecovery(env, event);
     return;
   }
 
@@ -375,6 +391,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         );
       if (!resultSaved) {
         await retireLateGeneration(env, stableAiJobId, convId, generationId, handoffEpoch);
+        if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
+          await convergeStaleAiRecovery(env, event);
+        }
         aiContent = undefined;
         responseId = undefined;
         return;
@@ -468,7 +487,10 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     });
     if (isDlqRecovery) {
       const currentOperation = await getOutboundOperation(env, chatwootOperationId);
-      if (currentOperation?.last_error === 'DISCARDED_STALE') return;
+      if (currentOperation?.last_error === 'DISCARDED_STALE') {
+        await convergeStaleAiRecovery(env, event);
+        return;
+      }
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
     return;
@@ -497,6 +519,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     'telegram',
     'SEND_MESSAGE',
     async (_opId, lifecycle) => {
+      if (env.hooks?.beforeAiTelegramDispatchPreflight) {
+        await env.hooks.beforeAiTelegramDispatchPreflight(env, convId);
+      }
       if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
         throw new StaleAiTriggerBeforeDeliveryError();
       }
@@ -526,7 +551,12 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     if (
       currentOperation?.last_error === 'DISCARDED_STALE' ||
       currentOperation?.last_error === 'TARGET_IDENTITY_CHANGED'
-    ) return;
+    ) {
+      if (currentOperation.last_error === 'DISCARDED_STALE') {
+        await convergeStaleAiRecovery(env, event);
+      }
+      return;
+    }
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
   }
 }

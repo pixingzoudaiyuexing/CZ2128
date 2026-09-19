@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Env } from '../src/config/env';
 import {
+  convergeStaleAiOutboundOperations,
   getDlqAiRedriveEligibility,
   requestDlqAiRedrive
 } from '../src/core/dlq-ai-redrive';
@@ -104,7 +105,12 @@ async function seedOutbound(
   env: Env,
   kind: 'CHATWOOT' | 'TELEGRAM',
   status: string,
-  options: { attemptCount?: number; nextRetryAt?: number | null; malformed?: boolean } = {}
+  options: {
+    attemptCount?: number;
+    nextRetryAt?: number | null;
+    malformed?: boolean;
+    safeRetryEvidence?: boolean;
+  } = {}
 ): Promise<void> {
   const operationId = kind === 'CHATWOOT' ? `ai_reply:${EVENT_ID}` : `ai_tg_mirror:${EVENT_ID}`;
   const evidence = kind === 'CHATWOOT'
@@ -113,9 +119,10 @@ async function seedOutbound(
   await db.prepare(
     `INSERT INTO outbound_operations
      (id, conversation_id, destination_provider, operation_type, status, provider_message_ref, attempt_count,
-      lease_until, lease_token, last_error, created_at, updated_at, next_retry_at,
+      lease_until, lease_token, last_error, created_at, updated_at, request_started_at,
+      response_observed_at, response_http_status, next_retry_at,
       reconciliation_status, subject_type, subject_ref, target_evidence_json)
-     VALUES (?, ?, ?, 'SEND_MESSAGE', ?, ?, ?, NULL, NULL, NULL, 1, 1, ?,
+     VALUES (?, ?, ?, 'SEND_MESSAGE', ?, ?, ?, NULL, NULL, ?, 1, 1, ?, ?, ?, ?,
              'NOT_REQUIRED', 'AI_RUN', ?, ?)`
   ).bind(
     operationId,
@@ -124,6 +131,10 @@ async function seedOutbound(
     status,
     status === 'SENT' ? `${kind.toLowerCase()}-provider-ref` : null,
     options.attemptCount ?? (status === 'SENT' ? 1 : 0),
+    status === 'FAILED_RETRYABLE' && options.safeRetryEvidence ? 'OUTBOUND_RATE_LIMITED' : null,
+    status === 'FAILED_RETRYABLE' && options.safeRetryEvidence ? 1 : null,
+    status === 'FAILED_RETRYABLE' && options.safeRetryEvidence ? 2 : null,
+    status === 'FAILED_RETRYABLE' && options.safeRetryEvidence ? 429 : null,
     options.nextRetryAt ?? null,
     EVENT_ID,
     options.malformed ? '{' : serializeTargetEvidence(evidence)
@@ -635,6 +646,13 @@ describe('DLQ AI redrive request idempotency', () => {
        SET status = 'AMBIGUOUS', reconciliation_status = 'PENDING'
        WHERE id = ?`
     ).bind(`ai_reply:${EVENT_ID}`).run();
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-before-ambiguous', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
     const fetchMock = vi.spyOn(globalThis, 'fetch');
 
     await expect(handleQueueEvent(bodies[0], env)).rejects.toMatchObject({
@@ -644,6 +662,13 @@ describe('DLQ AI redrive request idempotency', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
       .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+    expect((await db.prepare('SELECT status, reconciliation_status FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'AMBIGUOUS', reconciliation_status: 'PENDING'
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).first<any>()).c).toBe(0);
     db.close();
   });
 
@@ -695,6 +720,13 @@ describe('DLQ AI redrive request idempotency', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect((await db.prepare('SELECT status FROM ai_runs WHERE trigger_event_ref = ?')
       .bind(EVENT_ID).first<any>()).status).toBe('DISCARDED_STALE');
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE'
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_id = ? AND action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>()).c).toBe(1);
     expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
       .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
     db.close();
@@ -741,6 +773,12 @@ describe('DLQ AI redrive request idempotency', () => {
     expect(chatwootCalls).toBe(0);
     expect((await db.prepare('SELECT status FROM ai_runs WHERE trigger_event_ref = ?')
       .bind(EVENT_ID).first<any>()).status).toBe('DISCARDED_STALE');
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE'
+    });
+    expect((await db.prepare('SELECT attempt_count FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).attempt_count).toBe(2);
     db.close();
   });
 
@@ -751,6 +789,7 @@ describe('DLQ AI redrive request idempotency', () => {
     const bodies: any[] = [];
     const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
     await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8203', NOW);
+    await seedOutbound(db, env, 'TELEGRAM', 'PENDING');
     await db.prepare('UPDATE ai_runs SET next_retry_at = 0 WHERE trigger_event_ref = ?')
       .bind(EVENT_ID).run();
     env.hooks = {
@@ -785,6 +824,287 @@ describe('DLQ AI redrive request idempotency', () => {
       .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
       status: 'FAILED_FINAL',
       last_error: 'DISCARDED_STALE'
+    });
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_tg_mirror:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'DISCARDED_STALE'
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).first<any>()).c).toBe(2);
+    expect((await db.prepare(
+      `SELECT old_state, new_state, reason_code FROM reliability_audit
+       WHERE entity_id = ? AND action = 'HISTORICAL_AI_STALE_DISCARDED'`
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      old_state: 'SENDING',
+      new_state: 'FAILED_FINAL',
+      reason_code: 'DISCARDED_STALE'
+    });
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it('converges stale SUCCESS with a safe Chatwoot FAILED_RETRYABLE operation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'FAILED_RETRYABLE', {
+      attemptCount: 1,
+      nextRetryAt: NOW - 1,
+      safeRetryEvidence: true
+    });
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8301', NOW);
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-success-retry', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, response_text FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>())).toMatchObject({
+      status: 'SUCCESS', response_text: 'Durable response'
+    });
+    expect((await db.prepare(
+      `SELECT status, last_error, attempt_count, request_started_at,
+              response_observed_at, response_http_status
+       FROM outbound_operations WHERE id = ?`
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'DISCARDED_STALE',
+      attempt_count: 1,
+      request_started_at: 1,
+      response_observed_at: 2,
+      response_http_status: 429
+    });
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it.each(['PENDING', 'FAILED_RETRYABLE'] as const)(
+    'preserves SENT Chatwoot and converges stale Telegram %s',
+    async mirrorStatus => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedEligible(db, { runStatus: 'SUCCESS' });
+      const bodies: any[] = [];
+      const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+      await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+      await seedOutbound(db, env, 'TELEGRAM', mirrorStatus, {
+        attemptCount: mirrorStatus === 'FAILED_RETRYABLE' ? 1 : 0,
+        nextRetryAt: mirrorStatus === 'FAILED_RETRYABLE' ? NOW - 1 : null,
+        safeRetryEvidence: mirrorStatus === 'FAILED_RETRYABLE'
+      });
+      await requestDlqAiRedrive(env, RECEIPT_ID, '1001', `83${mirrorStatus.length}`, NOW);
+      await db.prepare(
+        `INSERT INTO messages
+         (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+          message_type, text_content, created_at)
+         VALUES ('newer-mirror', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+                 'TEXT', 'New customer text', 101)`
+      ).bind(CONVERSATION_ID).run();
+      const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+      await handleQueueEvent(bodies[0], env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await db.prepare('SELECT status, provider_message_ref FROM outbound_operations WHERE id = ?')
+        .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+        status: 'SENT', provider_message_ref: 'chatwoot-provider-ref'
+      });
+      expect((await db.prepare('SELECT status, last_error, attempt_count FROM outbound_operations WHERE id = ?')
+        .bind(`ai_tg_mirror:${EVENT_ID}`).first<any>())).toMatchObject({
+        status: 'FAILED_FINAL',
+        last_error: 'DISCARDED_STALE',
+        attempt_count: mirrorStatus === 'FAILED_RETRYABLE' ? 1 : 0
+      });
+      expect((await db.prepare("SELECT COUNT(*) AS c FROM messages WHERE actor_role = 'AI'")
+        .first<any>()).c).toBe(1);
+      expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+        .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+      db.close();
+    }
+  );
+
+  it('preserves SENT Chatwoot and SENT Telegram when the historical trigger is stale', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, env, 'TELEGRAM', 'SENT');
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8304', NOW);
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-both-sent', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT id, status FROM outbound_operations ORDER BY id').all<any>()).results)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: `ai_reply:${EVENT_ID}`, status: 'SENT' }),
+        expect.objectContaining({ id: `ai_tg_mirror:${EVENT_ID}`, status: 'SENT' })
+      ]));
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).first<any>()).c).toBe(0);
+    db.close();
+  });
+
+  it('fails closed when stale convergence loses a PENDING operation to a SENDING claimant', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8305', NOW);
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-claim-race', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
+    env.hooks = {
+      beforeStaleOutboundConvergence: async innerEnv => {
+        await innerEnv.DB.prepare(
+          `UPDATE outbound_operations
+           SET status = 'SENDING', lease_until = ?, lease_token = 'v2:other-owner'
+           WHERE id = ? AND status = 'PENDING'`
+        ).bind(NOW + 60, `ai_reply:${EVENT_ID}`).run();
+      }
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(handleQueueEvent(bodies[0], env)).rejects.toMatchObject({
+      code: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, lease_token FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'SENDING', lease_token: 'v2:other-owner'
+    });
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).first<any>()).c).toBe(0);
+    db.close();
+  });
+
+  it('converges duplicate stale cleanup calls idempotently with one audit', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const env = makeEnv(db);
+    const staleEvent = {
+      version: 1 as const,
+      source: 'internal' as const,
+      type: 'ai_trigger' as const,
+      eventId: EVENT_ID,
+      payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+    };
+
+    const results = await Promise.all([
+      convergeStaleAiOutboundOperations(env, staleEvent),
+      convergeStaleAiOutboundOperations(env, staleEvent)
+    ]);
+
+    expect(results.reduce((sum, result) => sum + result.changed, 0)).toBe(1);
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE'
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_id = ? AND action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>()).c).toBe(1);
+    db.close();
+  });
+
+  it('keeps event and DLQ unresolved when stale convergence D1 batch fails', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const requestEnv = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(requestEnv, RECEIPT_ID, '1001', '8306', NOW);
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('newer-batch-failure', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+               'TEXT', 'New customer text', 101)`
+    ).bind(CONVERSATION_ID).run();
+    const processingEnv = makeEnv(db);
+    processingEnv.DB = {
+      prepare: db.prepare.bind(db),
+      batch: vi.fn(async () => { throw new Error('simulated D1 batch failure'); })
+    } as any;
+
+    await expect(handleQueueEvent(bodies[0], processingEnv)).rejects.toMatchObject({
+      code: 'D1_RESULT_PERSIST_FAILED'
+    });
+
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>()).status).toBe('PENDING');
+    expect((await db.prepare('SELECT status FROM event_receipts WHERE source_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('FAILED');
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'HISTORICAL_AI_STALE_DISCARDED'"
+    ).first<any>()).c).toBe(0);
+    db.close();
+  });
+
+  it('converges both operations when Telegram becomes stale immediately before dispatch', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, env, 'TELEGRAM', 'PENDING');
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8307', NOW);
+    env.hooks = {
+      beforeAiTelegramDispatchPreflight: async innerEnv => {
+        await innerEnv.DB.prepare(
+          `INSERT INTO messages
+           (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+            message_type, text_content, created_at)
+           VALUES ('newer-before-telegram', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+                   'TEXT', 'New customer text', 101)`
+        ).bind(CONVERSATION_ID).run();
+      }
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>()).status).toBe('SENT');
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_tg_mirror:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE'
     });
     expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
       .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');

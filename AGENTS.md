@@ -59,6 +59,7 @@ Runtime provider settings must be resolved as one D1 snapshot per HTTP request o
 - Effective Chatwoot delivery of an `AI_RUN` repairs one durable AI message idempotently; Telegram mirror delivery alone does not create another context message.
 - Normal fresh AI processing persists deterministic Chatwoot target evidence before the AI provider boundary; historical DLQ recovery never creates missing target evidence from current configuration.
 - Historical AI recovery rechecks newest customer text during consumption and never creates a missing Telegram mirror after Chatwoot delivery.
+- Stale historical AI recovery conditionally terminates only identity-valid PENDING or observed-429 retryable operations; SENT/final history is preserved and SENDING/AMBIGUOUS blocks DLQ resolution.
 
 ## Telegram Topic Rule
 
