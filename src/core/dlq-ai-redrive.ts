@@ -80,7 +80,9 @@ interface DurableMessageRow {
   provider_message_ref: string;
 }
 
-interface StaleOutboundPlan {
+export type AiOutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF';
+
+interface AbandonedOutboundPlan {
   operation: OutboundOperation;
   statement: D1PreparedStatement;
   audit: D1PreparedStatement;
@@ -103,29 +105,30 @@ function reconstructMessageId(eventId: string, conversationId: string): string |
   return boundedIdentity(messageId) ? messageId : null;
 }
 
-function validateStaleOperationIdentity(
+function validateAbandonedOperationIdentity(
   operation: OutboundOperation,
-  conversation: Conversation,
-  eventId: string,
+  event: AiTriggerEvent,
   kind: 'CHATWOOT' | 'TELEGRAM'
 ): boolean {
-  const expectedId = kind === 'CHATWOOT' ? `ai_reply:${eventId}` : `ai_tg_mirror:${eventId}`;
+  const expectedId = kind === 'CHATWOOT'
+    ? `ai_reply:${event.eventId}`
+    : `ai_tg_mirror:${event.eventId}`;
   const expectedProvider = kind === 'CHATWOOT' ? 'chatwoot' : 'telegram';
   if (
     operation.id !== expectedId ||
-    operation.conversation_id !== conversation.id ||
+    operation.conversation_id !== event.payload.convId ||
     operation.destination_provider !== expectedProvider ||
     operation.operation_type !== 'SEND_MESSAGE' ||
     operation.subject_type !== 'AI_RUN' ||
-    operation.subject_ref !== eventId ||
+    operation.subject_ref !== event.eventId ||
     !operation.target_evidence_json
   ) return false;
   try {
     const evidence = parseTargetEvidence(operation.target_evidence_json);
     if (kind === 'CHATWOOT') {
       return evidence.provider === 'chatwoot' &&
-        evidence.accountRef === conversation.helpdesk_account_ref &&
-        evidence.conversationRef === conversation.helpdesk_conversation_ref &&
+        boundedIdentity(evidence.accountRef) &&
+        boundedIdentity(evidence.conversationRef) &&
         evidence.sourceId === `cz2128:${expectedId}`;
     }
     return evidence.provider === 'telegram' &&
@@ -157,17 +160,28 @@ function staleTerminationIsSafe(operation: OutboundOperation): boolean {
     Number.isSafeInteger(operation.next_retry_at);
 }
 
-async function staleAuditId(operationId: string, oldState: string): Promise<string> {
-  return `stale-ai:${await sha256Hex(JSON.stringify([operationId, oldState, 'DISCARDED_STALE']))}`;
+function abandonmentAuditAction(reason: AiOutboundAbandonmentReason): string {
+  return reason === 'DISCARDED_STALE'
+    ? 'HISTORICAL_AI_STALE_DISCARDED'
+    : 'AI_HANDOFF_CANCELLED';
 }
 
-function staleUpdateStatement(
+async function abandonmentAuditId(
+  operationId: string,
+  oldState: string,
+  reason: AiOutboundAbandonmentReason
+): Promise<string> {
+  return `abandoned-ai:${await sha256Hex(JSON.stringify([operationId, oldState, reason]))}`;
+}
+
+function abandonedUpdateStatement(
   env: Pick<Env, 'DB'>,
   operation: OutboundOperation,
-  now: number
+  now: number,
+  reason: AiOutboundAbandonmentReason
 ): D1PreparedStatement {
   const common = `UPDATE outbound_operations
-     SET status = 'FAILED_FINAL', last_error = 'DISCARDED_STALE',
+     SET status = 'FAILED_FINAL', last_error = ?,
          lease_until = NULL, lease_token = NULL,
          retry_after_seconds = NULL, next_retry_at = NULL, updated_at = ?
      WHERE id = ? AND conversation_id = ? AND destination_provider = ?
@@ -182,6 +196,7 @@ function staleUpdateStatement(
         AND response_http_status = 429 AND last_error = 'OUTBOUND_RATE_LIMITED'
         AND next_retry_at IS NOT NULL`;
   return env.DB.prepare(common + stateFence).bind(
+    reason,
     now,
     operation.id,
     operation.conversation_id,
@@ -192,9 +207,10 @@ function staleUpdateStatement(
   );
 }
 
-export async function convergeStaleAiOutboundOperations(
+export async function convergeAbandonedAiOutboundOperations(
   env: Env,
-  event: AiTriggerEvent
+  event: AiTriggerEvent,
+  reason: AiOutboundAbandonmentReason
 ): Promise<{ changed: number }> {
   const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
     .bind(event.payload.convId).first<Conversation>();
@@ -205,7 +221,10 @@ export async function convergeStaleAiOutboundOperations(
     'SELECT * FROM outbound_operations WHERE id IN (?, ?)'
   ).bind(chatwootId, telegramId).all<OutboundOperation>();
   const operations = result.results || [];
-  const plans: StaleOutboundPlan[] = [];
+  if (!operations.some(operation => operation.id === chatwootId)) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+  const plans: AbandonedOutboundPlan[] = [];
   const now = Math.floor(Date.now() / 1000);
 
   for (const operation of operations) {
@@ -214,7 +233,7 @@ export async function convergeStaleAiOutboundOperations(
       : operation.id === telegramId
         ? 'TELEGRAM'
         : null;
-    if (!kind || !validateStaleOperationIdentity(operation, conversation, event.eventId, kind)) {
+    if (!kind || !validateAbandonedOperationIdentity(operation, event, kind)) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
     if (operation.status === 'SENT' || operation.status === 'FAILED_FINAL') continue;
@@ -223,23 +242,26 @@ export async function convergeStaleAiOutboundOperations(
     }
     plans.push({
       operation,
-      statement: staleUpdateStatement(env, operation, now),
+      statement: abandonedUpdateStatement(env, operation, now, reason),
       audit: auditAfterPreviousChange(env, {
-        id: await staleAuditId(operation.id, operation.status),
+        id: await abandonmentAuditId(operation.id, operation.status, reason),
         entityType: 'OUTBOUND_OPERATION',
         entityId: operation.id,
-        action: 'HISTORICAL_AI_STALE_DISCARDED',
+        action: abandonmentAuditAction(reason),
         actorType: 'SYSTEM',
-        actorRef: 'system:dlq-ai-redrive',
+        actorRef: 'system:ai-handler',
         oldState: operation.status,
         newState: 'FAILED_FINAL',
-        reasonCode: 'DISCARDED_STALE',
+        reasonCode: reason,
         createdAt: now
       })
     });
   }
 
-  if (env.hooks?.beforeStaleOutboundConvergence) {
+  if (env.hooks?.beforeAbandonedOutboundConvergence) {
+    await env.hooks.beforeAbandonedOutboundConvergence(env, event.eventId, reason);
+  }
+  if (reason === 'DISCARDED_STALE' && env.hooks?.beforeStaleOutboundConvergence) {
     await env.hooks.beforeStaleOutboundConvergence(env, event.eventId);
   }
   if (plans.length === 0) return { changed: 0 };
@@ -265,10 +287,9 @@ export async function convergeStaleAiOutboundOperations(
     }
     const current = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
       .bind(plans[index].operation.id).first<OutboundOperation>();
-    if (!current || !validateStaleOperationIdentity(
+    if (!current || !validateAbandonedOperationIdentity(
       current,
-      conversation,
-      event.eventId,
+      event,
       current.id === chatwootId ? 'CHATWOOT' : 'TELEGRAM'
     )) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
@@ -277,6 +298,13 @@ export async function convergeStaleAiOutboundOperations(
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
   }
   return { changed };
+}
+
+export async function convergeStaleAiOutboundOperations(
+  env: Env,
+  event: AiTriggerEvent
+): Promise<{ changed: number }> {
+  return convergeAbandonedAiOutboundOperations(env, event, 'DISCARDED_STALE');
 }
 
 function activeGenerationReason(

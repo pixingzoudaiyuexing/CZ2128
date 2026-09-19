@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Env } from '../src/config/env';
 import {
+  convergeAbandonedAiOutboundOperations,
   convergeStaleAiOutboundOperations,
   getDlqAiRedriveEligibility,
   requestDlqAiRedrive
@@ -1110,4 +1111,319 @@ describe('DLQ AI redrive request idempotency', () => {
       .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
     db.close();
   });
+
+  it('converges historical handoff before consume with CANCELLED_BY_HANDOFF semantics', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8401', NOW);
+    await db.prepare(
+      `UPDATE conversations
+       SET ai_mode = 'PAUSED_OPERATOR', ai_handoff_epoch = ai_handoff_epoch + 1
+       WHERE id = ?`
+    ).bind(CONVERSATION_ID).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>()).status).toBe('CANCELLED_BY_HANDOFF');
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    expect((await db.prepare(
+      `SELECT action, old_state, new_state, reason_code FROM reliability_audit
+       WHERE entity_id = ? AND action = 'AI_HANDOFF_CANCELLED'`
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      old_state: 'PENDING', new_state: 'FAILED_FINAL', reason_code: 'CANCELLED_BY_HANDOFF'
+    });
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
+  it('preserves historical SUCCESS while cancelling a safe Chatwoot 429 retry after handoff', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'FAILED_RETRYABLE', {
+      attemptCount: 1, nextRetryAt: NOW - 1, safeRetryEvidence: true
+    });
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8402', NOW);
+    await db.prepare('UPDATE conversations SET ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = ?')
+      .bind(CONVERSATION_ID).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, response_text FROM ai_runs WHERE trigger_event_ref = ?')
+      .bind(EVENT_ID).first<any>())).toMatchObject({ status: 'SUCCESS', response_text: 'Durable response' });
+    expect((await db.prepare('SELECT status, last_error, attempt_count FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF', attempt_count: 1
+    });
+    db.close();
+  });
+
+  it('preserves SENT Chatwoot and cancels a safe pending mirror after handoff', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, env, 'TELEGRAM', 'PENDING');
+    await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '8403', NOW);
+    await db.prepare('UPDATE conversations SET ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = ?')
+      .bind(CONVERSATION_ID).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await db.prepare('SELECT status, provider_message_ref FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'SENT', provider_message_ref: 'chatwoot-provider-ref'
+    });
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_tg_mirror:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    expect((await db.prepare("SELECT COUNT(*) AS c FROM messages WHERE actor_role = 'AI'")
+      .first<any>()).c).toBe(1);
+    db.close();
+  });
+
+  it.each(['SENDING', 'AMBIGUOUS'] as const)(
+    'keeps historical handoff unresolved for unsafe outbound state %s',
+    async unsafeStatus => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedEligible(db);
+      const bodies: any[] = [];
+      const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+      await requestDlqAiRedrive(env, RECEIPT_ID, '1001', `84${unsafeStatus.length}`, NOW);
+      await db.prepare(
+        unsafeStatus === 'SENDING'
+          ? `UPDATE outbound_operations
+             SET status = 'SENDING', lease_until = ?, lease_token = 'v2:other-owner'
+             WHERE id = ?`
+          : `UPDATE outbound_operations
+             SET status = 'AMBIGUOUS', reconciliation_status = 'PENDING'
+             WHERE id = ?`
+      ).bind(...(unsafeStatus === 'SENDING'
+        ? [NOW + 60, `ai_reply:${EVENT_ID}`]
+        : [`ai_reply:${EVENT_ID}`])).run();
+      await db.prepare('UPDATE conversations SET ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = ?')
+        .bind(CONVERSATION_ID).run();
+      const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+      await expect(handleQueueEvent(bodies[0], env)).rejects.toMatchObject({
+        code: 'OUTBOUND_PRECONDITION_FAILED'
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+        .bind(`ai_reply:${EVENT_ID}`).first<any>()).status).toBe(unsafeStatus);
+      expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+        .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+      expect((await db.prepare(
+        "SELECT COUNT(*) AS c FROM reliability_audit WHERE action = 'AI_HANDOFF_CANCELLED'"
+      ).first<any>()).c).toBe(0);
+      db.close();
+    }
+  );
+
+  it.each(['DISCARDED_STALE', 'CANCELLED_BY_HANDOFF'] as const)(
+    'allows no-send %s cleanup across current Chatwoot mapping drift',
+    async reason => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedEligible(db);
+      const bodies: any[] = [];
+      const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+      const originalEvidence = (await db.prepare(
+        'SELECT target_evidence_json FROM outbound_operations WHERE id = ?'
+      ).bind(`ai_reply:${EVENT_ID}`).first<any>()).target_evidence_json;
+      await requestDlqAiRedrive(env, RECEIPT_ID, '1001', `85${reason.length}`, NOW);
+      await db.prepare(
+        `UPDATE conversations
+         SET helpdesk_account_ref = 'account-new', helpdesk_conversation_ref = 'conversation-new'
+         WHERE id = ?`
+      ).bind(CONVERSATION_ID).run();
+      if (reason === 'DISCARDED_STALE') {
+        await db.prepare(
+          `INSERT INTO messages
+           (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+            message_type, text_content, created_at)
+           VALUES ('newer-drift', ?, 'chatwoot', 'msg-2', 'INBOUND', 'CUSTOMER',
+                   'TEXT', 'New customer text', 101)`
+        ).bind(CONVERSATION_ID).run();
+      } else {
+        await db.prepare('UPDATE conversations SET ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = ?')
+          .bind(CONVERSATION_ID).run();
+      }
+      const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+      await handleQueueEvent(bodies[0], env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await db.prepare('SELECT status, last_error, target_evidence_json FROM outbound_operations WHERE id = ?')
+        .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+        status: 'FAILED_FINAL', last_error: reason, target_evidence_json: originalEvidence
+      });
+      expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+        .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+      db.close();
+    }
+  );
+
+  it.each(['MALFORMED', 'WRONG_SOURCE', 'WRONG_SUBJECT', 'WRONG_ID'] as const)(
+    'fails closed on abandoned outbound historical evidence/identity case %s',
+    async invalidCase => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedEligible(db);
+      const bodies: any[] = [];
+      const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }));
+      await requestDlqAiRedrive(env, RECEIPT_ID, '1001', `86${invalidCase.length}`, NOW);
+      if (invalidCase === 'MALFORMED') {
+        await db.prepare('UPDATE outbound_operations SET target_evidence_json = ? WHERE id = ?')
+          .bind('{', `ai_reply:${EVENT_ID}`).run();
+      } else if (invalidCase === 'WRONG_SOURCE') {
+        const row = await db.prepare('SELECT target_evidence_json FROM outbound_operations WHERE id = ?')
+          .bind(`ai_reply:${EVENT_ID}`).first<any>();
+        const evidence = JSON.parse(row.target_evidence_json);
+        evidence.sourceId = 'cz2128:wrong-operation';
+        await db.prepare('UPDATE outbound_operations SET target_evidence_json = ? WHERE id = ?')
+          .bind(JSON.stringify(evidence), `ai_reply:${EVENT_ID}`).run();
+      } else if (invalidCase === 'WRONG_SUBJECT') {
+        await db.prepare('UPDATE outbound_operations SET subject_ref = ? WHERE id = ?')
+          .bind('wrong-event', `ai_reply:${EVENT_ID}`).run();
+      } else {
+        await db.prepare('UPDATE outbound_operations SET id = ? WHERE id = ?')
+          .bind('ai_reply:wrong-event', `ai_reply:${EVENT_ID}`).run();
+      }
+      await db.prepare('UPDATE conversations SET ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = ?')
+        .bind(CONVERSATION_ID).run();
+      const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+      await expect(handleQueueEvent(bodies[0], env)).rejects.toMatchObject({
+        code: 'OUTBOUND_PRECONDITION_FAILED'
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+        .bind(RECEIPT_ID).first<any>()).status).toBe('OPEN');
+      db.close();
+    }
+  );
+
+  it('deduplicates repeated handoff cleanup after target drift', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    await db.prepare(
+      `UPDATE conversations
+       SET helpdesk_account_ref = 'account-new', helpdesk_conversation_ref = 'conversation-new'
+       WHERE id = ?`
+    ).bind(CONVERSATION_ID).run();
+    const env = makeEnv(db);
+    const abandonedEvent = {
+      version: 1 as const,
+      source: 'internal' as const,
+      type: 'ai_trigger' as const,
+      eventId: EVENT_ID,
+      payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+    };
+
+    const results = await Promise.all([
+      convergeAbandonedAiOutboundOperations(env, abandonedEvent, 'CANCELLED_BY_HANDOFF'),
+      convergeAbandonedAiOutboundOperations(env, abandonedEvent, 'CANCELLED_BY_HANDOFF')
+    ]);
+
+    expect(results.reduce((sum, result) => sum + result.changed, 0)).toBe(1);
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_id = ? AND action = 'AI_HANDOFF_CANCELLED'"
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>()).c).toBe(1);
+    db.close();
+  });
+
+  it.each(['DISCARDED_STALE', 'CANCELLED_BY_HANDOFF'] as const)(
+    'preserves unsafe non-429 retryable outbound for %s cleanup',
+    async reason => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedEligible(db);
+      const env = makeEnv(db);
+      await db.prepare(
+        `UPDATE outbound_operations
+         SET status = 'FAILED_RETRYABLE', last_error = 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS',
+             request_started_at = 1, response_observed_at = 2, response_http_status = 503,
+             next_retry_at = ?, attempt_count = 1
+         WHERE id = ?`
+      ).bind(NOW - 1, `ai_reply:${EVENT_ID}`).run();
+      const abandonedEvent = {
+        version: 1 as const,
+        source: 'internal' as const,
+        type: 'ai_trigger' as const,
+        eventId: EVENT_ID,
+        payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+      };
+
+      await expect(convergeAbandonedAiOutboundOperations(env, abandonedEvent, reason))
+        .rejects.toMatchObject({ code: 'OUTBOUND_PRECONDITION_FAILED' });
+
+      expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+        .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+        status: 'FAILED_RETRYABLE', last_error: 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS'
+      });
+      expect((await db.prepare('SELECT COUNT(*) AS c FROM reliability_audit')
+        .first<any>()).c).toBe(0);
+      db.close();
+    }
+  );
+
+  it.each(['DISCARDED_STALE', 'CANCELLED_BY_HANDOFF'] as const)(
+    'preserves existing FAILED_FINAL reason during %s cleanup',
+    async reason => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedEligible(db);
+      const env = makeEnv(db);
+      await db.prepare(
+        `UPDATE outbound_operations
+         SET status = 'FAILED_FINAL', last_error = 'OUTBOUND_PROVIDER_4XX_FINAL'
+         WHERE id = ?`
+      ).bind(`ai_reply:${EVENT_ID}`).run();
+      const abandonedEvent = {
+        version: 1 as const,
+        source: 'internal' as const,
+        type: 'ai_trigger' as const,
+        eventId: EVENT_ID,
+        payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+      };
+
+      expect(await convergeAbandonedAiOutboundOperations(env, abandonedEvent, reason))
+        .toEqual({ changed: 0 });
+      expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+        .bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+        status: 'FAILED_FINAL', last_error: 'OUTBOUND_PROVIDER_4XX_FINAL'
+      });
+      expect((await db.prepare('SELECT COUNT(*) AS c FROM reliability_audit')
+        .first<any>()).c).toBe(0);
+      db.close();
+    }
+  );
 });

@@ -50,6 +50,13 @@ class MockPreparedStatement {
     return null;
   }
   async all() {
+    if (this.query.includes('FROM outbound_operations') && this.query.includes('id IN')) {
+      return {
+        results: this.db.tables.outbound_operations
+          .filter(item => item.id === this.boundParams[0] || item.id === this.boundParams[1])
+          .map(item => ({ ...item }))
+      };
+    }
     if (this.query.includes('FROM messages')) {
       const msgs = [...this.db.tables.messages].filter(m => m.conversation_id === this.boundParams[0]);
       // TASK 8: Context Same-Second Ordering Mock. 
@@ -313,7 +320,10 @@ if (this.query.includes('INSERT INTO conversations')) {
           created_at: this.boundParams[5], updated_at: this.boundParams[6],
           subject_type: this.boundParams[7], subject_ref: this.boundParams[8],
           target_evidence_json: this.boundParams[9], reconciliation_status: 'NOT_REQUIRED',
-          request_started_at: null
+          provider_message_ref: null, lease_until: null, lease_token: null, last_error: null,
+          request_started_at: null, response_observed_at: null, response_http_status: null,
+          retry_after_seconds: null, next_retry_at: null, resolved_by: null,
+          resolved_at: null, resolution_reason: null, parent_operation_id: null
         });
         meta.changes = 1;
       }

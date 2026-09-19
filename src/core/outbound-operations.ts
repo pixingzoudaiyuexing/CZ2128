@@ -34,13 +34,25 @@ export interface ExecuteOutboundOperationOptions {
   targetEvidence: OutboundTargetEvidence;
 }
 
-async function staleFailureAuditId(operationId: string, oldState: string): Promise<string> {
+type OutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF';
+
+function abandonmentAction(reason: OutboundAbandonmentReason): string {
+  return reason === 'DISCARDED_STALE'
+    ? 'HISTORICAL_AI_STALE_DISCARDED'
+    : 'AI_HANDOFF_CANCELLED';
+}
+
+async function abandonmentFailureAuditId(
+  operationId: string,
+  oldState: string,
+  reason: OutboundAbandonmentReason
+): Promise<string> {
   const digest = await crypto.subtle.digest(
     'SHA-256',
-    new TextEncoder().encode(JSON.stringify([operationId, oldState, 'DISCARDED_STALE']))
+    new TextEncoder().encode(JSON.stringify([operationId, oldState, reason]))
   );
   const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-  return `stale-ai:${hex}`;
+  return `abandoned-ai:${hex}`;
 }
 
 export async function getOutboundOperation(
@@ -478,19 +490,25 @@ let result: { providerMessageRef?: string };
     );
 
     let failureResult: D1Result;
-    if (error instanceof StaleAiTriggerBeforeDeliveryError) {
+    const abandonmentReason: OutboundAbandonmentReason | null =
+      error instanceof StaleAiTriggerBeforeDeliveryError
+        ? 'DISCARDED_STALE'
+        : error instanceof CancelledBeforeDeliveryError
+          ? 'CANCELLED_BY_HANDOFF'
+          : null;
+    if (abandonmentReason) {
       const results = await env.DB.batch([
         failureStatement,
         auditAfterPreviousChange(env, {
-          id: await staleFailureAuditId(id, 'SENDING'),
+          id: await abandonmentFailureAuditId(id, 'SENDING', abandonmentReason),
           entityType: 'OUTBOUND_OPERATION',
           entityId: id,
-          action: 'HISTORICAL_AI_STALE_DISCARDED',
+          action: abandonmentAction(abandonmentReason),
           actorType: 'SYSTEM',
-          actorRef: 'system:dlq-ai-redrive',
+          actorRef: 'system:ai-handler',
           oldState: 'SENDING',
           newState: 'FAILED_FINAL',
-          reasonCode: 'DISCARDED_STALE',
+          reasonCode: abandonmentReason,
           createdAt: ts
         })
       ]);

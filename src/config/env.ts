@@ -9,6 +9,11 @@ export interface Env {
     beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
     beforeAiTelegramDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
     beforeStaleOutboundConvergence?: (env: Env, eventId: string) => Promise<void>;
+    beforeAbandonedOutboundConvergence?: (
+      env: Env,
+      eventId: string,
+      reason: 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF'
+    ) => Promise<void>;
     beforeVisibleSend?: (
       env: Env,
       accountRef: string,

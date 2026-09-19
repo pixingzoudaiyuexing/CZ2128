@@ -214,6 +214,60 @@ describe('durable AI retry state machine', () => {
     db.close();
   });
 
+  it('does not let late generation A terminalize the shared outbound owned by generation B', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const gateA = new Promise<void>(resolve => { releaseA = resolve; });
+    const gateB = new Promise<void>(resolve => { releaseB = resolve; });
+    let aiCalls = 0;
+    let chatwootCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('ai.example')) {
+        aiCalls += 1;
+        if (aiCalls === 1) await gateA;
+        else await gateB;
+        return new Response(JSON.stringify({
+          id: `owner-${aiCalls}`, choices: [{ message: { content: `Answer ${aiCalls}` } }]
+        }), { status: 200 });
+      }
+      chatwootCalls += 1;
+      return new Response(JSON.stringify({ id: 101 }), { status: 200 });
+    });
+    const env = makeEnv(db);
+    const first = processAiTrigger(event('owner-race'), env);
+    while (aiCalls < 1) await new Promise(resolve => setTimeout(resolve, 1));
+    const firstRun = await loadRun(db, 'owner-race');
+    await db.prepare('UPDATE conversations SET ai_generation_started_at = 0 WHERE id = ?')
+      .bind('conv').run();
+    const second = processAiTrigger(event('owner-race'), env);
+    while (aiCalls < 2) await new Promise(resolve => setTimeout(resolve, 1));
+    const secondRun = await loadRun(db, 'owner-race');
+    expect(secondRun.generation_id).not.toBe(firstRun.generation_id);
+
+    releaseA();
+    await first;
+
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:owner-race').first<any>())).toMatchObject({
+      status: 'PENDING', last_error: null
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_id = 'ai_reply:owner-race'"
+    ).first<any>()).c).toBe(0);
+
+    releaseB();
+    await second;
+
+    expect(await loadRun(db, 'owner-race')).toMatchObject({ status: 'SUCCESS', attempt_count: 2 });
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:owner-race').first<any>()).status).toBe('SENT');
+    expect(chatwootCalls).toBe(1);
+    db.close();
+  });
+
   it('keeps the normal fresh AI path able to create first Chatwoot and Telegram operations', async () => {
     const db = new SqliteD1();
     db.migrate();
@@ -431,6 +485,57 @@ describe('durable AI retry state machine', () => {
 
     expect(await loadRun(db)).toMatchObject({ status: 'CANCELLED_BY_HANDOFF', attempt_count: 1 });
     expect(chatwootCalls).toBe(0);
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:ai-trigger').first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    expect((await db.prepare(
+      `SELECT action, old_state, new_state, reason_code FROM reliability_audit
+       WHERE entity_id = 'ai_reply:ai-trigger'`
+    ).first<any>())).toMatchObject({
+      action: 'AI_HANDOFF_CANCELLED',
+      old_state: 'PENDING',
+      new_state: 'FAILED_FINAL',
+      reason_code: 'CANCELLED_BY_HANDOFF'
+    });
+    db.close();
+  });
+
+  it('keeps callback handoff cancellation distinct from stale abandonment', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    let chatwootCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('ai.example')) {
+        return new Response(JSON.stringify({
+          id: 'callback-handoff', choices: [{ message: { content: 'Cancelled answer' } }]
+        }), { status: 200 });
+      }
+      chatwootCalls += 1;
+      return new Response(JSON.stringify({ id: 103 }), { status: 200 });
+    });
+    const env = makeEnv(db, {
+      hooks: { beforeAiDispatchPreflight: async innerEnv => pauseOperator(innerEnv, 'conv') }
+    });
+
+    await processAiTrigger(event('callback-handoff'), env);
+
+    expect(chatwootCalls).toBe(0);
+    expect(await loadRun(db, 'callback-handoff')).toMatchObject({ status: 'CANCELLED_BY_HANDOFF' });
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:callback-handoff').first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    expect((await db.prepare(
+      `SELECT action, old_state, new_state, reason_code FROM reliability_audit
+       WHERE entity_id = 'ai_reply:callback-handoff'`
+    ).first<any>())).toMatchObject({
+      action: 'AI_HANDOFF_CANCELLED',
+      old_state: 'SENDING',
+      new_state: 'FAILED_FINAL',
+      reason_code: 'CANCELLED_BY_HANDOFF'
+    });
     db.close();
   });
 
@@ -455,6 +560,60 @@ describe('durable AI retry state machine', () => {
     await processing;
 
     expect(await loadRun(db)).toMatchObject({ status: 'CANCELLED_BY_HANDOFF', attempt_count: 1 });
+    expect((await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:ai-trigger').first<any>())).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    db.close();
+  });
+
+  it('does not apply historical latest-message cleanup to a normal fresh generation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('fresh-first', 'conv', 'chatwoot', 'message-fresh-message',
+               'INBOUND', 'CUSTOMER', 'TEXT', 'First', 100)`
+    ).run();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let aiCalls = 0;
+    let chatwootCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).includes('ai.example')) {
+        aiCalls += 1;
+        await gate;
+        return new Response(JSON.stringify({
+          id: 'fresh-newer-response', choices: [{ message: { content: 'Still valid fresh answer' } }]
+        }), { status: 200 });
+      }
+      chatwootCalls += 1;
+      return new Response(JSON.stringify({ id: 102 }), { status: 200 });
+    });
+    const env = makeEnv(db);
+    const processing = processAiTrigger(event('fresh-message'), env);
+    while (aiCalls === 0) await new Promise(resolve => setTimeout(resolve, 1));
+    await db.prepare(
+      `INSERT INTO messages
+       (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+        message_type, text_content, created_at)
+       VALUES ('fresh-second', 'conv', 'chatwoot', 'message-newer',
+               'INBOUND', 'CUSTOMER', 'TEXT', 'Second', 101)`
+    ).run();
+    release();
+    await processing;
+
+    expect(await loadRun(db, 'fresh-message')).toMatchObject({ status: 'SUCCESS', attempt_count: 1 });
+    expect((await db.prepare('SELECT status FROM outbound_operations WHERE id = ?')
+      .bind('ai_reply:fresh-message').first<any>()).status).toBe('SENT');
+    expect(aiCalls).toBe(1);
+    expect(chatwootCalls).toBe(1);
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE reason_code = 'DISCARDED_STALE'"
+    ).first<any>()).c).toBe(0);
     db.close();
   });
 

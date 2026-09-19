@@ -1,4 +1,4 @@
-import { completeEventReceipt } from '../../src/queue/consumer';
+import { completeEventReceipt, handleQueueEvent } from '../../src/queue/consumer';
 import { captureDlqMessage } from '../../src/queue/dlq-consumer';
 import { listDlqQuarantine, persistDlqQuarantine } from '../../src/queue/dlq-quarantine';
 import {
@@ -6,7 +6,6 @@ import {
   getDlqAiRedriveEligibility,
   requestDlqAiRedrive
 } from '../../src/core/dlq-ai-redrive';
-import { processAiTrigger } from '../../src/queue/ai-handler';
 import { SupportEvent } from '../../src/core/events';
 import {
   buildChatwootTargetEvidence,
@@ -236,6 +235,14 @@ export default {
       ).bind(redriveConversationId).run();
       return json({ ok: true });
     }
+    if (path === '/change-redrive-conversation-mapping') {
+      await env.DB.prepare(
+        `UPDATE conversations
+         SET helpdesk_account_ref = 'account-new', helpdesk_conversation_ref = 'conversation-new'
+         WHERE id = ?`
+      ).bind(redriveConversationId).run();
+      return json({ ok: true });
+    }
     if (path === '/delete-redrive-chatwoot-operation') {
       await env.DB.prepare('DELETE FROM outbound_operations WHERE id = ?')
         .bind(`ai_reply:${redriveEventId}`).run();
@@ -291,7 +298,7 @@ export default {
     }
     if (path === '/process-redrive') {
       try {
-        await processAiTrigger({
+        await handleQueueEvent({
           version: 1,
           source: 'internal',
           type: 'ai_trigger',
