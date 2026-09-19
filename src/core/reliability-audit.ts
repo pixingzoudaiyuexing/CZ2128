@@ -2,7 +2,7 @@ import { DatabaseEnv } from './database';
 
 export interface ReliabilityAuditInput {
   id: string;
-  entityType: 'OUTBOUND_OPERATION';
+  entityType: 'OUTBOUND_OPERATION' | 'DLQ_RECEIPT';
   entityId: string;
   action: string;
   actorType: 'SYSTEM' | 'ADMIN';
@@ -11,6 +11,29 @@ export interface ReliabilityAuditInput {
   newState?: string;
   reasonCode: string;
   createdAt: number;
+}
+
+export async function insertReliabilityAuditOnce(
+  env: DatabaseEnv,
+  input: ReliabilityAuditInput
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `INSERT OR IGNORE INTO reliability_audit
+     (id, entity_type, entity_id, action, actor_type, actor_ref, old_state, new_state, reason_code, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    input.id,
+    input.entityType,
+    input.entityId,
+    input.action,
+    input.actorType,
+    input.actorRef || null,
+    input.oldState || null,
+    input.newState || null,
+    input.reasonCode,
+    input.createdAt
+  ).run();
+  return d1Changed(result);
 }
 
 export function auditAfterPreviousChange(

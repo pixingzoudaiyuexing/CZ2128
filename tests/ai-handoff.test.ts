@@ -50,6 +50,13 @@ class MockPreparedStatement {
     return null;
   }
   async all() {
+    if (this.query.includes('FROM outbound_operations') && this.query.includes('id IN')) {
+      return {
+        results: this.db.tables.outbound_operations
+          .filter(item => item.id === this.boundParams[0] || item.id === this.boundParams[1])
+          .map(item => ({ ...item }))
+      };
+    }
     if (this.query.includes('FROM messages')) {
       const msgs = [...this.db.tables.messages].filter(m => m.conversation_id === this.boundParams[0]);
       // TASK 8: Context Same-Second Ordering Mock. 
@@ -313,7 +320,10 @@ if (this.query.includes('INSERT INTO conversations')) {
           created_at: this.boundParams[5], updated_at: this.boundParams[6],
           subject_type: this.boundParams[7], subject_ref: this.boundParams[8],
           target_evidence_json: this.boundParams[9], reconciliation_status: 'NOT_REQUIRED',
-          request_started_at: null
+          provider_message_ref: null, lease_until: null, lease_token: null, last_error: null,
+          request_started_at: null, response_observed_at: null, response_http_status: null,
+          retry_after_seconds: null, next_retry_at: null, resolved_by: null,
+          resolved_at: null, resolution_reason: null, parent_operation_id: null
         });
         meta.changes = 1;
       }
@@ -1084,7 +1094,7 @@ describe('Phase 2 AI Handoff', () => {
     expect(env.DB.tables.ai_runs[0].status).toBe('SUCCESS');
   });
 
-  it('terminally cancels a durable result when its trigger is handled while paused', async () => {
+  it('preserves historical SUCCESS while an old-epoch trigger completes as a no-op', async () => {
     env.DB.tables.conversations.push({ id: 'c26', ai_mode: 'PAUSED_OPERATOR', ai_handoff_epoch: 4 });
     env.DB.tables.ai_runs.push({
       trigger_event_ref: 'ai_paused_existing', conversation_id: 'c26', trigger_message_ref: 'm26',
@@ -1102,7 +1112,9 @@ describe('Phase 2 AI Handoff', () => {
     await resumeManual(env, 'c26');
     await handleQueueEvent(event, env);
 
-    expect(env.DB.tables.ai_runs[0].status).toBe('CANCELLED_BY_HANDOFF');
+    expect(env.DB.tables.ai_runs[0].status).toBe('SUCCESS');
+    expect(env.DB.tables.ai_runs[0].handoff_epoch).toBe(3);
+    expect(env.DB.tables.event_receipts[0].status).toBe('PROCESSED');
     expect(counts.ai).toBe(0);
     expect(counts.chatwoot).toBe(0);
     expect(counts.telegram).toBe(0);

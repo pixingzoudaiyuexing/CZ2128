@@ -4,6 +4,8 @@ import {
   CancelledBeforeDeliveryError,
   ProviderDeliveryError,
   RetryableProcessingError,
+  SafeError,
+  StaleAiTriggerBeforeDeliveryError,
   retryExhaustionSemantic,
   safeErrorCode
 } from './errors';
@@ -18,7 +20,7 @@ import {
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 
 const OUTBOUND_LEASE_SECONDS = 30;
-const MAX_OUTBOUND_ATTEMPTS = 3;
+export const MAX_OUTBOUND_ATTEMPTS = 3;
 
 export interface OutboundAttemptLifecycle {
   requestStarted(): Promise<void>;
@@ -27,14 +29,99 @@ export interface OutboundAttemptLifecycle {
 
 export interface ExecuteOutboundOperationOptions {
   leaseSeconds?: number;
+  allowCreate?: boolean;
   subject: OutboundSubjectIdentity;
   targetEvidence: OutboundTargetEvidence;
 }
 
-async function loadOperation(env: DatabaseEnv, id: string): Promise<OutboundOperation> {
-  const operation = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
+type OutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF';
+
+function abandonmentAction(reason: OutboundAbandonmentReason): string {
+  return reason === 'DISCARDED_STALE'
+    ? 'HISTORICAL_AI_STALE_DISCARDED'
+    : 'AI_HANDOFF_CANCELLED';
+}
+
+async function abandonmentFailureAuditId(
+  operationId: string,
+  oldState: string,
+  reason: OutboundAbandonmentReason
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify([operationId, oldState, reason]))
+  );
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `abandoned-ai:${hex}`;
+}
+
+export async function getOutboundOperation(
+  env: DatabaseEnv,
+  id: string
+): Promise<OutboundOperation | null> {
+  return env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?')
     .bind(id).first<OutboundOperation>();
+}
+
+async function loadOperation(env: DatabaseEnv, id: string): Promise<OutboundOperation> {
+  const operation = await getOutboundOperation(env, id);
   if (!operation) throw new Error('Outbound operation could not be loaded');
+  return operation;
+}
+
+export async function prepareOutboundOperation(
+  env: DatabaseEnv,
+  conversationId: string,
+  destinationProvider: string,
+  operationType: string,
+  deterministicOperationId: string,
+  options: ExecuteOutboundOperationOptions
+): Promise<OutboundOperation | null> {
+  const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
+  let operation = await getOutboundOperation(env, deterministicOperationId);
+  if (!operation && options.allowCreate === false) return null;
+
+  if (!operation) {
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO outbound_operations
+       (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
+        subject_type, subject_ref, target_evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    ).bind(
+      deterministicOperationId,
+      conversationId,
+      destinationProvider,
+      operationType,
+      'PENDING',
+      now,
+      now,
+      options.subject.type,
+      options.subject.ref,
+      targetEvidenceJson
+    ).run();
+    operation = await loadOperation(env, deterministicOperationId);
+  }
+
+  if (
+    operation.conversation_id !== conversationId ||
+    operation.destination_provider !== destinationProvider ||
+    operation.operation_type !== operationType
+  ) {
+    throw new Error('Outbound operation identity collision');
+  }
+  assertSubjectIdentity(operation, options.subject);
+  operation = await establishEvidence(env, operation, options.subject, targetEvidenceJson);
+  if (
+    operation.status !== 'SENT' &&
+    operation.status !== 'AMBIGUOUS' &&
+    operation.status !== 'FAILED_FINAL' &&
+    (!operation.target_evidence_json ||
+      !targetEvidenceMatches(operation.target_evidence_json, options.targetEvidence))
+  ) {
+    operation = await rejectTargetIdentity(env, operation, 'TARGET_IDENTITY_CHANGED');
+  }
   return operation;
 }
 
@@ -141,19 +228,23 @@ export async function executeOutboundOperation(
   const id = deterministicOperationId;
   const now = Math.floor(Date.now() / 1000);
   const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
-  
-  await env.DB.prepare(
-    `INSERT INTO outbound_operations
-     (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-      subject_type, subject_ref, target_evidence_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (id) DO NOTHING`
-  ).bind(
-    id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
-    options.subject.type, options.subject.ref, targetEvidenceJson
-  ).run();
-
-  let op = await loadOperation(env, id);
+  let op = await getOutboundOperation(env, id);
+  if (!op && options.allowCreate === false) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+  if (!op) {
+    await env.DB.prepare(
+      `INSERT INTO outbound_operations
+       (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
+        subject_type, subject_ref, target_evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    ).bind(
+      id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
+      options.subject.type, options.subject.ref, targetEvidenceJson
+    ).run();
+    op = await loadOperation(env, id);
+  }
   if (
     op.conversation_id !== conversationId ||
     op.destination_provider !== destinationProvider ||
@@ -327,7 +418,8 @@ let result: { providerMessageRef?: string };
       throw error;
     }
 
-    const outcome = error instanceof CancelledBeforeDeliveryError
+    const outcome = error instanceof CancelledBeforeDeliveryError ||
+      error instanceof StaleAiTriggerBeforeDeliveryError
       ? 'FINAL'
       : error instanceof ProviderDeliveryError
         ? error.outcome
@@ -345,7 +437,11 @@ let result: { providerMessageRef?: string };
     let retryAfterSecs = 0;
 
     if (!hasStarted) {
-      if (error instanceof CancelledBeforeDeliveryError || (error instanceof ProviderDeliveryError && outcome === 'FINAL')) {
+      if (
+        error instanceof CancelledBeforeDeliveryError ||
+        error instanceof StaleAiTriggerBeforeDeliveryError ||
+        (error instanceof ProviderDeliveryError && outcome === 'FINAL')
+      ) {
         nextStatus = 'FAILED_FINAL';
         errorCode = safeErrorCode(error);
       } else {
@@ -379,7 +475,7 @@ let result: { providerMessageRef?: string };
     });
     
     const ts = Math.floor(Date.now() / 1000);
-    const failureResult = await env.DB.prepare(
+    const failureStatement = env.DB.prepare(
       `UPDATE outbound_operations
        SET status = ?, last_error = ?, lease_until = NULL, lease_token = NULL, reconciliation_status = ?,
            retry_after_seconds = ?, next_retry_at = ?, updated_at = ?
@@ -391,7 +487,38 @@ let result: { providerMessageRef?: string };
       setRetryAfter ? retryAfterSecs : null,
       setRetryAfter ? ts + retryAfterSecs : null,
       ts, id, leaseToken
-    ).run();
+    );
+
+    let failureResult: D1Result;
+    const abandonmentReason: OutboundAbandonmentReason | null =
+      error instanceof StaleAiTriggerBeforeDeliveryError
+        ? 'DISCARDED_STALE'
+        : error instanceof CancelledBeforeDeliveryError
+          ? 'CANCELLED_BY_HANDOFF'
+          : null;
+    if (abandonmentReason) {
+      const results = await env.DB.batch([
+        failureStatement,
+        auditAfterPreviousChange(env, {
+          id: await abandonmentFailureAuditId(id, 'SENDING', abandonmentReason),
+          entityType: 'OUTBOUND_OPERATION',
+          entityId: id,
+          action: abandonmentAction(abandonmentReason),
+          actorType: 'SYSTEM',
+          actorRef: 'system:ai-handler',
+          oldState: 'SENDING',
+          newState: 'FAILED_FINAL',
+          reasonCode: abandonmentReason,
+          createdAt: ts
+        })
+      ]);
+      if (d1Changed(results[0]) !== d1Changed(results[1])) {
+        throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
+      }
+      failureResult = results[0];
+    } else {
+      failureResult = await failureStatement.run();
+    }
 
     if (failureResult.meta.changes !== 1) {
       throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);

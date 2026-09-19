@@ -16,7 +16,7 @@ If code and documentation conflict, stop and verify ground truth before changing
 
 ## Current Phase
 
-Phases 1, 2, 3 and 3.5 are complete and merged. Phase 4A reliability architecture is frozen. Phase 4B-1 error-taxonomy and retry-contract implementation is complete; Phase 4B-2A COMPLETE; Phase 4B-2B COMPLETE / FROZEN; Phase 4B-2C-1 COMPLETE / FROZEN; Phase 4B-2C-2 COMPLETE / FROZEN; Phase 4B-2C-3 COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is COMPLETE / FROZEN / MERGED. Phase 4B-4A is COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is IN PROGRESS. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED.
+Phases 1, 2, 3 and 3.5 are complete and merged. Phase 4A reliability architecture is frozen. Phase 4B-1 error-taxonomy and retry-contract implementation is complete; Phase 4B-2A COMPLETE; Phase 4B-2B COMPLETE / FROZEN; Phase 4B-2C-1 COMPLETE / FROZEN; Phase 4B-2C-2 COMPLETE / FROZEN; Phase 4B-2C-3 COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is COMPLETE / FROZEN / MERGED. Phase 4B-4A is COMPLETE / FROZEN / MERGED. Phase 4B-4B is IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED. Phase 4B-4 overall is IN PROGRESS. Phase 4B-5 and 4C remain NOT STARTED.
 
 `ARCHITECTURE.md` and `DECISIONS.md` remain the approved V1 baseline. Phase 3 preserves the hardened webhook, Queue, outbound ambiguity and AI handoff contracts from Phases 1 and 2. Real provider, R2, proxy, cleanup, Queue/D1 concurrency and load validation remain pre-production requirements rather than completed production validation.
 
@@ -57,6 +57,11 @@ Runtime provider settings must be resolved as one D1 snapshot per HTTP request o
 - New AI runtime writes use `FAILED_RETRYABLE`, `RETRY_EXHAUSTED` or `FAILED_FINAL`; legacy `FAILED` is read-compatible only and lazily normalized.
 - `AI_RUN` manual retry is allowed only from a matching durable `SUCCESS` response and never regenerates AI; `CONTROL_ACK` is not manually retried.
 - Effective Chatwoot delivery of an `AI_RUN` repairs one durable AI message idempotently; Telegram mirror delivery alone does not create another context message.
+- Normal fresh AI processing persists deterministic Chatwoot target evidence before the AI provider boundary; historical DLQ recovery never creates missing target evidence from current configuration.
+- Historical AI recovery rechecks newest customer text during consumption and never creates a missing Telegram mirror after Chatwoot delivery.
+- Stale historical AI recovery conditionally terminates only identity-valid PENDING or observed-429 retryable operations; SENT/final history is preserved and SENDING/AMBIGUOUS blocks DLQ resolution.
+- Human-handoff abandonment uses `CANCELLED_BY_HANDOFF`, validates historical evidence without current-target substitution and never cleans shared work after a newer generation owner takes over.
+- Abandoned convergence treats SENT as delivery truth only with a bounded provider message reference; malformed SENT blocks domain repair and DLQ resolution.
 
 ## Telegram Topic Rule
 
