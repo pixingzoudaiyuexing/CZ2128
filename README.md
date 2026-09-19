@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3 and Phase 4B-4A are complete, frozen and merged. Phase 4B-4 overall is in progress. Phase 4B-4B, 4B-5, and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3 and Phase 4B-4A are complete, frozen and merged. Phase 4B-4B is implemented and in review, but is not accepted, frozen or merged. Phase 4B-4 overall is in progress; 4B-5 and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -19,23 +19,36 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - Target drift blocks child creation. Chatwoot children use a new child-scoped `source_id`; Telegram group, thread, method and runtime generation must remain compatible.
 - Effective delivery repairs attachment/topic domain state through idempotent D1 CAS without another provider action.
 - Telegram topic repair additionally requires the operation's persisted group identity to match the current effective `BOT_GROUP_ID`, preventing old-group topic references from returning after support-group migration.
-- The private Telegram Admin Bot exposes confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through the frozen core services. It also provides read-only sanitized DLQ inspection; redrive remains a later phase.
+- The private Telegram Admin Bot exposes confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through the frozen core services. Eligible D1 AI-trigger DLQ receipts now add a separately confirmed durable-state recovery action; quarantine remains read-only.
 
 ## Reliability Control Plane
 - Phase 4B-3 is complete, merged and frozen.
 - The existing private Telegram Admin Bot and authorization/session/idempotency boundaries are reused; there is no Web Admin, public reliability API or new authentication system.
 - Reliability summary, uncertain operations, operation details, audit and AI Reliability are bounded administrative reads. AI Reliability is read-only.
 - Manual reconciliation, mark-delivered, cancel and duplicate-risk manual retry are active. Operation identity and CREATE_TOPIC provider references remain in expiring Admin session state rather than callback payloads.
-- `CONFIRMED_NOT_SENT` is inactive. DLQ redrive, Durable Objects and migration `0006` are absent.
+- `CONFIRMED_NOT_SENT` is inactive. Generic DLQ replay, Durable Objects and migration `0006` are absent.
 
 ## DLQ Capture and Inspection
 - `cz2128-queue` and `cz2128-dlq` are consumed by the same Worker and separated only through `batch.queue`; normal queue handling remains unchanged.
-- The DLQ path uses D1, trusted Queue metadata and the dedicated private `DLQ_QUARANTINE` R2 fallback. It never invokes normal event processing, provider adapters, R2 downloads or Queue sends.
+- The DLQ capture path uses D1, trusted Queue metadata and the dedicated private `DLQ_QUARANTINE` R2 fallback. Capture never invokes normal event processing, provider adapters, R2 downloads or Queue sends.
 - Raw bodies, message/AI content, private URLs, attachment credentials, provider bodies and free-form exceptions are never persisted or displayed.
 - One deterministic sanitized receipt is atomically upserted through the existing `0005` schema. If D1 fails, one deterministic allowlisted quarantine object is written to `DLQ_QUARANTINE`. The raw Cloudflare message is ACKed only after either durable path succeeds; both failing requests Queue retry.
-- Canonical PROCESSED completion and matching DLQ RESOLVED metadata converge in either commit order. The authenticated private Telegram Admin Bot provides bounded read-only D1 and quarantine metadata views. Redrive is deferred to Phase 4B-4B and no delete/import/redrive/replay/resend action exists.
+- Canonical PROCESSED completion and matching DLQ RESOLVED metadata converge in either commit order. The authenticated private Telegram Admin Bot provides bounded D1 and quarantine metadata views. Quarantine remains inspection-only with no import/redrive/replay/resend action.
 - Simultaneous persistent D1 and R2 failure plus Queue retry exhaustion remains a residual loss risk. Local Wrangler/workerd tests cover service-level concurrency but do not establish production load or multi-region behavior.
 - The private `DLQ_QUARANTINE` resource is not provisioned or validated in production. Its lifecycle/retention and production outage behavior remain operational work. Above 1000 quarantine objects, the bounded Admin listing does not guarantee globally newest 10 entries; this is LOW non-blocking pre-production / Phase 4C observability debt.
+
+## Explicit Durable-State AI Recovery
+- Only OPEN D1 receipts for `internal / ai_trigger` can be considered. Chatwoot/Telegram messages, lifecycle events, `attachment_transfer` and quarantine evidence remain non-redrivable.
+- The event is reconstructed without raw payload or provider lookup from the exact receipt event ID, canonical conversation, newest durable Chatwoot customer text and an existing matching `ai_runs` row.
+- Eligible AI states are due `FAILED_RETRYABLE` below the three-attempt cap and `SUCCESS` with durable response text. Existing SUCCESS is reused with zero AI regeneration.
+- Normal fresh AI processing prepares the deterministic Chatwoot operation and immutable target evidence before calling the AI provider. Historical recovery cannot create missing evidence from the current endpoint.
+- A newer handoff epoch or newer durable customer text blocks recovery during actual consumption. Freshness is checked at consumer entry, generation-result persistence and immediately before historical provider actions.
+- Provider-visible recovery requires an existing safe operation whose stored target evidence still matches. Chatwoot `SENT` is reused without resend. A missing historical Telegram mirror is skipped; an existing mirror is sent only against its proven target. `SENDING`, `AMBIGUOUS`, `FAILED_FINAL` and malformed evidence remain fail closed.
+- When a historical trigger becomes stale, identity-valid PENDING or observed-429 retryable operations are conditionally closed as `FAILED_FINAL / DISCARDED_STALE` with one deterministic audit. SENT/final history is preserved; SENDING or AMBIGUOUS work keeps the DLQ OPEN.
+- Human handoff uses the parallel `FAILED_FINAL / CANCELLED_BY_HANDOFF` semantic. No-send cleanup validates stored historical evidence without substituting or requiring a later current mapping. Fresh newer-message behavior is unchanged, and a late replaced generation owner cannot clean the shared operation needed by the current owner.
+- Redrive requires an expiring Admin confirmation and authoritative revalidation. One deterministic `DLQ_RECEIPT` intent audit is persisted before the exact original event is sent to the existing main Queue.
+- The same Admin update sends at most once. Distinct commands may enqueue identical physical copies; canonical event, AI-run, generation and outbound identities keep processing duplicate-safe.
+- The receipt remains OPEN until normal canonical processing resolves it. No migration `0006`, outbox, new Queue, Durable Object, KV correctness state, public API, Web Admin or new auth is added.
 
 ## Setup
 - `npm ci`

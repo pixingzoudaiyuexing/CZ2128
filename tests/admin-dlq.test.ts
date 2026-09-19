@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleAdminTelegramWebhook } from '../src/admin/handler';
 import { captureDlqMessage } from '../src/queue/dlq-consumer';
 import { SqliteD1 } from './helpers/sqlite-d1';
+import { buildChatwootTargetEvidence } from '../src/core/outbound-evidence';
+import { prepareOutboundOperation } from '../src/core/outbound-operations';
 
 const adminPath = 'p'.repeat(43);
 const adminSecret = 's'.repeat(43);
@@ -16,6 +18,7 @@ const privacySentinels = [
 function env(db: SqliteD1) {
   return {
     DB: db,
+    QUEUE: { send: vi.fn() },
     RUNTIME_CONFIG_MASTER_KEY: '0'.repeat(43),
     ADMIN_TELEGRAM_BOT_TOKEN: '999999:admin-token-abcdefghijklmnopqrstuvwxyz',
     ADMIN_TELEGRAM_WEBHOOK_SECRET: adminSecret,
@@ -28,6 +31,55 @@ function env(db: SqliteD1) {
     CHATWOOT_API_URL: 'https://chatwoot.example',
     CHATWOOT_API_TOKEN: 'cw-token'
   } as any;
+}
+
+async function seedEligibleAiReceipt(db: SqliteD1): Promise<string> {
+  const conversationId = 'conv-ai-redrive';
+  const messageRef = 'message-ai-redrive';
+  const eventId = `ai_trigger:${conversationId}:${messageRef}`;
+  const receiptId = 'dlq:v1:admin-ai-redrive';
+  db.exec(`
+    INSERT INTO conversations
+    (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
+     operator_channel, created_at, updated_at, version)
+    VALUES ('${conversationId}', 'chatwoot', 'account-1', 'conversation-1', 'customer-1', 'telegram', 1, 1, 1);
+    INSERT INTO messages
+    (id, conversation_id, provider, provider_message_ref, direction, actor_role,
+     message_type, text_content, created_at)
+    VALUES ('message-row-ai-redrive', '${conversationId}', 'chatwoot', '${messageRef}',
+            'INBOUND', 'CUSTOMER', 'TEXT', 'private customer text', 1);
+    INSERT INTO event_receipts
+    (source, source_event_ref, status, attempt_count, event_type, conversation_id, dead_lettered_at)
+    VALUES ('internal', '${eventId}', 'FAILED', 3, 'ai_trigger', '${conversationId}', 1);
+    INSERT INTO ai_runs
+    (trigger_event_ref, conversation_id, trigger_message_ref, generation_id, handoff_epoch,
+     status, attempt_count, next_retry_at, last_error, created_at, updated_at)
+    VALUES ('${eventId}', '${conversationId}', '${messageRef}', 'generation-old', 0,
+            'FAILED_RETRYABLE', 1, 0, 'AI_PROVIDER_5XX', 1, 1);
+    INSERT INTO dlq_receipts
+    (id, queue_name, event_source, source_event_ref, event_type, conversation_id,
+     safe_error_code, status, delivery_count, first_seen_at, last_seen_at)
+    VALUES ('${receiptId}', 'cz2128-dlq', 'internal', '${eventId}', 'ai_trigger', '${conversationId}',
+            'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 1, 1);
+  `);
+  const testEnv = env(db);
+  await prepareOutboundOperation(
+    testEnv,
+    conversationId,
+    'chatwoot',
+    'SEND_MESSAGE',
+    `ai_reply:${eventId}`,
+    {
+      subject: { type: 'AI_RUN', ref: eventId },
+      targetEvidence: await buildChatwootTargetEvidence(
+        testEnv,
+        'account-1',
+        'conversation-1',
+        `ai_reply:${eventId}`
+      )
+    }
+  );
+  return receiptId;
 }
 
 function callback(updateId: number, data: string, userId = 1001) {
@@ -121,6 +173,7 @@ describe('Admin DLQ inspection', () => {
     expect(rendered).toContain('Open DLQ (Latest 10)');
     expect(rendered).toContain('DLQ Receipt');
     expect(rendered).toContain('Event ref: event-admin');
+    expect(rendered).not.toContain('Redrive AI');
     for (const sentinel of privacySentinels) expect(rendered).not.toContain(sentinel);
 
     for (const call of adminCalls) {
@@ -199,6 +252,63 @@ describe('Admin DLQ inspection', () => {
     await handleAdminTelegramWebhook(callback(21, 'r:dlqq', 9999), testEnv);
     expect(bucket.list).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('shows redrive only for an eligible D1 AI receipt and requires confirmation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const receiptId = await seedEligibleAiReceipt(db);
+    const testEnv = env(db);
+    testEnv.DLQ_QUARANTINE = quarantineBucket() as any;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
+
+    await handleAdminTelegramWebhook(callback(30, 'r:dlqo'), testEnv);
+    await handleAdminTelegramWebhook(callback(31, 'r:d:0'), testEnv);
+    const beforeConfirmation = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
+    expect(beforeConfirmation).toContain('AI redrive: ELIGIBLE');
+    expect(beforeConfirmation).toContain('Redrive AI');
+
+    await handleAdminTelegramWebhook(callback(32, 'r:dr'), testEnv);
+    expect(testEnv.QUEUE.send).not.toHaveBeenCalled();
+    const confirmation = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
+    expect(confirmation).toContain('Confirm AI redrive request?');
+
+    await handleAdminTelegramWebhook(callback(33, 'r:dy'), testEnv);
+    expect(testEnv.QUEUE.send).toHaveBeenCalledTimes(1);
+    expect(testEnv.QUEUE.send).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: 'ai_trigger:conv-ai-redrive:message-ai-redrive',
+      payload: { convId: 'conv-ai-redrive', messageId: 'message-ai-redrive' }
+    }));
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_type = 'DLQ_RECEIPT' AND entity_id = ?"
+    ).bind(receiptId).first<any>()).c).toBe(1);
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?').bind(receiptId).first<any>()).status)
+      .toBe('OPEN');
+    db.close();
+  });
+
+  it('revalidates at confirmation and blocks a newly paused conversation', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligibleAiReceipt(db);
+    const testEnv = env(db);
+    testEnv.DLQ_QUARANTINE = quarantineBucket() as any;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
+
+    await handleAdminTelegramWebhook(callback(40, 'r:dlqo'), testEnv);
+    await handleAdminTelegramWebhook(callback(41, 'r:d:0'), testEnv);
+    await handleAdminTelegramWebhook(callback(42, 'r:dr'), testEnv);
+    await db.prepare(
+      "UPDATE conversations SET ai_mode = 'PAUSED_MANUAL', ai_handoff_epoch = ai_handoff_epoch + 1 WHERE id = 'conv-ai-redrive'"
+    ).run();
+    await handleAdminTelegramWebhook(callback(43, 'r:dy'), testEnv);
+
+    expect(testEnv.QUEUE.send).not.toHaveBeenCalled();
+    expect((await db.prepare("SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_type = 'DLQ_RECEIPT'")
+      .first<any>()).c).toBe(0);
+    const rendered = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
+    expect(rendered).toContain('Redrive unavailable: AI paused');
     db.close();
   });
 });

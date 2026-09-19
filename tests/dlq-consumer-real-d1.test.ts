@@ -195,4 +195,188 @@ describe('real local D1/R2 DLQ service behavior', () => {
     });
     for (const sentinel of privateSentinels) expect(JSON.stringify(snapshot)).not.toContain(sentinel);
   });
+
+  it('deduplicates two complete concurrent same-command redrive requests on real D1', async () => {
+    const seeded = await request('/seed-ai-redrive', {});
+    const eligibility = await request('/redrive-eligibility', { now: 1_800_000_000 });
+    expect(eligibility).toMatchObject({
+      eligible: true,
+      event: {
+        eventId: seeded.eventId,
+        payload: { convId: 'conv-redrive', messageId: 'message-redrive' }
+      }
+    });
+
+    const results = await Promise.all([
+      request('/redrive-request', { commandId: '7001', now: 1_800_000_000 }),
+      request('/redrive-request', { commandId: '7001', now: 1_800_000_000 })
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual(['ALREADY_REQUESTED', 'ENQUEUED']);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.audits).toHaveLength(1);
+    expect(snapshot.audits[0]).toMatchObject({
+      entity_type: 'DLQ_RECEIPT',
+      entity_id: seeded.receiptId,
+      action: 'DLQ_REDRIVE_REQUESTED',
+      reason_code: 'OPERATOR_REQUESTED_REDRIVE'
+    });
+    expect(snapshot.redriveQueueBodies).toHaveLength(1);
+    expect(snapshot.redriveQueueBodies[0].eventId).toBe(seeded.eventId);
+  }, 30_000);
+
+  it('allows distinct commands to enqueue the exact same logical event on real D1', async () => {
+    const seeded = await request('/seed-ai-redrive', {});
+    await request('/redrive-request', { commandId: '7101', now: 1_800_000_000 });
+    await request('/redrive-request', { commandId: '7102', now: 1_800_000_000 });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.audits).toHaveLength(2);
+    expect(snapshot.redriveQueueBodies).toHaveLength(2);
+    expect(snapshot.redriveQueueBodies[1]).toEqual(snapshot.redriveQueueBodies[0]);
+    expect(snapshot.redriveQueueBodies[0].eventId).toBe(seeded.eventId);
+  });
+
+  it('blocks the Primary handoff race in the real processing service path', async () => {
+    await request('/seed-ai-redrive', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/advance-handoff', {});
+    await request('/process-redrive', {});
+    const snapshot = await request('/snapshot');
+    expect(snapshot.runs[0]).toMatchObject({
+      status: 'CANCELLED_BY_HANDOFF',
+      handoff_epoch: 0,
+      attempt_count: 1
+    });
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF'
+    });
+    expect(snapshot.audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entity_id: snapshot.outbound[0].id,
+        action: 'AI_HANDOFF_CANCELLED',
+        reason_code: 'CANCELLED_BY_HANDOFF'
+      })
+    ]));
+    expect(snapshot.dlq[0].status).toBe('RESOLVED');
+    expect(snapshot.redriveQueueBodies).toHaveLength(0);
+  });
+
+  it('blocks real-D1 redrive eligibility when historical Chatwoot evidence is missing', async () => {
+    await request('/seed-ai-redrive', {});
+    await request('/delete-redrive-chatwoot-operation', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 })).toMatchObject({
+      eligible: false,
+      reason: 'OUTBOUND_EVIDENCE_MISSING'
+    });
+  });
+
+  it('rechecks prepared Chatwoot target evidence before a real-D1 retry generation', async () => {
+    await request('/seed-ai-redrive', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    expect(await request('/process-redrive', {
+      chatwootApiUrl: 'https://changed-chatwoot.example/api/v1'
+    })).toEqual({ ok: false, error: 'OUTBOUND_PRECONDITION_FAILED' });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.runs[0]).toMatchObject({ attempt_count: 1, status: 'PENDING' });
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'TARGET_IDENTITY_CHANGED'
+    });
+  });
+
+  it('rechecks latest customer text in the real-D1 processing path', async () => {
+    await request('/seed-ai-redrive', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/seed-newer-customer', {});
+    expect(await request('/process-redrive', {})).toEqual({ ok: true });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.runs[0]).toMatchObject({
+      status: 'DISCARDED_STALE',
+      attempt_count: 1
+    });
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'DISCARDED_STALE'
+    });
+    expect(snapshot.audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entity_id: snapshot.outbound[0].id,
+        action: 'HISTORICAL_AI_STALE_DISCARDED',
+        reason_code: 'DISCARDED_STALE'
+      })
+    ]));
+  });
+
+  it('converges real-D1 SENT Chatwoot and PENDING mirror after freshness becomes stale', async () => {
+    await request('/seed-ai-redrive', {});
+    await request('/seed-success-with-mirror', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/seed-newer-customer', {});
+    expect(await request('/process-redrive', {})).toEqual({ ok: true });
+    const snapshot = await request('/snapshot');
+    const chatwoot = snapshot.outbound.find((row: any) => row.destination_provider === 'chatwoot');
+    const telegram = snapshot.outbound.find((row: any) => row.destination_provider === 'telegram');
+    expect(chatwoot).toMatchObject({ status: 'SENT', provider_message_ref: 'chatwoot-sent' });
+    expect(telegram).toMatchObject({ status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE' });
+    expect(snapshot.messages.filter((row: any) => row.actor_role === 'AI')).toHaveLength(1);
+    expect(snapshot.audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entity_id: telegram.id,
+        action: 'HISTORICAL_AI_STALE_DISCARDED',
+        reason_code: 'DISCARDED_STALE'
+      })
+    ]));
+  });
+
+  it('deduplicates concurrent real-D1 stale convergence and its audit', async () => {
+    await request('/seed-ai-redrive', {});
+    const results = await Promise.all([
+      request('/converge-stale', {}),
+      request('/converge-stale', {})
+    ]);
+    expect(results.reduce((sum, result) => sum + Number(result.changed), 0)).toBe(1);
+    const snapshot = await request('/snapshot');
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'DISCARDED_STALE'
+    });
+    expect(snapshot.audits.filter((row: any) =>
+      row.action === 'HISTORICAL_AI_STALE_DISCARDED'
+    )).toHaveLength(1);
+  });
+
+  it('converges real-D1 SENT Chatwoot and PENDING mirror after handoff', async () => {
+    await request('/seed-ai-redrive', {});
+    await request('/seed-success-with-mirror', {});
+    expect(await request('/redrive-eligibility', { now: 1_800_000_000 }))
+      .toMatchObject({ eligible: true });
+    await request('/advance-handoff', {});
+    expect(await request('/process-redrive', {})).toEqual({ ok: true });
+    const snapshot = await request('/snapshot');
+    const chatwoot = snapshot.outbound.find((row: any) => row.destination_provider === 'chatwoot');
+    const telegram = snapshot.outbound.find((row: any) => row.destination_provider === 'telegram');
+    expect(snapshot.runs[0].status).toBe('SUCCESS');
+    expect(chatwoot).toMatchObject({ status: 'SENT', provider_message_ref: 'chatwoot-sent' });
+    expect(telegram).toMatchObject({ status: 'FAILED_FINAL', last_error: 'CANCELLED_BY_HANDOFF' });
+    expect(snapshot.messages.filter((row: any) => row.actor_role === 'AI')).toHaveLength(1);
+    expect(snapshot.dlq[0].status).toBe('RESOLVED');
+  });
+
+  it('allows real-D1 no-send handoff cleanup across conversation mapping drift', async () => {
+    await request('/seed-ai-redrive', {});
+    const before = await request('/snapshot');
+    const historicalEvidence = before.outbound[0].target_evidence_json;
+    await request('/change-redrive-conversation-mapping', {});
+    await request('/advance-handoff', {});
+    expect(await request('/process-redrive', {})).toEqual({ ok: true });
+    const snapshot = await request('/snapshot');
+    expect(snapshot.outbound[0]).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'CANCELLED_BY_HANDOFF',
+      target_evidence_json: historicalEvidence
+    });
+    expect(snapshot.dlq[0].status).toBe('RESOLVED');
+  });
 });

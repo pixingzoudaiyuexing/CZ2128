@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B implemented and in review**
 
 ## Phase 0 — Architecture Freeze
 
@@ -155,7 +155,7 @@ Current status:
 - Phase 4B-2C overall: **COMPLETE / FROZEN**
 - Phase 4B-3 reliability control-plane exposure: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-4B explicit durable-state redrive: **NOT STARTED**
+- Phase 4B-4B explicit durable-state AI recovery: **IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED**
 - Phase 4B-4 overall: **IN PROGRESS**
 - Phase 4B-5: **NOT STARTED**
 - Phase 4C: **NOT STARTED**
@@ -184,7 +184,9 @@ Phase 4B-2C-3 activates the durable AI state machine already provisioned by `000
 
 Phase 4B-3 reuses the existing private Telegram Admin Bot to expose bounded reliability reads and confirmed manual reconciliation, mark-delivered, cancel and manual-retry operations through frozen core services. AI Reliability is read-only. No Web Admin, public API, new authentication system, migration `0006`, DLQ consumer/redrive, `CONFIRMED_NOT_SENT` activation or Durable Object was introduced in that phase.
 
-Phase 4B-4A is COMPLETE / FROZEN / MERGED by PR #12. It adds provider-free DLQ receipt capture to the same Worker. `batch.queue` strictly separates `cz2128-queue` from `cz2128-dlq`; malformed and valid DLQ bodies are reduced in memory to bounded metadata and deterministic hashed identities. D1 remains canonical through the existing `0005` tables. A dedicated private R2 quarantine stores allowlisted terminal evidence only when D1 capture fails; ACK follows either durable path, while dual failure retries. Canonical PROCESSED and DLQ RESOLVED metadata converge in both commit orders. The private Telegram Admin Bot exposes bounded read-only D1 and quarantine metadata. Raw payload retention and all import/redrive/replay/resend actions remain prohibited. The bounded Admin R2 listing does not guarantee globally newest 10 entries above 1000 objects; this is LOW non-blocking observability debt for pre-production / Phase 4C. Local Wrangler/workerd service tests cover complete concurrent capture calls but do not replace Phase 4C production concurrency/load validation. Production `DLQ_QUARANTINE` provisioning and validation remain pending. Phase 4B-4B, 4B-5 and 4C remain NOT STARTED.
+Phase 4B-4A is COMPLETE / FROZEN / MERGED by PR #12. It adds provider-free DLQ receipt capture to the same Worker. `batch.queue` strictly separates `cz2128-queue` from `cz2128-dlq`; malformed and valid DLQ bodies are reduced in memory to bounded metadata and deterministic hashed identities. D1 remains canonical through the existing `0005` tables. A dedicated private R2 quarantine stores allowlisted terminal evidence only when D1 capture fails; ACK follows either durable path, while dual failure retries. Canonical PROCESSED and DLQ RESOLVED metadata converge in both commit orders. The private Telegram Admin Bot exposes bounded D1 and quarantine metadata. Raw payload retention remains prohibited. The bounded Admin R2 listing does not guarantee globally newest 10 entries above 1000 objects; this is LOW non-blocking observability debt for pre-production / Phase 4C. Local Wrangler/workerd service tests cover complete concurrent capture calls but do not replace Phase 4C production concurrency/load validation. Production `DLQ_QUARANTINE` provisioning and validation remain pending.
+
+Phase 4B-4B adds explicit durable-state recovery only for eligible `internal / ai_trigger` receipts. It reconstructs the exact original event from D1, requires the newest durable customer text, an existing eligible `ai_runs` row and pre-existing Chatwoot target evidence, and rechecks freshness and handoff during actual processing. Normal fresh AI work prepares that evidence before generation; historical recovery never fills a missing operation from current configuration. Freshness or handoff conditionally closes safe PENDING/observed-429 operations with distinct reason-specific deterministic audit, preserves SENT/final history and refuses to resolve the DLQ around SENDING or AMBIGUOUS work. Historical no-send cleanup remains valid across current mapping drift, while fresh newer-message behavior and generation-owner replacement semantics remain unchanged. Chatwoot `SENT` converges without resend, while a missing historical Telegram mirror is skipped. The private Admin Bot requires confirmation and revalidation, writes deterministic operator-intent audit before enqueue, and sends through the existing main Queue. Same-command sends dedupe; distinct commands may enqueue the same logical event. Receipt state remains OPEN until canonical resolution. Quarantine and every non-AI event remain non-redrivable. No schema or infrastructure expansion is included. The phase is implemented but remains unaccepted, unfrozen and unmerged pending required delta review.
 
 ## Phase 5 — Knowledge / RAG
 

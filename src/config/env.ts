@@ -3,9 +3,17 @@ import type { SupportEvent } from '../core/events';
 export interface Env {
   hooks?: {
     beforeGenerationLeaseClaim?: (env: Env, convId: string) => Promise<void>;
+    beforeAiLeaseAcquire?: (env: Env, convId: string) => Promise<void>;
     beforeAiContextBuild?: (env: Env, convId: string) => Promise<void>;
     beforeAiRunSuccessPersist?: (env: Env, convId: string) => Promise<void>;
     beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
+    beforeAiTelegramDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
+    beforeStaleOutboundConvergence?: (env: Env, eventId: string) => Promise<void>;
+    beforeAbandonedOutboundConvergence?: (
+      env: Env,
+      eventId: string,
+      reason: 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF'
+    ) => Promise<void>;
     beforeVisibleSend?: (
       env: Env,
       accountRef: string,

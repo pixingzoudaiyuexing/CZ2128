@@ -64,6 +64,13 @@ export class CancelledBeforeDeliveryError extends SafeError {
   }
 }
 
+export class StaleAiTriggerBeforeDeliveryError extends SafeError {
+  constructor() {
+    super('DISCARDED_STALE');
+    this.name = 'StaleAiTriggerBeforeDeliveryError';
+  }
+}
+
 export function retryExhaustionSemantic(attempt: number, maximumAttempts: number): RetryExhaustionSemantic {
   return attempt >= maximumAttempts ? 'RETRY_EXHAUSTED' : 'RETRY_PENDING';
 }
