@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 in implementation**
 
 ## Phase 0 — Architecture Freeze
 
@@ -157,7 +157,7 @@ Current status:
 - Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-5: **NOT STARTED**
+- Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED**
 - Phase 4C: **NOT STARTED**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
@@ -189,6 +189,8 @@ Phase 4B-4A is COMPLETE / FROZEN / MERGED by PR #12. It adds provider-free DLQ r
 Phase 4B-4B adds explicit durable-state recovery only for eligible `internal / ai_trigger` receipts. It reconstructs the exact original event from D1, requires the newest durable customer text, an existing eligible `ai_runs` row and pre-existing Chatwoot target evidence, and rechecks freshness and handoff during actual processing. Normal fresh AI work prepares that evidence before generation; historical recovery never fills a missing operation from current configuration. Freshness or handoff conditionally closes safe PENDING/observed-429 operations with distinct reason-specific deterministic audit, preserves SENT/final history and refuses to resolve the DLQ around SENDING or AMBIGUOUS work. Historical no-send cleanup remains valid across current mapping drift, while fresh newer-message behavior and generation-owner replacement semantics remain unchanged. Chatwoot `SENT` converges without resend, while a missing historical Telegram mirror is skipped. The private Admin Bot requires confirmation and revalidation, writes deterministic operator-intent audit before enqueue, and sends through the existing main Queue. Same-command sends dedupe; distinct commands may enqueue the same logical event. Receipt state remains OPEN until canonical resolution. Quarantine and every non-AI event remain non-redrivable. No schema or infrastructure expansion is included. The phase is ACCEPTED / COMPLETE / FROZEN / MERGED; production deployment and `DLQ_QUARANTINE` provisioning remain NOT DEPLOYED / NOT PROVISIONED / NOT VALIDATED.
 
 Final SENT hardening requires bounded provider-delivery identity in both initial and CAS-lost convergence checks. Malformed SENT remains untouched and keeps the DLQ OPEN; internal domain repair cannot substitute for external delivery evidence.
+
+Phase 4B-5 is a documentation-only closure for reliability operations, migration/recovery boundaries and the Phase 4C acceptance matrix. It introduces no runtime behavior, schema, migration or resource change. Phase 4C execution and production readiness remain outside this phase.
 
 ## Phase 5 — Knowledge / RAG
 
