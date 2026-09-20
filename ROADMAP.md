@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 in implementation**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged**
 
 ## Phase 0 — Architecture Freeze
 
@@ -157,8 +157,8 @@ Current status:
 - Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**
-- Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED**
-- Phase 4C: **NOT STARTED**
+- Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **ACCEPTED / COMPLETE / FROZEN / MERGED**
+- Phase 4C: **NOT STARTED / PREPARATION ONLY**
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
 Scope:
@@ -190,7 +190,7 @@ Phase 4B-4B adds explicit durable-state recovery only for eligible `internal / a
 
 Final SENT hardening requires bounded provider-delivery identity in both initial and CAS-lost convergence checks. Malformed SENT remains untouched and keeps the DLQ OPEN; internal domain repair cannot substitute for external delivery evidence.
 
-Phase 4B-5 is a documentation-only closure for reliability operations, migration/recovery boundaries and the Phase 4C acceptance matrix. It introduces no runtime behavior, schema, migration or resource change. Phase 4C execution and production readiness remain outside this phase.
+Phase 4B-5 is a documentation-only closure for reliability operations, migration/recovery boundaries and the Phase 4C acceptance matrix. It was accepted, completed, frozen and merged by PR #15 as `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`; `62c7c51120ad4d44fcdc4cff089173258b719c28` is the historical pre-PR #15 implementation base. It introduces no runtime behavior, schema, migration or resource change. Phase 4C execution and production readiness remain outside this phase.
 
 ## Phase 5 — Knowledge / RAG
 

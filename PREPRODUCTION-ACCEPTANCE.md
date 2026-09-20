@@ -1,12 +1,14 @@
 # CZ2128 Pre-Production Acceptance Matrix
 
-Status: **PHASE 4B-5 IN IMPLEMENTATION / PHASE 4C NOT STARTED**
+Status: **PHASE 4B-5 ACCEPTED / COMPLETE / FROZEN / MERGED / PHASE 4C NOT STARTED / PREPARATION ONLY**
 
 This matrix is a planning and evidence-recording artifact. It does not authorize staging or production operations. Production is **NOT DEPLOYED** and production `DLQ_QUARANTINE` is **NOT PROVISIONED / NOT VALIDATED**.
 
 Frozen Phase 4B-4B runtime baseline: `8499a5d4eaa40d4461d1882aaf6f4e2ac93efa08`
 
-Phase 4B-5 documentation baseline: `62c7c51120ad4d44fcdc4cff089173258b719c28`
+Phase 4B-5 accepted documentation merge baseline: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`
+
+Historical pre-PR #15 implementation base: `62c7c51120ad4d44fcdc4cff089173258b719c28`
 
 ## 1. Evidence Labels
 
@@ -20,6 +22,8 @@ Phase 4B-5 documentation baseline: `62c7c51120ad4d44fcdc4cff089173258b719c28`
 Local/CI evidence can establish code behavior but cannot be relabeled as staging, provider, multi-region, load, outage or production evidence.
 
 ## 2. Acceptance Matrix
+
+This matrix contains exactly **23 independent acceptance items**. The 4C-0A read-only environment inventory is preparation evidence only; it does not pass any real Cloudflare, Chatwoot, Telegram or AI integration item.
 
 | Area | Acceptance Goal | Test Environment | Required Evidence | Success Criteria | Failure / Stop Criteria | Current Evidence Status | Owner / Approval Gate |
 | --- | --- | --- | --- | --- | --- | --- | --- |
