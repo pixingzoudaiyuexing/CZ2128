@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A and Phase 4B-4B are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged; 4B-5 and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A and Phase 4B-4B are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged. Phase 4B-5 is in implementation and is not accepted, frozen or merged; Phase 4C remains NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -50,6 +50,13 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - Redrive requires an expiring Admin confirmation and authoritative revalidation. One deterministic `DLQ_RECEIPT` intent audit is persisted before the exact original event is sent to the existing main Queue.
 - The same Admin update sends at most once. Distinct commands may enqueue identical physical copies; canonical event, AI-run, generation and outbound identities keep processing duplicate-safe.
 - The receipt remains OPEN until normal canonical processing resolves it. No migration `0006`, outbox, new Queue, Durable Object, KV correctness state, public API, Web Admin or new auth is added.
+
+## Reliability Operations Documentation
+- [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md)
+- [Migration, Backup and Recovery](MIGRATION-RECOVERY.md)
+- [Pre-Production Acceptance Matrix](PREPRODUCTION-ACCEPTANCE.md)
+
+These Phase 4B-5 documents define operational and acceptance boundaries only. They do not authorize deployment, resource provisioning, provider-visible actions, data restoration or Phase 4C execution.
 
 ## Setup
 - `npm ci`
