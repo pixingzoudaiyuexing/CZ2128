@@ -2,7 +2,7 @@
 
 CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3 and Phase 4B-4A are complete, frozen and merged. Phase 4B-4B is implemented and in review, but is not accepted, frozen or merged. Phase 4B-4 overall is in progress; 4B-5 and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A and Phase 4B-4B are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged; 4B-5 and 4C remain NOT STARTED. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.

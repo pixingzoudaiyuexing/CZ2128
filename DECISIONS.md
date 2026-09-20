@@ -215,7 +215,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-2C-3 only. Migration `0006`, Admin reliability UI/commands, DLQ consumption, `CONFIRMED_NOT_SENT`, Durable Objects and Phase 4C load acceptance remain absent.
 
-**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is COMPLETE / FROZEN / MERGED. Phase 4B-4A is COMPLETE / FROZEN / MERGED. Phase 4B-4B is IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED; 4B-5 and 4C remain NOT STARTED.
+**Status:** COMPLETE / FROZEN / MERGED. Phase 4B-2C overall is COMPLETE / FROZEN. Phase 4B-3 is COMPLETE / FROZEN / MERGED. Phase 4B-4A is COMPLETE / FROZEN / MERGED. Phase 4B-4B is ACCEPTED / COMPLETE / FROZEN / MERGED; 4B-5 and 4C remain NOT STARTED.
 
 ## Phase 4B-3 Reliability Control Plane
 **Decision:** Reliability control plane uses the existing authenticated Telegram Admin Bot. No new Web Admin, public HTTP control API or authentication system is introduced. Admin UI never directly mutates reliability state; frozen core services remain authoritative. Manual reconciliation, mark-delivered, cancel and deterministic manual-retry child operations are active. Destructive actions use action-specific expiring confirmation sessions, and Manual Retry requires explicit duplicate-risk confirmation. Operation IDs and CREATE_TOPIC provider references are bound through session state rather than callback payloads. AI Reliability is read-only.
@@ -236,7 +236,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** Phase 4B-4A only. Explicit durable-state redrive is deferred to Phase 4B-4B. No migration `0006`, Web Admin, public API, new authentication system, Durable Object, `CONFIRMED_NOT_SENT`, provider action or main-queue retry change is introduced.
 
-**Status:** APPROVED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is IN PROGRESS. Phase 4B-4B is IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED; Phase 4B-5 and Phase 4C remain NOT STARTED.
+**Status:** APPROVED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-4B is ACCEPTED / COMPLETE / FROZEN / MERGED; Phase 4B-5 and Phase 4C remain NOT STARTED.
 
 ## D-029 — Recover only reconstructable AI triggers from durable state
 
@@ -254,4 +254,4 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** No raw payload retention, provider lookup, migration `0006`, redrive/outbox table, new Queue, Durable Object, KV correctness state, R2 resource, public API, Web Admin, new auth or `CONFIRMED_NOT_SENT` activation. The residual pre-provider PENDING/crash-attempt limitation from D-027 remains unchanged.
 
-**Status:** IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED. Required independent code review remains pending.
+**Status:** ACCEPTED / COMPLETE / FROZEN / MERGED. Independent Gemini Final Delta Review passed before acceptance, merge and freeze.
