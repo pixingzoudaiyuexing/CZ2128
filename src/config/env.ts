@@ -9,6 +9,12 @@ export interface Env {
     beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
     beforeAiTelegramDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
     beforeStaleOutboundConvergence?: (env: Env, eventId: string) => Promise<void>;
+    afterChatwootLifecycleSnapshot?: (
+      env: Env,
+      eventId: string,
+      targetStatus: 'OPEN' | 'CLOSED',
+      latestOperationId: string | null
+    ) => Promise<void>;
     beforeAbandonedOutboundConvergence?: (
       env: Env,
       eventId: string,

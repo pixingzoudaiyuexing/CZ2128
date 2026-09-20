@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createChatwootMessage } from '../src/adapters/chatwoot/api';
+import { createChatwootMessage, fetchChatwootConversationStatus } from '../src/adapters/chatwoot/api';
 import { closeTelegramTopic, sendTelegramMessage } from '../src/adapters/telegram/api';
 import { ProviderDeliveryError } from '../src/core/errors';
 
@@ -38,6 +38,42 @@ describe('provider API contracts', () => {
       private: false,
       source_id: 'cz2128:op-91'
     });
+  });
+
+  it('reads the authoritative Chatwoot conversation status with the API token header', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 2, status: 'resolved' }), { status: 200 })
+    );
+
+    await expect(fetchChatwootConversationStatus(env, '1', '2')).resolves.toBe('resolved');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://chatwoot.example/api/v1/accounts/1/conversations/2');
+    expect(init?.method).toBe('GET');
+    expect(new Headers(init?.headers).get('api_access_token')).toBe('chatwoot-token');
+  });
+
+  it('fails closed when the Chatwoot status read is unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('private provider body', { status: 503 })
+    );
+
+    const error = await fetchChatwootConversationStatus(env, '1', '2').catch(value => value);
+    expect(error).toMatchObject({
+      code: 'CHATWOOT_STATE_READ_FAILED',
+      provider: 'CHATWOOT',
+      httpStatus: 503
+    });
+    expect(String(error)).not.toContain('private provider body');
+  });
+
+  it('rejects an unsupported Chatwoot lifecycle status', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 2, status: 'pending' }), { status: 200 })
+    );
+
+    await expect(fetchChatwootConversationStatus(env, '1', '2'))
+      .rejects.toMatchObject({ code: 'CHATWOOT_STATE_INVALID', provider: 'CHATWOOT' });
   });
 
   it('classifies Chatwoot HTTP 503 as ambiguous without exposing its response body', async () => {

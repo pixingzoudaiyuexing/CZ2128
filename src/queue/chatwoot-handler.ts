@@ -1,11 +1,10 @@
-import { createTelegramTopic, sendTelegramMessage, closeTelegramTopic, reopenTelegramTopic } from '../adapters/telegram/api';
+import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
 import { Env } from '../config/env';
 import { pauseOperator } from '../core/ai-state';
 import {
   getOrCreateConversation,
   insertMessage,
-  updateOperatorThreadRef,
-  updateOperatorThreadStatus
+  updateOperatorThreadRef
 } from '../core/conversation-service';
 import { ChatwootEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
@@ -13,6 +12,7 @@ import { buildTelegramTargetEvidence } from '../core/outbound-evidence';
 import { logger } from '../observability/logger';
 import { getAttachmentConfig } from '../config/attachments';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
+import { reconcileChatwootLifecycle } from './chatwoot-lifecycle';
 
 export async function processChatwootEvent(event: ChatwootEvent, env: Env): Promise<void> {
   if (event.type === 'message_created') {
@@ -116,58 +116,5 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
     return;
   }
 
-  const payload = event.payload;
-  const conv = await env.DB.prepare(
-    'SELECT * FROM conversations WHERE helpdesk_provider = ? AND helpdesk_account_ref = ? AND helpdesk_conversation_ref = ?'
-  ).bind('chatwoot', payload.accountRef, payload.conversationRef).first<any>();
-
-  if (!conv?.operator_thread_ref) return;
-  const currentStatus = conv.operator_thread_status || 'OPEN';
-  const nextStatus = payload.status === 'resolved' ? 'CLOSED' : 'OPEN';
-  if (currentStatus === nextStatus) return;
-
-  const operationId = `${nextStatus === 'CLOSED' ? 'close' : 'reopen'}_topic_${conv.id}_${conv.version}`;
-  if (payload.status === 'resolved') {
-    const result = await executeOutboundOperation(
-      env,
-      conv.id,
-      'telegram',
-      'CLOSE_TOPIC',
-      async (opId, lifecycle) => {
-        await closeTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref, lifecycle);
-        return {};
-      },
-      operationId,
-      {
-        subject: { type: 'CONVERSATION', ref: conv.id },
-        targetEvidence: buildTelegramTargetEvidence(
-          env, env.BOT_GROUP_ID, conv.operator_thread_ref, 'closeForumTopic'
-        )
-      }
-    );
-    if (result.status === 'SENT') {
-      await updateOperatorThreadStatus(env, conv.id, conv.version, 'OPEN', 'CLOSED');
-    }
-  } else {
-    const result = await executeOutboundOperation(
-      env,
-      conv.id,
-      'telegram',
-      'REOPEN_TOPIC',
-      async (opId, lifecycle) => {
-        await reopenTelegramTopic(env, env.BOT_GROUP_ID, conv.operator_thread_ref, lifecycle);
-        return {};
-      },
-      operationId,
-      {
-        subject: { type: 'CONVERSATION', ref: conv.id },
-        targetEvidence: buildTelegramTargetEvidence(
-          env, env.BOT_GROUP_ID, conv.operator_thread_ref, 'reopenForumTopic'
-        )
-      }
-    );
-    if (result.status === 'SENT') {
-      await updateOperatorThreadStatus(env, conv.id, conv.version, 'CLOSED', 'OPEN');
-    }
-  }
+  await reconcileChatwootLifecycle(event, env);
 }

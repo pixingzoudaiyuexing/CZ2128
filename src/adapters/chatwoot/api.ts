@@ -1,5 +1,5 @@
 import { Env } from '../../config/env';
-import { ProviderDeliveryError } from '../../core/errors';
+import { ProviderDeliveryError, RetryableProcessingError, SafeError } from '../../core/errors';
 import { OutboundAttemptLifecycle } from '../../core/outbound-operations';
 import {
   invalidVisibleSuccessError,
@@ -8,6 +8,57 @@ import {
 } from '../../core/provider-retry';
 import { retryAfterHeader } from '../../core/retry';
 import { buildChatwootApiUrl } from './url';
+
+export type ChatwootConversationStatus = 'open' | 'resolved';
+
+export async function fetchChatwootConversationStatus(
+  env: Env,
+  accountId: string,
+  conversationId: string
+): Promise<ChatwootConversationStatus> {
+  if (
+    env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
+    env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
+  ) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CHATWOOT', stage: 'PREPARE' });
+  }
+
+  const url = buildChatwootApiUrl(
+    env.CHATWOOT_API_URL,
+    `/api/v1/accounts/${encodeURIComponent(accountId)}/conversations/${encodeURIComponent(conversationId)}`
+  );
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: { 'api_access_token': env.CHATWOOT_API_TOKEN }
+    });
+  } catch {
+    throw new RetryableProcessingError('CHATWOOT_STATE_READ_FAILED', 5, {
+      provider: 'CHATWOOT',
+      stage: 'SOURCE_METADATA'
+    });
+  }
+  if (!response.ok) {
+    throw new RetryableProcessingError('CHATWOOT_STATE_READ_FAILED', 5, {
+      provider: 'CHATWOOT',
+      stage: 'SOURCE_METADATA',
+      httpStatus: response.status
+    });
+  }
+
+  try {
+    const data = await response.json() as { status?: unknown };
+    if (data.status !== 'open' && data.status !== 'resolved') {
+      throw new SafeError('CHATWOOT_STATE_INVALID', { provider: 'CHATWOOT', stage: 'PARSE_RESPONSE' });
+    }
+    return data.status;
+  } catch (error) {
+    if (error instanceof SafeError) throw error;
+    throw new SafeError('CHATWOOT_STATE_INVALID', { provider: 'CHATWOOT', stage: 'PARSE_RESPONSE' });
+  }
+}
 
 export async function createChatwootMessage(
   env: Env,

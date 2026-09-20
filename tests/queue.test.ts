@@ -484,40 +484,6 @@ describe('Queue Event Processing', () => {
     expect(global.fetch).toHaveBeenCalledTimes(0);
   });
 
-  it('topic lifecycle events', async () => {
-    const db = env.DB as MockD1;
-    db.tables.conversations.push({
-      id: 'conv-1', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
-      operator_channel: 'telegram', operator_thread_ref: '99', operator_thread_status: 'OPEN', version: 1
-    });
-
-    const eventRes: SupportEvent = {
-      version: 1, eventId: 'cw-evt-res', source: 'chatwoot', type: 'conversation_status_changed',
-      payload: { accountRef: '1', conversationRef: '2', status: 'resolved' }
-    };
-    await handleQueueEvent(eventRes, env);
-    expect(db.tables.outbound_operations.some(o => o.operation_type === 'CLOSE_TOPIC')).toBe(true);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    await handleQueueEvent({ ...eventRes, eventId: 'cw-evt-res-duplicate' }, env);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(db.tables.conversations[0].operator_thread_status).toBe('CLOSED');
-
-    const eventOpen: SupportEvent = {
-      version: 1, eventId: 'cw-evt-open', source: 'chatwoot', type: 'conversation_status_changed',
-      payload: { accountRef: '1', conversationRef: '2', status: 'open' }
-    };
-    await handleQueueEvent(eventOpen, env);
-    expect(db.tables.outbound_operations.some(o => o.operation_type === 'REOPEN_TOPIC')).toBe(true);
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    await handleQueueEvent({ ...eventOpen, eventId: 'cw-evt-open-duplicate' }, env);
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(db.tables.conversations[0].operator_thread_status).toBe('OPEN');
-
-    await handleQueueEvent({ ...eventRes, eventId: 'cw-evt-res-next-cycle' }, env);
-    expect(global.fetch).toHaveBeenCalledTimes(3);
-    expect(db.tables.outbound_operations.filter(o => o.operation_type === 'CLOSE_TOPIC')).toHaveLength(2);
-  });
-
   it('reuses an existing topic for later Chatwoot messages', async () => {
     const first = chatwootMessageEvent('cw-reuse-1', '51', 'First', 'CUSTOMER', 'Alice');
     const second = chatwootMessageEvent('cw-reuse-2', '52', 'Second', 'CUSTOMER', 'Alice Updated');
