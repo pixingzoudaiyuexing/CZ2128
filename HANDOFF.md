@@ -1,7 +1,7 @@
-# CZ2128 - Phase 4B-4B Implemented / In Review
+# CZ2128 - Phase 4B-4B Complete / Frozen / Merged
 
 ## 状态
-- **Current Branch**: `codex/phase4b4b-ai-durable-redrive`
+- **Current Main**: `8499a5d4eaa40d4461d1882aaf6f4e2ac93efa08` (PR #13 merge commit)
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
@@ -12,6 +12,7 @@
 - **PR #10**: merged; Phase 4B-2C-3 complete and frozen
 - **PR #11**: merged; Phase 4B-3 complete and frozen
 - **PR #12**: merged; Phase 4B-4A complete and frozen
+- **PR #13**: merged; Phase 4B-4B accepted, complete and frozen
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
@@ -23,8 +24,8 @@
 - **Phase 4B-2C overall**: COMPLETE / FROZEN
 - **Phase 4B-3**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-4A**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-4B**: IMPLEMENTED / IN REVIEW / NOT ACCEPTED / NOT FROZEN / NOT MERGED
-- **Phase 4B-4 overall**: IN PROGRESS
+- **Phase 4B-4B**: ACCEPTED / COMPLETE / FROZEN / MERGED
+- **Phase 4B-4 overall**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-5**: NOT STARTED
 - **Phase 4C**: NOT STARTED
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
@@ -54,7 +55,7 @@
 - Chatwoot target evidence fingerprints the canonical full API base, including its base pathname, while keeping the raw URL absent. Message, attachment, candidate-validation and reconciliation requests share one URL builder. Reconciliation derives the current runtime identity internally and cannot be bypassed with caller-supplied old evidence.
 - Existing attempted rows without target evidence are not backfilled from current runtime configuration. Only provably pre-request rows (`attempt_count=0`, `request_started_at IS NULL`, safely unsent status) may receive CAS backfill.
 - OpenAI-compatible errors are persisted and logged only as bounded categories; raw provider bodies, exception text and API keys are not recorded.
-- The AI durable retry state machine remains outside this branch.
+- The AI durable retry state machine is COMPLETE / FROZEN / MERGED through Phase 4B-2C-3.
 - Phase 4B-2C-2 now supplies internal manual retry child execution for `MESSAGE`, `ATTACHMENT` and Telegram conversation lifecycle operations. One parent has one deterministic direct child; the parent remains `AMBIGUOUS` and records `MANUAL_RETRY_CREATED`.
 - Child creation, parent transition and the sanitized creation audit use one D1 batch. Duplicate callers locate the same child, while the existing outbound lease prevents two visible provider effects.
 - Payload reconstruction is durable-state-only. Message text comes from `messages`; attachment bytes must be unexpired and retrievable from private R2 before the decision is consumed; topic creation uses the durable canonical fallback title.
@@ -66,7 +67,7 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is implemented and in review but not accepted, frozen or merged. Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5, Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -134,7 +135,7 @@
 - Same-update execution is deduplicated by both `admin_update_receipts` and deterministic audit identity. Distinct commands may enqueue identical physical events; existing event/run/generation/outbound identities keep processing safe.
 - DLQ receipts remain OPEN after a request and become RESOLVED only through canonical event completion. No migration `0006`, outbox, new Queue, Durable Object, KV correctness state, public API, Web Admin, new auth or production resource change was added.
 - Local Wrangler/workerd evidence covers complete concurrent same-command requests, distinct-command identical enqueue, handoff fencing and outbound convergence, mapping drift, missing target evidence, endpoint drift, consumer-time message freshness, mirror convergence and concurrent audit dedupe on real local D1. This is not production multi-region/load/outage proof.
-- Required independent Gemini code review remains mandatory before any acceptance, merge or freeze decision.
+- Independent Gemini Final Delta Review passed before Phase 4B-4B acceptance, merge and freeze.
 
 ### NON-BLOCKING 4B-4A DEBT
 3. The Admin quarantine list reads one bounded R2 page. Above 1000 quarantine objects, its displayed 10 entries are not guaranteed to be globally newest. Classification: LOW / NON-BLOCKING / OBSERVABILITY ONLY. Defer to pre-production / Phase 4C unless operational evidence requires earlier work.
