@@ -93,17 +93,16 @@ if [[ "$D1_DATABASE_NAME" == REPLACE_WITH_* ||
       "$ATTACHMENTS_BUCKET_NAME" == REPLACE_WITH_* ||
       "$DLQ_QUARANTINE_BUCKET_NAME" == REPLACE_WITH_* ]]; then
   printf '%s\n' 'Replace every REPLACE_WITH_ value after confirming account, environment, resource identity and impact.'
-  exit 1
+else
+  npx wrangler d1 info "$D1_DATABASE_NAME" --json
+  npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote
+  npx wrangler d1 time-travel info "$D1_DATABASE_NAME" --timestamp "$TIME_TRAVEL_TIMESTAMP" --json
+  npx wrangler queues info "$MAIN_QUEUE_NAME"
+  npx wrangler queues info "$DLQ_NAME"
+  npx wrangler r2 bucket info "$ATTACHMENTS_BUCKET_NAME" --json
+  npx wrangler r2 bucket info "$DLQ_QUARANTINE_BUCKET_NAME" --json
+  npx wrangler r2 bucket lifecycle list "$ATTACHMENTS_BUCKET_NAME"
 fi
-
-npx wrangler d1 info "$D1_DATABASE_NAME" --json
-npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote
-npx wrangler d1 time-travel info "$D1_DATABASE_NAME" --timestamp "$TIME_TRAVEL_TIMESTAMP" --json
-npx wrangler queues info "$MAIN_QUEUE_NAME"
-npx wrangler queues info "$DLQ_NAME"
-npx wrangler r2 bucket info "$ATTACHMENTS_BUCKET_NAME" --json
-npx wrangler r2 bucket info "$DLQ_QUARANTINE_BUCKET_NAME" --json
-npx wrangler r2 bucket lifecycle list "$ATTACHMENTS_BUCKET_NAME"
 ```
 
 The repository's `wrangler.toml` uses `database_id = "local-dev-only"`. Do not edit it during an incident to target a remote database. Use a separately reviewed environment/configuration.
