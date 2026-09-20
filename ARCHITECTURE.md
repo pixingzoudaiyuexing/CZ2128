@@ -451,13 +451,24 @@ Lifecycle:
 Chatwoot lifecycle webhooks are reconciliation triggers, not ordering evidence. Delivery IDs,
 Worker receive time, Queue order and the local conversation version do not establish provider
 chronology. Before a close/reopen side effect, the consumer reads the current conversation status
-from Chatwoot. Close and reopen share one per-conversation ordered operation sequence, so opposite
-intents cannot independently cross the Telegram boundary for the same lifecycle position. A
-successful Telegram operation is repaired into D1 through the outbound domain resolver, then the
-consumer reads Chatwoot again and performs a bounded compensating transition if the provider state
-changed during the request. Query failure, malformed/unsupported status, active/ambiguous delivery
-or exhausted/final operation history fails closed. Managed lifecycle operations are not eligible
-for generic manual retry; older operations and any existing descendants cannot overwrite newer state.
+from Chatwoot. Close and reopen share one per-conversation ordered operation sequence whose ID does
+not contain the target state. D1 uniqueness therefore gives opposite intents one atomic slot; only
+the winner may claim the outbound lease. An active or unresolved slot is handled before any return
+based on the current D1 topic status. A successful Telegram operation is repaired into D1 through
+the outbound domain resolver, then the consumer reads Chatwoot again and performs a bounded
+compensating transition if the provider state changed during the request.
+
+`PENDING`, expired pre-request `SENDING` and bounded 429 retry state may continue only through the
+same operation ID. `AMBIGUOUS` and same-target `FAILED_FINAL` remain explicit manual reconciliation
+boundaries and cannot be bypassed with a new ID. The sole final-state exception is a CAS-proven
+`TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND`; zero attempts plus its audit permit a later authoritative
+state reversal to allocate the next sequence. Managed lifecycle operations are not eligible for
+generic manual retry. Pre-managed operations are coordinated conservatively: provably unstarted work
+continues through its original ID when the authoritative target is unchanged, and is terminally
+superseded with audit only when the target is opposite or managed mode already exists. Active/unknown
+delivery blocks new effects, one delivered legacy operation may be repaired before managed mode
+starts, and a legacy effect completing after managed mode is followed by a parent-linked managed
+compensation. Once managed mode exists, legacy roots and children cannot mutate conversation state directly.
 
 If real production volume proves topic clutter unacceptable, revisit one-customer-one-topic only with an explicit design for concurrent active conversations and reply targeting.
 

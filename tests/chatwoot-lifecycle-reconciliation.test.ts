@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Env } from '../src/config/env';
+import { closeTelegramTopic, reopenTelegramTopic } from '../src/adapters/telegram/api';
 import { ChatwootLifecycleEvent } from '../src/core/events';
 import { resolveOutboundDomainState } from '../src/core/outbound-domain-resolution';
 import { buildTelegramTargetEvidence } from '../src/core/outbound-evidence';
 import { manualRetryOutboundOperation } from '../src/core/outbound-manual-retry';
+import { executeOutboundOperation } from '../src/core/outbound-operations';
 import { handleQueueEvent } from '../src/queue/consumer';
 import { processChatwootEvent } from '../src/queue/chatwoot-handler';
 import { SqliteD1 } from './helpers/sqlite-d1';
@@ -72,10 +74,16 @@ function mockProviders(
   });
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 async function seedLifecycleOperation(
   db: SqliteD1,
   env: Env,
-  status: 'SENT' | 'SENDING' | 'AMBIGUOUS' | 'FAILED_FINAL',
+  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED_RETRYABLE' | 'AMBIGUOUS' | 'FAILED_FINAL',
   target: 'OPEN' | 'CLOSED',
   sequence = 1
 ): Promise<string> {
@@ -95,10 +103,71 @@ async function seedLifecycleOperation(
     status,
     status === 'SENDING' ? Math.floor(Date.now() / 1000) + 30 : null,
     status === 'SENDING' ? 'v2:active-lease' : null,
-    status === 'SENDING' ? Math.floor(Date.now() / 1000) : 1,
+    status === 'SENDING' ? Math.floor(Date.now() / 1000) : status === 'PENDING' ? null : 1,
     JSON.stringify(buildTelegramTargetEvidence(env, '-1001', '77', method)),
     sequence,
     sequence
+  ).run();
+  return id;
+}
+
+async function seedLegacyLifecycleOperation(
+  db: SqliteD1,
+  env: Env,
+  status: 'PENDING' | 'SENDING' | 'SENT' | 'FAILED_RETRYABLE' | 'AMBIGUOUS' | 'FAILED_FINAL',
+  target: 'OPEN' | 'CLOSED',
+  overrides: Partial<{
+    id: string;
+    parentOperationId: string | null;
+    requestStartedAt: number | null;
+    responseObservedAt: number | null;
+    responseHttpStatus: number | null;
+    leaseUntil: number | null;
+    leaseToken: string | null;
+    attemptCount: number;
+    lastError: string | null;
+  }> = {}
+): Promise<string> {
+  const operationType = target === 'CLOSED' ? 'CLOSE_TOPIC' : 'REOPEN_TOPIC';
+  const method = target === 'CLOSED' ? 'closeForumTopic' : 'reopenForumTopic';
+  const id = overrides.id || `legacy_${target.toLowerCase()}_${crypto.randomUUID()}`;
+  const started = overrides.requestStartedAt === undefined
+    ? (status === 'PENDING' ? null : 1)
+    : overrides.requestStartedAt;
+  const observed = overrides.responseObservedAt === undefined
+    ? (['SENT', 'FAILED_RETRYABLE', 'FAILED_FINAL'].includes(status) ? 2 : null)
+    : overrides.responseObservedAt;
+  const httpStatus = overrides.responseHttpStatus === undefined
+    ? (status === 'FAILED_RETRYABLE' ? 429 : status === 'FAILED_FINAL' ? 400 : status === 'SENT' ? 200 : null)
+    : overrides.responseHttpStatus;
+  await db.prepare(
+    `INSERT INTO outbound_operations
+     (id, parent_operation_id, conversation_id, destination_provider, operation_type, status,
+      attempt_count, lease_until, lease_token, request_started_at, response_observed_at,
+      response_http_status, last_error, reconciliation_status, subject_type, subject_ref,
+      target_evidence_json, created_at, updated_at)
+     VALUES (?, ?, 'conv', 'telegram', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             'CONVERSATION', 'conv', ?, 1, 1)`
+  ).bind(
+    id,
+    overrides.parentOperationId ?? null,
+    operationType,
+    status,
+    overrides.attemptCount ?? (status === 'PENDING' ? 0 : 1),
+    overrides.leaseUntil ?? (status === 'SENDING' ? Math.floor(Date.now() / 1000) + 30 : null),
+    overrides.leaseToken ?? (status === 'SENDING' ? 'v2:legacy-active' : null),
+    started,
+    observed,
+    httpStatus,
+    overrides.lastError === undefined
+      ? (status === 'FAILED_RETRYABLE'
+          ? 'OUTBOUND_RATE_LIMITED'
+          : status === 'FAILED_FINAL'
+            ? 'OUTBOUND_PROVIDER_4XX_FINAL'
+            : null)
+      : overrides.lastError,
+    status === 'AMBIGUOUS' ? 'PENDING' : 'NOT_REQUIRED',
+    JSON.stringify(buildTelegramTargetEvidence(env, '-1001', '77', method))
   ).run();
   return id;
 }
@@ -224,14 +293,19 @@ describe('Chatwoot lifecycle reconciliation', () => {
     const env = makeEnv(db);
     let providerStatus: 'open' | 'resolved' = 'resolved';
     const telegramMethods: string[] = [];
+    const providerOrder: string[] = [];
     let releaseClose!: () => void;
     const closeReleased = new Promise<void>(resolve => { releaseClose = resolve; });
     let markCloseStarted!: () => void;
     const closeStarted = new Promise<void>(resolve => { markCloseStarted = resolve; });
     mockProviders(() => providerStatus, telegramMethods, async method => {
       if (method === 'closeForumTopic') {
+        providerOrder.push('close-started');
         markCloseStarted();
         await closeReleased;
+        providerOrder.push('close-completed');
+      } else if (method === 'reopenForumTopic') {
+        providerOrder.push('reopen-started', 'reopen-completed');
       }
     });
 
@@ -239,13 +313,220 @@ describe('Chatwoot lifecycle reconciliation', () => {
     await closeStarted;
     providerStatus = 'open';
     const opening = processChatwootEvent(lifecycleEvent('concurrent-open', 'open'), env);
-    await opening;
+    await expect(opening).rejects.toMatchObject({ code: 'CONCURRENCY_LEASE_HELD' });
     releaseClose();
     await closing;
 
     expect(telegramMethods).toEqual(['closeForumTopic', 'reopenForumTopic']);
+    expect(providerOrder).toEqual([
+      'close-started',
+      'close-completed',
+      'reopen-started',
+      'reopen-completed'
+    ]);
     expect(await conversationStatus(db)).toBe('OPEN');
     expect((await lifecycleOperations(db))).toHaveLength(2);
+    db.close();
+  });
+
+  it('atomically coordinates opposite targets that read the same lifecycle sequence', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const bothAtBoundary = deferred();
+    const releaseBoundary = deferred();
+    let arrivals = 0;
+    env.hooks = {
+      afterChatwootLifecycleSnapshot: async () => {
+        arrivals += 1;
+        if (arrivals === 2) bothAtBoundary.resolve();
+        await releaseBoundary.promise;
+      }
+    };
+    const telegramMethods: string[] = [];
+    const statuses: Array<'resolved' | 'open'> = ['resolved', 'open'];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.startsWith('https://chatwoot.example/')) {
+        return new Response(JSON.stringify({ status: statuses.shift() || 'open' }), { status: 200 });
+      }
+      telegramMethods.push(url.split('/').at(-1) || '');
+      return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+    });
+
+    const closing = processChatwootEvent(lifecycleEvent('same-sequence-close', 'resolved'), env);
+    await vi.waitFor(() => expect(arrivals).toBe(1));
+    await db.prepare("UPDATE conversations SET operator_thread_status = 'CLOSED' WHERE id = 'conv'").run();
+    const opening = processChatwootEvent(lifecycleEvent('same-sequence-open', 'open'), env);
+    await bothAtBoundary.promise;
+    releaseBoundary.resolve();
+    await Promise.allSettled([closing, opening]);
+
+    const operations = await lifecycleOperations(db);
+    expect(operations.map(operation => operation.id)).toEqual([
+      'topic_lifecycle_v2_conv_00000001',
+      'topic_lifecycle_v2_conv_00000002'
+    ]);
+    expect(operations[0]).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND',
+      attempt_count: 0,
+      request_started_at: null
+    });
+    expect(telegramMethods).toHaveLength(1);
+    expect(telegramMethods).toEqual(['reopenForumTopic']);
+    expect(await conversationStatus(db)).toBe('OPEN');
+    db.close();
+  });
+
+  it.each(['AMBIGUOUS', 'FAILED_FINAL'] as const)(
+    'does not silently complete while a %s close can invalidate the apparent OPEN state',
+    async operationStatus => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedConversation(db, 'OPEN');
+      const env = makeEnv(db);
+      await seedLifecycleOperation(db, env, operationStatus, 'CLOSED');
+      mockProviders(() => 'open', []);
+
+      await expect(processChatwootEvent(
+        lifecycleEvent(`blocked-${operationStatus}`, 'open'),
+        env
+      )).rejects.toMatchObject({
+        code: operationStatus === 'AMBIGUOUS'
+          ? 'TOPIC_LIFECYCLE_RECONCILIATION_REQUIRED'
+          : 'TOPIC_LIFECYCLE_FINAL_BLOCKED'
+      });
+      expect(await conversationStatus(db)).toBe('OPEN');
+      db.close();
+    }
+  );
+
+  it.each([
+    ['AMBIGUOUS', 'TOPIC_LIFECYCLE_RECONCILIATION_REQUIRED'],
+    ['FAILED_FINAL', 'TOPIC_LIFECYCLE_FINAL_BLOCKED']
+  ] as const)('records managed %s as a failed Queue receipt with its exact boundary', async (status, code) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    await seedLifecycleOperation(db, env, status, 'CLOSED');
+    mockProviders(() => 'resolved', []);
+    const event = lifecycleEvent(`receipt-${status}`, 'resolved');
+
+    await expect(handleQueueEvent(event, env)).rejects.toMatchObject({ code });
+
+    expect(await db.prepare(
+      `SELECT status, attempt_count, last_error FROM event_receipts
+       WHERE source = 'chatwoot' AND source_event_ref = ?`
+    ).bind(event.eventId).first<any>()).toEqual({
+      status: 'FAILED',
+      attempt_count: 1,
+      last_error: code
+    });
+    db.close();
+  });
+
+  it.each([
+    ['PENDING', null],
+    ['FAILED_RETRYABLE', 'OUTBOUND_RATE_LIMITED']
+  ] as const)('safely resumes %s using the same managed operation id', async (status, lastError) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const id = await seedLifecycleOperation(db, env, status, 'CLOSED');
+    if (status === 'PENDING') {
+      await db.prepare(
+        `UPDATE outbound_operations SET attempt_count = 0, request_started_at = NULL WHERE id = ?`
+      ).bind(id).run();
+    } else {
+      await db.prepare(
+        `UPDATE outbound_operations
+         SET last_error = ?, response_observed_at = 2, response_http_status = 429,
+             next_retry_at = NULL WHERE id = ?`
+      ).bind(lastError, id).run();
+    }
+    const telegramMethods: string[] = [];
+    mockProviders(() => 'resolved', telegramMethods);
+
+    await processChatwootEvent(lifecycleEvent(`resume-${status}`, 'resolved'), env);
+
+    expect(telegramMethods).toEqual(['closeForumTopic']);
+    const operations = await lifecycleOperations(db);
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({ id, status: 'SENT' });
+    expect(await conversationStatus(db)).toBe('CLOSED');
+    db.close();
+  });
+
+  it.each([
+    ['pre-request final', null, null, null, 'OUTBOUND_PRECONDITION_FAILED'],
+    ['definitive provider rejection', 1, 2, 400, 'OUTBOUND_PROVIDER_4XX_FINAL']
+  ] as const)(
+    'keeps %s FAILED_FINAL terminal without allocating a new id',
+    async (_label, requestStartedAt, responseObservedAt, responseHttpStatus, lastError) => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedConversation(db, 'OPEN');
+      const env = makeEnv(db);
+      const id = await seedLifecycleOperation(db, env, 'FAILED_FINAL', 'CLOSED');
+      await db.prepare(
+        `UPDATE outbound_operations
+         SET request_started_at = ?, response_observed_at = ?, response_http_status = ?,
+             last_error = ? WHERE id = ?`
+      ).bind(requestStartedAt, responseObservedAt, responseHttpStatus, lastError, id).run();
+      const telegramMethods: string[] = [];
+      mockProviders(() => 'resolved', telegramMethods);
+
+      await expect(processChatwootEvent(
+        lifecycleEvent(`terminal-${_label}`, 'resolved'),
+        env
+      )).rejects.toMatchObject({ code: 'TOPIC_LIFECYCLE_FINAL_BLOCKED' });
+      expect(telegramMethods).toEqual([]);
+      expect(await lifecycleOperations(db)).toHaveLength(1);
+      expect((await lifecycleOperations(db))[0]).toMatchObject({ id, status: 'FAILED_FINAL' });
+      db.close();
+    }
+  );
+
+  it('allows a new sequence only after a proven pre-send supersede and later state reversal', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const firstId = await seedLifecycleOperation(db, env, 'PENDING', 'CLOSED');
+    await db.prepare(
+      `UPDATE outbound_operations SET attempt_count = 0, request_started_at = NULL WHERE id = ?`
+    ).bind(firstId).run();
+    let providerStatus: 'open' | 'resolved' = 'open';
+    const telegramMethods: string[] = [];
+    mockProviders(() => providerStatus, telegramMethods);
+
+    await processChatwootEvent(lifecycleEvent('supersede-close', 'open'), env);
+    providerStatus = 'resolved';
+    await processChatwootEvent(lifecycleEvent('new-close-cycle', 'resolved'), env);
+
+    const operations = await lifecycleOperations(db);
+    expect(operations).toHaveLength(2);
+    expect(operations[0]).toMatchObject({
+      id: firstId,
+      status: 'FAILED_FINAL',
+      last_error: 'TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND',
+      attempt_count: 0
+    });
+    expect(operations[1]).toMatchObject({
+      id: 'topic_lifecycle_v2_conv_00000002',
+      status: 'SENT',
+      attempt_count: 1
+    });
+    expect((await db.prepare(
+      `SELECT COUNT(*) AS count FROM reliability_audit
+       WHERE entity_id = ? AND action = 'TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND'`
+    ).bind(firstId).first<{ count: number }>())?.count).toBe(1);
+    expect(telegramMethods).toEqual(['closeForumTopic']);
+    expect(await conversationStatus(db)).toBe('CLOSED');
     db.close();
   });
 
@@ -336,7 +617,11 @@ describe('Chatwoot lifecycle reconciliation', () => {
       if (operationStatus === 'SENDING') {
         await expect(result).rejects.toMatchObject({ code: 'CONCURRENCY_LEASE_HELD' });
       } else {
-        await expect(result).resolves.toBeUndefined();
+        await expect(result).rejects.toMatchObject({
+          code: operationStatus === 'AMBIGUOUS'
+            ? 'TOPIC_LIFECYCLE_RECONCILIATION_REQUIRED'
+            : 'TOPIC_LIFECYCLE_FINAL_BLOCKED'
+        });
       }
       expect(telegramMethods).toEqual([]);
       expect(await conversationStatus(db)).toBe('OPEN');
@@ -437,6 +722,217 @@ describe('Chatwoot lifecycle reconciliation', () => {
       'OPERATOR_ACCEPTS_DUPLICATE_RISK'
     )).rejects.toMatchObject({ code: 'OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE' });
     expect(fetchMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('cancels a legacy PENDING operation before it can cross the Provider boundary', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const legacyId = await seedLegacyLifecycleOperation(db, env, 'PENDING', 'CLOSED', {
+      id: 'close_topic_conv_legacy_pending'
+    });
+    const telegramMethods: string[] = [];
+    mockProviders(() => 'open', telegramMethods);
+
+    await processChatwootEvent(lifecycleEvent('legacy-pending', 'open'), env);
+
+    expect(telegramMethods).toEqual([]);
+    expect(await db.prepare('SELECT status, last_error FROM outbound_operations WHERE id = ?')
+      .bind(legacyId).first<any>()).toEqual({
+      status: 'FAILED_FINAL',
+      last_error: 'TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND'
+    });
+    db.close();
+  });
+
+  it('repairs one legacy SENT operation before entering managed lifecycle mode', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const legacyId = await seedLegacyLifecycleOperation(db, env, 'SENT', 'CLOSED', {
+      id: 'close_topic_conv_legacy_sent'
+    });
+    mockProviders(() => 'resolved', []);
+
+    await processChatwootEvent(lifecycleEvent('legacy-sent', 'resolved'), env);
+
+    expect(await conversationStatus(db)).toBe('CLOSED');
+    expect(await lifecycleOperations(db)).toHaveLength(1);
+    expect((await lifecycleOperations(db))[0].id).toBe(legacyId);
+    db.close();
+  });
+
+  it.each(['AMBIGUOUS', 'FAILED_FINAL'] as const)(
+    'keeps legacy %s history at an explicit manual boundary',
+    async status => {
+      const db = new SqliteD1();
+      db.migrate();
+      await seedConversation(db, 'OPEN');
+      const env = makeEnv(db);
+      await seedLegacyLifecycleOperation(db, env, status, 'CLOSED', {
+        id: `close_topic_conv_legacy_${status.toLowerCase()}`,
+        ...(status === 'FAILED_FINAL' ? { requestStartedAt: null, responseObservedAt: null, responseHttpStatus: null } : {})
+      });
+      mockProviders(() => 'resolved', []);
+
+      await expect(processChatwootEvent(
+        lifecycleEvent(`legacy-${status}`, 'resolved'),
+        env
+      )).rejects.toMatchObject({
+        code: status === 'AMBIGUOUS'
+          ? 'TOPIC_LIFECYCLE_RECONCILIATION_REQUIRED'
+          : 'TOPIC_LIFECYCLE_FINAL_BLOCKED'
+      });
+      expect(await conversationStatus(db)).toBe('OPEN');
+      db.close();
+    }
+  );
+
+  it('converts an expired started legacy SENDING operation to AMBIGUOUS without resending', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const id = await seedLegacyLifecycleOperation(db, env, 'SENDING', 'CLOSED', {
+      id: 'close_topic_conv_legacy_expired',
+      requestStartedAt: 1,
+      leaseUntil: 1,
+      leaseToken: 'v2:expired-owner'
+    });
+    const telegramMethods: string[] = [];
+    mockProviders(() => 'resolved', telegramMethods);
+
+    await expect(processChatwootEvent(
+      lifecycleEvent('legacy-expired-started', 'resolved'),
+      env
+    )).rejects.toMatchObject({ code: 'TOPIC_LIFECYCLE_RECONCILIATION_REQUIRED' });
+
+    expect(telegramMethods).toEqual([]);
+    expect(await db.prepare(
+      'SELECT status, last_error, lease_until, lease_token FROM outbound_operations WHERE id = ?'
+    ).bind(id).first<any>()).toEqual({
+      status: 'AMBIGUOUS',
+      last_error: 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED',
+      lease_until: null,
+      lease_token: null
+    });
+    db.close();
+  });
+
+  it('fences a legacy child SENT repair after managed lifecycle has started', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const rootId = await seedLegacyLifecycleOperation(db, env, 'AMBIGUOUS', 'CLOSED', {
+      id: 'close_topic_conv_legacy_root'
+    });
+    const childId = await seedLegacyLifecycleOperation(db, env, 'SENT', 'CLOSED', {
+      id: 'manual_retry_legacy_close',
+      parentOperationId: rootId
+    });
+    await seedLifecycleOperation(db, env, 'SENT', 'OPEN', 1);
+
+    await expect(resolveOutboundDomainState(env, childId)).resolves.toEqual({
+      changed: false,
+      domain: 'CONVERSATION'
+    });
+    expect(await conversationStatus(db)).toBe('OPEN');
+    db.close();
+  });
+
+  it('compensates after a legacy close finishes later than a managed reopen', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db, 'OPEN');
+    const env = makeEnv(db);
+    const providerStarts: string[] = [];
+    const completionOrder: string[] = [];
+    let reopenCount = 0;
+    const closeStarted = deferred();
+    const releaseClose = deferred();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.startsWith('https://chatwoot.example/')) {
+        return new Response(JSON.stringify({ status: 'open' }), { status: 200 });
+      }
+      const method = url.split('/').at(-1) || '';
+      if (method === 'closeForumTopic') {
+        providerStarts.push('legacy-close');
+        closeStarted.resolve();
+        await releaseClose.promise;
+        completionOrder.push('legacy-close');
+      } else if (method === 'reopenForumTopic') {
+        reopenCount += 1;
+        const label = reopenCount === 1 ? 'managed-reopen' : 'managed-reopen-compensation';
+        providerStarts.push(label);
+        completionOrder.push(label);
+      }
+      return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+    });
+    const legacyId = 'close_topic_conv_inflight';
+    const legacyExecution = executeOutboundOperation(
+      env,
+      'conv',
+      'telegram',
+      'CLOSE_TOPIC',
+      async (_operationId, lifecycle) => {
+        await closeTelegramTopic(env, '-1001', '77', lifecycle);
+        return {};
+      },
+      legacyId,
+      {
+        subject: { type: 'CONVERSATION', ref: 'conv' },
+        targetEvidence: buildTelegramTargetEvidence(env, '-1001', '77', 'closeForumTopic')
+      }
+    );
+    await closeStarted.promise;
+    await executeOutboundOperation(
+      env,
+      'conv',
+      'telegram',
+      'REOPEN_TOPIC',
+      async (_operationId, lifecycle) => {
+        await reopenTelegramTopic(env, '-1001', '77', lifecycle);
+        return {};
+      },
+      'topic_lifecycle_v2_conv_00000001',
+      {
+        subject: { type: 'CONVERSATION', ref: 'conv' },
+        targetEvidence: buildTelegramTargetEvidence(env, '-1001', '77', 'reopenForumTopic')
+      }
+    );
+
+    await expect(processChatwootEvent(lifecycleEvent('legacy-inflight-blocked', 'open'), env))
+      .rejects.toMatchObject({ code: 'CONCURRENCY_LEASE_HELD' });
+    releaseClose.resolve();
+    await legacyExecution;
+    await processChatwootEvent(lifecycleEvent('legacy-inflight-compensate', 'open'), env);
+
+    expect(providerStarts).toEqual([
+      'legacy-close',
+      'managed-reopen',
+      'managed-reopen-compensation'
+    ]);
+    expect(completionOrder).toEqual([
+      'managed-reopen',
+      'legacy-close',
+      'managed-reopen-compensation'
+    ]);
+    const managed = (await lifecycleOperations(db)).filter(operation =>
+      operation.id.startsWith('topic_lifecycle_v2_')
+    );
+    expect(managed).toHaveLength(2);
+    expect(managed[1]).toMatchObject({
+      operation_type: 'REOPEN_TOPIC',
+      status: 'SENT',
+      parent_operation_id: legacyId,
+      attempt_count: 1
+    });
+    expect(await conversationStatus(db)).toBe('OPEN');
     db.close();
   });
 });

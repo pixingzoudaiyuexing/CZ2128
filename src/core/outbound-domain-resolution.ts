@@ -5,7 +5,11 @@ import { RetryableProcessingError, SafeError } from './errors';
 import { parseTargetEvidence } from './outbound-evidence';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 import { ensureAiRunProviderResponseRef } from './ai-state';
-import { findManagedTopicLifecycleRoot, isLatestTopicLifecycleRoot } from './topic-lifecycle-operations';
+import {
+  findManagedTopicLifecycleRoot,
+  isLatestTopicLifecycleRoot,
+  loadLatestTopicLifecycleOperation
+} from './topic-lifecycle-operations';
 
 export interface DomainResolutionResult {
   changed: boolean;
@@ -202,6 +206,9 @@ async function resolveTopicStatus(
 ): Promise<DomainResolutionResult> {
   const lifecycleRoot = await findManagedTopicLifecycleRoot(env, operation);
   if (lifecycleRoot && !(await isLatestTopicLifecycleRoot(env, lifecycleRoot))) {
+    return { changed: false, domain: 'CONVERSATION' };
+  }
+  if (!lifecycleRoot && await loadLatestTopicLifecycleOperation(env, operation.conversation_id)) {
     return { changed: false, domain: 'CONVERSATION' };
   }
   let evidence;

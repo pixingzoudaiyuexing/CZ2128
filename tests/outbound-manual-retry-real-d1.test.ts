@@ -241,6 +241,46 @@ describe('real D1 manual retry and domain CAS', () => {
     });
   }, 60_000);
 
+  it('real D1 gives opposite lifecycle targets one atomic sequence slot', async () => {
+    runSql(`
+      INSERT INTO conversations
+      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
+       operator_channel, operator_thread_ref, operator_thread_status, created_at, updated_at, version)
+      VALUES ('conv-sequence-slot', 'chatwoot', '1', 'slot', 'slot', 'telegram', '101', 'OPEN', 1, 1, 1);
+    `);
+    const insert = (operationType: 'CLOSE_TOPIC' | 'REOPEN_TOPIC', method: string) => `
+      INSERT INTO outbound_operations
+      (id, conversation_id, destination_provider, operation_type, status, attempt_count,
+       reconciliation_status, subject_type, subject_ref, target_evidence_json, created_at, updated_at)
+      VALUES
+      ('topic_lifecycle_v2_conv-sequence-slot_00000001', 'conv-sequence-slot', 'telegram',
+       '${operationType}', 'PENDING', 0, 'NOT_REQUIRED', 'CONVERSATION', 'conv-sequence-slot',
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"101","method":"${method}"}', 1, 1)
+      ON CONFLICT (id) DO NOTHING;
+    `;
+    const first = join(persistDir, 'lifecycle-close-slot.sql');
+    const second = join(persistDir, 'lifecycle-reopen-slot.sql');
+    writeFileSync(first, insert('CLOSE_TOPIC', 'closeForumTopic'));
+    writeFileSync(second, insert('REOPEN_TOPIC', 'reopenForumTopic'));
+
+    const attempts = await Promise.allSettled([
+      execFileAsync('npx', args(first), { encoding: 'utf8' }),
+      execFileAsync('npx', args(second), { encoding: 'utf8' })
+    ]);
+    expect(attempts.some(attempt => attempt.status === 'fulfilled')).toBe(true);
+    const rows = runSql(`
+      SELECT id, operation_type, status, attempt_count
+      FROM outbound_operations WHERE conversation_id = 'conv-sequence-slot';
+    `)[0].results;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'topic_lifecycle_v2_conv-sequence-slot_00000001',
+      status: 'PENDING',
+      attempt_count: 0
+    });
+    expect(['CLOSE_TOPIC', 'REOPEN_TOPIC']).toContain(rows[0].operation_type);
+  }, 60_000);
+
   it('conversation thread mapping CAS sets only the missing mapping', () => {
     runSql(`
       UPDATE conversations
@@ -341,6 +381,42 @@ describe('real D1 manual retry and domain CAS', () => {
 
     const row = runSql(`
       SELECT operator_thread_status, version FROM conversations WHERE id = 'conv-lifecycle-order';
+    `)[0].results[0];
+    expect(row).toEqual({ operator_thread_status: 'OPEN', version: 1 });
+  }, 60_000);
+
+  it('real D1 service fences a pre-V2 SENT lifecycle repair after V2 starts', async () => {
+    runSql(`
+      INSERT INTO conversations
+      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
+       operator_channel, operator_thread_ref, operator_thread_status, created_at, updated_at, version)
+      VALUES ('conv-cross-generation', 'chatwoot', '1', 'cross', 'cross',
+              'telegram', '102', 'OPEN', 1, 1, 1);
+
+      INSERT INTO outbound_operations
+      (id, conversation_id, destination_provider, operation_type, status, attempt_count,
+       request_started_at, response_observed_at, response_http_status, reconciliation_status,
+       subject_type, subject_ref, target_evidence_json, created_at, updated_at)
+      VALUES
+      ('close_topic_conv-cross-generation_1', 'conv-cross-generation', 'telegram',
+       'CLOSE_TOPIC', 'SENT', 1, 1, 2, 200, 'NOT_REQUIRED', 'CONVERSATION',
+       'conv-cross-generation',
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"102","method":"closeForumTopic"}', 1, 2),
+      ('topic_lifecycle_v2_conv-cross-generation_00000001', 'conv-cross-generation', 'telegram',
+       'REOPEN_TOPIC', 'SENT', 1, 3, 4, 200, 'NOT_REQUIRED', 'CONVERSATION',
+       'conv-cross-generation',
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"102","method":"reopenForumTopic"}', 3, 4);
+    `);
+    const env = { DB: realD1, BOT_GROUP_ID: '-1001' } as any;
+
+    await expect(resolveOutboundDomainState(
+      env,
+      'close_topic_conv-cross-generation_1'
+    )).resolves.toEqual({ changed: false, domain: 'CONVERSATION' });
+
+    const row = runSql(`
+      SELECT operator_thread_status, version
+      FROM conversations WHERE id = 'conv-cross-generation';
     `)[0].results[0];
     expect(row).toEqual({ operator_thread_status: 'OPEN', version: 1 });
   }, 60_000);

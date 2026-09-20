@@ -30,8 +30,16 @@ export interface OutboundAttemptLifecycle {
 export interface ExecuteOutboundOperationOptions {
   leaseSeconds?: number;
   allowCreate?: boolean;
+  parentOperationId?: string;
   subject: OutboundSubjectIdentity;
   targetEvidence: OutboundTargetEvidence;
+}
+
+export class OutboundOperationIdentityCollisionError extends Error {
+  constructor(public readonly operationId: string) {
+    super('Outbound operation identity collision');
+    this.name = 'OutboundOperationIdentityCollisionError';
+  }
 }
 
 type OutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF';
@@ -86,8 +94,8 @@ export async function prepareOutboundOperation(
     await env.DB.prepare(
       `INSERT INTO outbound_operations
        (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-        subject_type, subject_ref, target_evidence_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subject_type, subject_ref, target_evidence_json, parent_operation_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`
     ).bind(
       deterministicOperationId,
@@ -99,7 +107,8 @@ export async function prepareOutboundOperation(
       now,
       options.subject.type,
       options.subject.ref,
-      targetEvidenceJson
+      targetEvidenceJson,
+      options.parentOperationId || null
     ).run();
     operation = await loadOperation(env, deterministicOperationId);
   }
@@ -109,9 +118,12 @@ export async function prepareOutboundOperation(
     operation.destination_provider !== destinationProvider ||
     operation.operation_type !== operationType
   ) {
-    throw new Error('Outbound operation identity collision');
+    throw new OutboundOperationIdentityCollisionError(deterministicOperationId);
   }
   assertSubjectIdentity(operation, options.subject);
+  if (options.parentOperationId !== undefined && operation.parent_operation_id !== options.parentOperationId) {
+    throw new OutboundOperationIdentityCollisionError(deterministicOperationId);
+  }
   operation = await establishEvidence(env, operation, options.subject, targetEvidenceJson);
   if (
     operation.status !== 'SENT' &&
@@ -236,12 +248,12 @@ export async function executeOutboundOperation(
     await env.DB.prepare(
       `INSERT INTO outbound_operations
        (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-        subject_type, subject_ref, target_evidence_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subject_type, subject_ref, target_evidence_json, parent_operation_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`
     ).bind(
       id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
-      options.subject.type, options.subject.ref, targetEvidenceJson
+      options.subject.type, options.subject.ref, targetEvidenceJson, options.parentOperationId || null
     ).run();
     op = await loadOperation(env, id);
   }
@@ -250,9 +262,12 @@ export async function executeOutboundOperation(
     op.destination_provider !== destinationProvider ||
     op.operation_type !== operationType
   ) {
-    throw new Error('Outbound operation identity collision');
+    throw new OutboundOperationIdentityCollisionError(id);
   }
   assertSubjectIdentity(op, options.subject);
+  if (options.parentOperationId !== undefined && op.parent_operation_id !== options.parentOperationId) {
+    throw new OutboundOperationIdentityCollisionError(id);
+  }
 
   // Crash recovery / idempotent retry
   if (op.status === 'SENT') {

@@ -30,7 +30,8 @@ import { executeOutboundOperation, OutboundAttemptLifecycle } from './outbound-o
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 import { ensureAiRunProviderResponseRef } from './ai-state';
 import {
-  findManagedTopicLifecycleRoot
+  findManagedTopicLifecycleRoot,
+  loadLatestTopicLifecycleOperation
 } from './topic-lifecycle-operations';
 
 export const MANUAL_RETRY_REASONS = ['OPERATOR_ACCEPTS_DUPLICATE_RISK'] as const;
@@ -421,6 +422,12 @@ async function prepareRetry(
 ): Promise<RetryPlan> {
   const lifecycleRoot = await findManagedTopicLifecycleRoot(env, parent);
   if (lifecycleRoot) {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
+  }
+  if (
+    ['CLOSE_TOPIC', 'REOPEN_TOPIC'].includes(parent.operation_type) &&
+    await loadLatestTopicLifecycleOperation(env, parent.conversation_id)
+  ) {
     throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
   }
   const conversation = await loadConversation(env, parent);
