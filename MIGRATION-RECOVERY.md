@@ -64,7 +64,7 @@ Do not store raw customer messages, attachment bytes, bearer tokens, webhook pay
 
 ## 4. Verified Diagnostic Commands
 
-The following command shapes exist in Wrangler `4.131.1`. They were verified through local help only; no remote command was executed by Phase 4B-5.
+The following command shapes exist in Wrangler `4.131.1`. They were verified through local help only; no remote command was executed by Phase 4B-5. Before running a Cloudflare command, replace every `REPLACE_WITH_...` value, then independently confirm the Cloudflare account, environment, resource identity and command impact.
 
 Read-only repository checks:
 
@@ -78,25 +78,39 @@ find migrations -maxdepth 1 -type f -print
 Read-only Cloudflare checks, after independently confirming profile/environment/resource identity:
 
 ```bash
-npx wrangler d1 info <d1-database-name> --json
-npx wrangler d1 migrations list <d1-database-name> --remote
-npx wrangler d1 time-travel info <d1-database-name> --timestamp <rfc3339> --json
-npx wrangler queues info <main-queue-name>
-npx wrangler queues info <dlq-name>
-npx wrangler r2 bucket info <attachments-bucket> --json
-npx wrangler r2 bucket info <dlq-quarantine-bucket> --json
-npx wrangler r2 bucket lifecycle list <attachments-bucket>
+# Bash/Zsh: replace every value before execution.
+D1_DATABASE_NAME="REPLACE_WITH_ACTUAL_D1_DATABASE_NAME"
+TIME_TRAVEL_TIMESTAMP="REPLACE_WITH_RFC3339_TIMESTAMP"
+MAIN_QUEUE_NAME="REPLACE_WITH_ACTUAL_MAIN_QUEUE_NAME"
+DLQ_NAME="REPLACE_WITH_ACTUAL_DLQ_NAME"
+ATTACHMENTS_BUCKET_NAME="REPLACE_WITH_ACTUAL_ATTACHMENTS_BUCKET_NAME"
+DLQ_QUARANTINE_BUCKET_NAME="REPLACE_WITH_ACTUAL_DLQ_QUARANTINE_BUCKET_NAME"
+
+if [[ "$D1_DATABASE_NAME" == REPLACE_WITH_* ||
+      "$TIME_TRAVEL_TIMESTAMP" == REPLACE_WITH_* ||
+      "$MAIN_QUEUE_NAME" == REPLACE_WITH_* ||
+      "$DLQ_NAME" == REPLACE_WITH_* ||
+      "$ATTACHMENTS_BUCKET_NAME" == REPLACE_WITH_* ||
+      "$DLQ_QUARANTINE_BUCKET_NAME" == REPLACE_WITH_* ]]; then
+  printf '%s\n' 'Replace every REPLACE_WITH_ value after confirming account, environment, resource identity and impact.'
+  exit 1
+fi
+
+npx wrangler d1 info "$D1_DATABASE_NAME" --json
+npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote
+npx wrangler d1 time-travel info "$D1_DATABASE_NAME" --timestamp "$TIME_TRAVEL_TIMESTAMP" --json
+npx wrangler queues info "$MAIN_QUEUE_NAME"
+npx wrangler queues info "$DLQ_NAME"
+npx wrangler r2 bucket info "$ATTACHMENTS_BUCKET_NAME" --json
+npx wrangler r2 bucket info "$DLQ_QUARANTINE_BUCKET_NAME" --json
+npx wrangler r2 bucket lifecycle list "$ATTACHMENTS_BUCKET_NAME"
 ```
 
 The repository's `wrangler.toml` uses `database_id = "local-dev-only"`. Do not edit it during an incident to target a remote database. Use a separately reviewed environment/configuration.
 
 Sensitive backup capability, not a default diagnostic:
 
-```bash
-npx wrangler d1 export <d1-database-name> --remote --output <protected-output.sql>
-```
-
-The export command is read-only to remote D1 but writes a local file containing sensitive canonical data. It requires separate backup authorization, an encrypted/access-controlled destination, retention rules and an audit record. Never attach the export to a PR, chat or ordinary incident ticket.
+`wrangler d1 export` accepts a remote D1 database name, `--remote` and a required `--output` path. It is intentionally not shown as a copyable command here. Although it does not modify remote D1, it writes sensitive canonical data locally. A backup procedure must separately authorize the export, use an encrypted access-controlled destination and a concrete reviewed path, record retention and audit requirements, and prohibit upload to a PR, chat or ordinary incident ticket.
 
 No destructive command is provided here. D1 Time Travel restore, Queue pause/resume/purge, migration apply against remote D1, deployment and R2 mutation require a separate reviewed runbook/action authorization.
 

@@ -120,19 +120,38 @@ Reconciliation state supplements but does not rewrite `AMBIGUOUS` history:
 
 ## 5. Verified Read-Only Diagnostics
 
-These commands were verified against the repository's Wrangler `4.131.1` help. They are read-only at the platform level, but still require an authorized Cloudflare profile and the correct environment/config. Confirm the account, environment and resource name before running them. Do not paste raw output containing identifiers into public issues.
+These commands were verified against the repository's Wrangler `4.131.1` help. They are read-only at the platform level, but still require an authorized Cloudflare profile and the correct environment/config. Before running them, replace every `REPLACE_WITH_...` value, then independently confirm the Cloudflare account, environment, resource identity and command impact. Do not paste raw output containing identifiers into public issues.
 
 ```bash
 git status --short
 git rev-parse HEAD
-npx wrangler d1 info <d1-database-name> --json
-npx wrangler d1 migrations list <d1-database-name> --remote
-npx wrangler d1 time-travel info <d1-database-name> --timestamp <rfc3339> --json
-npx wrangler queues info <main-queue-name>
-npx wrangler queues info <dlq-name>
-npx wrangler r2 bucket info <attachments-bucket> --json
-npx wrangler r2 bucket info <dlq-quarantine-bucket> --json
-npx wrangler r2 bucket lifecycle list <attachments-bucket>
+
+# Bash/Zsh: replace every value before execution.
+D1_DATABASE_NAME="REPLACE_WITH_ACTUAL_D1_DATABASE_NAME"
+TIME_TRAVEL_TIMESTAMP="REPLACE_WITH_RFC3339_TIMESTAMP"
+MAIN_QUEUE_NAME="REPLACE_WITH_ACTUAL_MAIN_QUEUE_NAME"
+DLQ_NAME="REPLACE_WITH_ACTUAL_DLQ_NAME"
+ATTACHMENTS_BUCKET_NAME="REPLACE_WITH_ACTUAL_ATTACHMENTS_BUCKET_NAME"
+DLQ_QUARANTINE_BUCKET_NAME="REPLACE_WITH_ACTUAL_DLQ_QUARANTINE_BUCKET_NAME"
+
+if [[ "$D1_DATABASE_NAME" == REPLACE_WITH_* ||
+      "$TIME_TRAVEL_TIMESTAMP" == REPLACE_WITH_* ||
+      "$MAIN_QUEUE_NAME" == REPLACE_WITH_* ||
+      "$DLQ_NAME" == REPLACE_WITH_* ||
+      "$ATTACHMENTS_BUCKET_NAME" == REPLACE_WITH_* ||
+      "$DLQ_QUARANTINE_BUCKET_NAME" == REPLACE_WITH_* ]]; then
+  printf '%s\n' 'Replace every REPLACE_WITH_ value after confirming account, environment, resource identity and impact.'
+  exit 1
+fi
+
+npx wrangler d1 info "$D1_DATABASE_NAME" --json
+npx wrangler d1 migrations list "$D1_DATABASE_NAME" --remote
+npx wrangler d1 time-travel info "$D1_DATABASE_NAME" --timestamp "$TIME_TRAVEL_TIMESTAMP" --json
+npx wrangler queues info "$MAIN_QUEUE_NAME"
+npx wrangler queues info "$DLQ_NAME"
+npx wrangler r2 bucket info "$ATTACHMENTS_BUCKET_NAME" --json
+npx wrangler r2 bucket info "$DLQ_QUARANTINE_BUCKET_NAME" --json
+npx wrangler r2 bucket lifecycle list "$ATTACHMENTS_BUCKET_NAME"
 ```
 
 `wrangler.toml` contains a local-only D1 database ID. A remote command must use a separately reviewed environment/config that resolves the intended remote resource. Do not edit the repository config during an incident merely to make a diagnostic command work.
