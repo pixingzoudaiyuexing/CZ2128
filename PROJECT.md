@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 In Implementation**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged**
 
 ## Purpose
 
@@ -89,8 +89,8 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 - Phase 4B-4A DLQ capture, terminal sanitized quarantine and Admin inspection: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**.
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**.
-- Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED**
-- Phase 4C: **NOT STARTED**.
+- Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **ACCEPTED / COMPLETE / FROZEN / MERGED**.
+- Phase 4C: **NOT STARTED / PREPARATION ONLY**.
 
 Phase 4B-2C-2 uses the existing `0005` parent linkage and reconciliation state. An explicit operator decision creates one deterministic child operation, preserves the parent's historical ambiguity, reconstructs supported message/attachment/conversation payloads from durable state, blocks target drift, and applies idempotent attachment/topic domain repair after effective delivery. It adds no `0006`, Admin UI or command, DLQ consumption, `CONFIRMED_NOT_SENT` activation or AI durable-state behavior.
 
@@ -104,4 +104,4 @@ Phase 4B-4B implements explicit durable-state recovery only for `internal / ai_t
 
 Abandoned convergence treats `SENT` as delivery truth only when its provider message reference is bounded and non-empty, including after a lost cleanup CAS reload. Malformed SENT is preserved but blocks internal domain repair and DLQ resolution; durable AI text cannot manufacture provider-delivery evidence.
 
-Phase 4B-5 documents the frozen reliability behavior in `RELIABILITY-RUNBOOK.md`, `MIGRATION-RECOVERY.md` and `PREPRODUCTION-ACCEPTANCE.md`. It adds no runtime feature, schema, migration or production resource and does not execute Phase 4C validation.
+Phase 4B-5 was accepted, completed, frozen and merged by PR #15 as `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`. It documents frozen reliability behavior in `RELIABILITY-RUNBOOK.md`, `MIGRATION-RECOVERY.md` and `PREPRODUCTION-ACCEPTANCE.md`. It adds no runtime feature, schema, migration or production resource and does not execute Phase 4C validation. `62c7c51120ad4d44fcdc4cff089173258b719c28` remains the historical pre-PR #15 implementation base.

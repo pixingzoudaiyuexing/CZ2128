@@ -1,10 +1,12 @@
 # CZ2128 Reliability Operations Runbook
 
-Status: **PHASE 4B-5 IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED**
+Status: **PHASE 4B-5 ACCEPTED / COMPLETE / FROZEN / MERGED**
 
 Frozen Phase 4B-4B runtime baseline: `8499a5d4eaa40d4461d1882aaf6f4e2ac93efa08`
 
-Phase 4B-5 documentation baseline: `62c7c51120ad4d44fcdc4cff089173258b719c28`
+Phase 4B-5 accepted documentation merge baseline: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`
+
+Historical pre-PR #15 implementation base: `62c7c51120ad4d44fcdc4cff089173258b719c28`
 
 This runbook describes the operations that the frozen CZ2128 runtime actually supports. It does not authorize a deployment, a production mutation, a provider-visible retry, an Admin action, or a data restore. Production remains **NOT DEPLOYED** and the production `DLQ_QUARANTINE` resource remains **NOT PROVISIONED / NOT VALIDATED**.
 

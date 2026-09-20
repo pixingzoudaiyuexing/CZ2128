@@ -1,7 +1,8 @@
-# CZ2128 - Phase 4B-5 Reliability Runbook In Implementation
+# CZ2128 - Phase 4B-5 Complete / Phase 4C Preparation Only
 
 ## 状态
-- **Phase 4B-5 Baseline**: `62c7c51120ad4d44fcdc4cff089173258b719c28` (PR #14 merge commit)
+- **Current Main / Phase 4B-5 Documentation Merge**: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8` (PR #15 merge commit)
+- **Phase 4B-5 Implementation Base**: `62c7c51120ad4d44fcdc4cff089173258b719c28` (historical pre-PR #15 main)
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
 - **PR #1**: merged
@@ -14,6 +15,7 @@
 - **PR #12**: merged; Phase 4B-4A complete and frozen
 - **PR #13**: merged; Phase 4B-4B accepted, complete and frozen
 - **PR #14**: merged; Phase 4B-4B post-merge documentation sync accepted
+- **PR #15**: merged; Phase 4B-5 reliability runbook and readiness documentation accepted
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
@@ -27,8 +29,8 @@
 - **Phase 4B-4A**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-4B**: ACCEPTED / COMPLETE / FROZEN / MERGED
 - **Phase 4B-4 overall**: COMPLETE / FROZEN / MERGED
-- **Phase 4B-5**: IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED
-- **Phase 4C**: NOT STARTED
+- **Phase 4B-5**: ACCEPTED / COMPLETE / FROZEN / MERGED
+- **Phase 4C**: NOT STARTED / PREPARATION ONLY
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
@@ -68,13 +70,14 @@
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5 is IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED. Phase 4C and `CONFIRMED_NOT_SENT` activation remain NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5 is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4C is NOT STARTED / PREPARATION ONLY and `CONFIRMED_NOT_SENT` activation remains NOT STARTED.
 
-## Phase 4B-5 Documentation
+## Phase 4B-5 Documentation and 4C Preparation
 - Operational state and incident handling: [RELIABILITY-RUNBOOK.md](RELIABILITY-RUNBOOK.md)
 - Migration, backup and recovery boundaries: [MIGRATION-RECOVERY.md](MIGRATION-RECOVERY.md)
 - Phase 4C evidence gates: [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md)
-- Documentation completion does not authorize deployment, provisioning, provider actions or Phase 4C execution.
+- Non-sensitive staging inventory and owner gates: [STAGING-READINESS.md](STAGING-READINESS.md)
+- Documentation completion and 4C-0A inventory do not authorize deployment, provisioning, provider actions or Phase 4C execution.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.

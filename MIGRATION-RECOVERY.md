@@ -1,6 +1,6 @@
 # CZ2128 Migration, Backup and Recovery
 
-Status: **PHASE 4B-5 IN IMPLEMENTATION / NOT ACCEPTED / NOT FROZEN / NOT MERGED**
+Status: **PHASE 4B-5 ACCEPTED / COMPLETE / FROZEN / MERGED**
 
 This document defines recovery boundaries for the current repository. It is not a production change plan and grants no authority to restore D1, pause/purge Queue messages, change R2, roll back a deployment or edit canonical data.
 
@@ -8,7 +8,9 @@ Production remains **NOT DEPLOYED**. Production `DLQ_QUARANTINE` remains **NOT P
 
 Frozen Phase 4B-4B runtime baseline: `8499a5d4eaa40d4461d1882aaf6f4e2ac93efa08`
 
-Phase 4B-5 documentation baseline: `62c7c51120ad4d44fcdc4cff089173258b719c28`
+Phase 4B-5 accepted documentation merge baseline: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`
+
+Historical pre-PR #15 implementation base: `62c7c51120ad4d44fcdc4cff089173258b719c28`
 
 See [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md) for state handling and [Pre-Production Acceptance Matrix](PREPRODUCTION-ACCEPTANCE.md) for uncompleted validation.
 
