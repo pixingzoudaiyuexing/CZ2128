@@ -5,4 +5,4 @@ dist/
 .env
 .env.*
 !.env.example
-
+wrangler.staging.jsonc

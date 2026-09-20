@@ -77,6 +77,7 @@
 - Migration, backup and recovery boundaries: [MIGRATION-RECOVERY.md](MIGRATION-RECOVERY.md)
 - Phase 4C evidence gates: [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md)
 - Non-sensitive staging inventory and owner gates: [STAGING-READINESS.md](STAGING-READINESS.md)
+- Staging configuration and future remote execution gates: [STAGING-DEPLOYMENT.md](STAGING-DEPLOYMENT.md)
 - Documentation completion and 4C-0A inventory do not authorize deployment, provisioning, provider actions or Phase 4C execution.
 
 ## Phase 3 Attachment Contract

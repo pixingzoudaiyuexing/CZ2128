@@ -56,6 +56,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - [Migration, Backup and Recovery](MIGRATION-RECOVERY.md)
 - [Pre-Production Acceptance Matrix](PREPRODUCTION-ACCEPTANCE.md)
 - [Staging Readiness](STAGING-READINESS.md)
+- [4C Staging Foundation Deployment Plan](STAGING-DEPLOYMENT.md)
 
 These Phase 4B-5 documents define operational and acceptance boundaries only. `STAGING-READINESS.md` records the non-sensitive 4C-0A inventory and owner gates. Neither authorizes deployment, resource provisioning, provider-visible actions, data restoration or Phase 4C execution.
 

@@ -17,12 +17,12 @@ This is a non-sensitive readiness checklist based on the completed 4C-0A read-on
 
 | Resource | Current status | Known non-sensitive identity | Required evidence before use |
 | --- | --- | --- | --- |
-| Cloudflare account/profile | UNKNOWN | None recorded for CZ2128 staging | Explicit profile/account identity and owner authorization |
-| Staging Worker | UNKNOWN | Repository declares `cz2128`; no staging environment recorded | Worker ID/name, environment, deployed SHA and owner |
-| Staging D1 | UNKNOWN | Binding `DB`; repository ID is `local-dev-only` | Remote D1 ID, migration state and access scope |
-| Main Queue / DLQ | UNKNOWN | Planned names `cz2128-queue` / `cz2128-dlq` | Queue IDs/configuration and owner |
-| Attachment R2 | UNKNOWN | Planned `cz2128-attachments` | Bucket ID, private access and lifecycle evidence |
-| DLQ quarantine R2 | UNKNOWN for staging | Planned `cz2128-dlq-quarantine` | Bucket ID and metadata-only access evidence |
+| Cloudflare account/profile | VERIFIED | One Owner-authorized account/profile; secret and personal identifiers excluded | Dedicated least-privilege 4C-1 execution profile |
+| 4C staging Worker | VERIFIED ABSENT at audit time | Approved `cz2128-4c-staging`; legacy `cz2128-staging` exists separately | Recheck absence immediately before creation |
+| 4C staging D1 | VERIFIED ABSENT at audit time | Approved `cz2128-4c-staging-db`; legacy D1 has only `0001`–`0004` | Recheck absence; record new UUID independently |
+| 4C main Queue / DLQ | VERIFIED ABSENT at audit time | Approved `cz2128-4c-staging-queue` / `cz2128-4c-staging-dlq` | Recheck absence and verify new consumer topology |
+| 4C attachment R2 | VERIFIED ABSENT at audit time | Approved `cz2128-4c-staging-attachments`; legacy bucket exists separately | Recheck absence, privacy and lifecycle after creation |
+| 4C DLQ quarantine R2 | VERIFIED ABSENT at audit time | Approved `cz2128-4c-staging-dlq-quarantine`; legacy quarantine is absent | Recheck absence; approve retention before lifecycle |
 | Chatwoot test instance/inbox | UNKNOWN | None recorded | Isolated instance/account/inbox and owner |
 | Telegram Support Bot | UNKNOWN | None recorded | Dedicated Bot identity and owner declaration |
 | Telegram Admin Bot | UNKNOWN | None recorded | Dedicated Bot identity and owner declaration |
@@ -34,6 +34,23 @@ This is a non-sensitive readiness checklist based on the completed 4C-0A read-on
 | Retention/cleanup owner | UNKNOWN | Code defines attachment TTL/cleanup only | Responsible operator and approved cleanup policy |
 
 Binding declarations alone do not prove remote resource existence. Production quarantine's known NOT PROVISIONED state must not be used to infer staging quarantine status.
+
+## 4C-0B Verified Snapshot
+
+The Owner-authorized account has one identified default OAuth profile. Its permissions are broader than the least privilege required for routine staging deployment, so it was used only for the authorized read-only inventory.
+
+Verified existing legacy CZ2128 staging resources:
+
+- `cz2128-staging` Worker, last deployed during Phase 3/3.5; exact current Git SHA is not recorded.
+- `cz2128-staging-db`, with migration metadata showing only `0001`–`0004`.
+- `cz2128-staging-queue`, whose producer and consumer are the legacy Worker.
+- `cz2128-staging-dlq`, with no current consumer.
+- `cz2128-staging-attachments`, empty at audit time and configured with the frozen 7-day lifecycle.
+- No `cz2128-staging-dlq-quarantine` bucket and no quarantine binding on the legacy Worker.
+
+These legacy resources remain historical staging evidence. They must not be upgraded, reused, emptied or deleted by 4C-1.
+
+The approved fresh names `cz2128-4c-staging`, `cz2128-4c-staging-db`, `cz2128-4c-staging-queue`, `cz2128-4c-staging-dlq`, `cz2128-4c-staging-attachments` and `cz2128-4c-staging-dlq-quarantine` were each verified absent at the 4C-0B audit time. Absence must be rechecked immediately before any future write.
 
 ## Mandatory Isolation
 
@@ -63,3 +80,5 @@ Only after an exact staging account/profile, allowed resource scope and owner au
 ### 4C-1: Staging Foundation
 
 Creating isolated resources, applying migrations, deploying a Worker, configuring webhooks or allocating budget requires a separate Primary approval after 4C-0B has verified the intended environment. The approval must define resource names, isolation, access scope, cost limit, cleanup plan and stop conditions.
+
+Engineering artifacts and remote execution gates are documented in [STAGING-DEPLOYMENT.md](STAGING-DEPLOYMENT.md). Preparing those artifacts does not authorize a remote write.

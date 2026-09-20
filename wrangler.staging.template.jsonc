@@ -1,0 +1,56 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cz2128-4c-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-03-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "EXPECTED_MAIN_QUEUE_NAME": "cz2128-4c-staging-queue",
+    "EXPECTED_DLQ_QUEUE_NAME": "cz2128-4c-staging-dlq"
+  },
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cz2128-4c-staging-db",
+      "database_id": "REPLACE_WITH_CZ2128_4C_STAGING_D1_UUID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "QUEUE",
+        "queue": "cz2128-4c-staging-queue"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "cz2128-4c-staging-queue",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "dead_letter_queue": "cz2128-4c-staging-dlq"
+      },
+      {
+        "queue": "cz2128-4c-staging-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "ATTACHMENTS_BUCKET",
+      "bucket_name": "cz2128-4c-staging-attachments"
+    },
+    {
+      "binding": "DLQ_QUARANTINE",
+      "bucket_name": "cz2128-4c-staging-dlq-quarantine"
+    }
+  ]
+}

@@ -15,9 +15,7 @@ import { resolveEffectiveEnv } from './runtime-config/resolver';
 import { boundedQueueRetryDelay } from './core/retry';
 import { captureDlqMessage } from './queue/dlq-consumer';
 import { persistDlqQuarantine } from './queue/dlq-quarantine';
-
-const MAIN_QUEUE_NAME = 'cz2128-queue';
-const DLQ_QUEUE_NAME = 'cz2128-dlq';
+import { resolveQueueIdentities } from './config/queue-identities';
 
 export type { Env } from './config/env';
 
@@ -240,7 +238,18 @@ export default {
   },
 
   async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (batch.queue === DLQ_QUEUE_NAME) {
+    let queueIdentities: ReturnType<typeof resolveQueueIdentities>;
+    try {
+      queueIdentities = resolveQueueIdentities(env);
+    } catch (error) {
+      logger.error('Queue identity configuration rejected', error, { source: batch.queue });
+      for (const message of batch.messages) {
+        message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });
+      }
+      return;
+    }
+
+    if (batch.queue === queueIdentities.dlq) {
       for (const message of batch.messages) {
         try {
           await captureDlqMessage(env, message, undefined, batch.queue);
@@ -266,7 +275,7 @@ export default {
       return;
     }
 
-    if (batch.queue !== MAIN_QUEUE_NAME) {
+    if (batch.queue !== queueIdentities.main) {
       logger.warn('Unknown queue batch rejected', { source: batch.queue });
       for (const message of batch.messages) {
         message.retry({ delaySeconds: boundedQueueRetryDelay(undefined) });

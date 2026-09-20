@@ -5,7 +5,9 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests"
+    "lint": "eslint src tests",
+    "validate:staging-template": "node scripts/validate-staging-config.mjs --config wrangler.staging.template.jsonc --allow-placeholder",
+    "validate:staging": "node scripts/validate-staging-config.mjs"
   },
   "repository": {
     "type": "git",

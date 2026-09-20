@@ -7,6 +7,7 @@ import { manualRetryOutboundOperation, MANUAL_RETRY_REASONS } from '../core/outb
 import { saveAdminSession, getAdminSession, clearAdminSession } from '../runtime-config/repository';
 import { safeErrorCode, SafeError } from '../core/errors';
 import { listDlqQuarantine } from '../queue/dlq-quarantine';
+import { resolveQueueIdentities } from '../config/queue-identities';
 import {
   DlqAiRedriveReason,
   getDlqAiRedriveEligibility,
@@ -171,7 +172,7 @@ async function showDlqDetail(
 }
 
 async function showDlqQuarantine(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext): Promise<string> {
-  const quarantine = await listDlqQuarantine(env.DLQ_QUARANTINE, 10);
+  const quarantine = await listDlqQuarantine(env.DLQ_QUARANTINE, 10, resolveQueueIdentities(env).dlq);
   const count = quarantine.truncated ? `${quarantine.visibleCount}+` : String(quarantine.visibleCount);
   const lines = quarantine.entries.map((entry, index) => [
     `${index + 1}. ${entry.state}`,

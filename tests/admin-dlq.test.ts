@@ -102,7 +102,7 @@ function telegramOk(result: unknown = { message_id: 1 }) {
   return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
 }
 
-function quarantineBucket(options: { invalid?: boolean } = {}) {
+function quarantineBucket(options: { invalid?: boolean; queueName?: string } = {}) {
   const list = vi.fn(async () => ({
     truncated: false,
     objects: [{
@@ -112,7 +112,7 @@ function quarantineBucket(options: { invalid?: boolean } = {}) {
         schemaVersion: '1',
         quarantineId: `dlq-quarantine:v1:${'a'.repeat(64)}`,
         canonicalReceiptId: `dlq:v1:${'b'.repeat(64)}`,
-        queueName: 'cz2128-dlq',
+        queueName: options.queueName || 'cz2128-dlq',
         eventSource: 'chatwoot',
         eventType: 'message_created',
         queueAttempts: '4',
@@ -239,6 +239,25 @@ describe('Admin DLQ inspection', () => {
     expect(rendered).toContain('QUARANTINED');
     for (const sentinel of privacySentinels) expect(rendered).not.toContain(sentinel);
     expect((await db.prepare('SELECT COUNT(*) AS c FROM outbound_operations').first<any>()).c).toBe(0);
+    db.close();
+  });
+
+  it('uses the configured staging DLQ identity for the Admin quarantine view', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    const testEnv = env(db);
+    testEnv.EXPECTED_MAIN_QUEUE_NAME = 'cz2128-4c-staging-queue';
+    testEnv.EXPECTED_DLQ_QUEUE_NAME = 'cz2128-4c-staging-dlq';
+    const bucket = quarantineBucket({ queueName: 'cz2128-4c-staging-dlq' });
+    testEnv.DLQ_QUARANTINE = bucket as any;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(telegramOk());
+
+    await handleAdminTelegramWebhook(callback(22, 'r:dlqq'), testEnv);
+
+    const rendered = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
+    expect(rendered).toContain(`dlq-quarantine:v1:${'a'.repeat(64)}`);
+    expect(rendered).toContain('Invalid sanitized metadata: 0');
+    expect(bucket.get).not.toHaveBeenCalled();
     db.close();
   });
 
