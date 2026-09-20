@@ -4,6 +4,7 @@ import {
   DlqQueueMessage,
   sanitizeDlqMessage
 } from './dlq-consumer';
+import { LEGACY_DLQ_QUEUE_NAME } from '../config/queue-identities';
 
 const QUARANTINE_PREFIX = 'terminal-dlq/v1/';
 const QUARANTINE_SCHEMA_VERSION = 1;
@@ -92,12 +93,12 @@ function parseOptionalInteger(value: unknown): number | null | undefined {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function parseMetadata(object: R2Object): DlqQuarantineEntry | null {
+function parseMetadata(object: R2Object, expectedQueueName: string): DlqQuarantineEntry | null {
   const meta = object.customMetadata;
   if (!meta || meta.schemaVersion !== '1') return null;
   if (!validHashIdentity(meta.quarantineId, 'dlq-quarantine:v1:')) return null;
   if (!validHashIdentity(meta.canonicalReceiptId, 'dlq:v1:')) return null;
-  if (meta.queueName !== 'cz2128-dlq') return null;
+  if (meta.queueName !== expectedQueueName) return null;
   if (meta.reason !== QUARANTINE_REASON || meta.state !== QUARANTINE_STATE) return null;
   const sources = new Set(['chatwoot', 'telegram', 'internal']);
   const types = new Set(['message_created', 'conversation_status_changed', 'ai_trigger', 'attachment_transfer']);
@@ -126,7 +127,7 @@ function parseMetadata(object: R2Object): DlqQuarantineEntry | null {
 export async function persistDlqQuarantine(
   bucket: R2Bucket,
   message: DlqQueueMessage,
-  queueName = 'cz2128-dlq'
+  queueName = LEGACY_DLQ_QUEUE_NAME
 ): Promise<DlqQuarantineReceipt> {
   if (typeof message.id !== 'string' || message.id.length === 0) {
     throw new Error('Invalid Cloudflare Queue message identity');
@@ -151,14 +152,18 @@ export async function persistDlqQuarantine(
   return receipt;
 }
 
-export async function listDlqQuarantine(bucket: R2Bucket, limit = 10): Promise<DlqQuarantineList> {
+export async function listDlqQuarantine(
+  bucket: R2Bucket,
+  limit = 10,
+  expectedQueueName = LEGACY_DLQ_QUEUE_NAME
+): Promise<DlqQuarantineList> {
   const boundedLimit = Number.isSafeInteger(limit) ? Math.min(Math.max(limit, 1), 10) : 10;
   const result = await bucket.list({
     prefix: QUARANTINE_PREFIX,
     limit: MAX_LIST_OBJECTS,
     include: ['customMetadata']
   });
-  const parsed = result.objects.map(parseMetadata);
+  const parsed = result.objects.map(object => parseMetadata(object, expectedQueueName));
   const entries = parsed
     .filter((entry): entry is DlqQuarantineEntry => entry !== null)
     .sort((left, right) => right.uploadedAt - left.uploadedAt || left.quarantineId.localeCompare(right.quarantineId))

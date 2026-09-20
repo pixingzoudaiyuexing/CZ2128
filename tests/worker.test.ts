@@ -433,6 +433,98 @@ describe('Worker Integration', () => {
     expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
   });
 
+  it.each(['cz2128-4c-staging-queue', 'cz2128-4c-staging-dlq'])(
+    'does not infer staging identity for %s when both variables are absent',
+    async queue => {
+      vi.mocked(consumer.handleQueueEvent).mockClear();
+      vi.mocked(dlqConsumer.captureDlqMessage).mockClear();
+      const message = { id: `unconfigured-${queue}`, body: {}, ack: vi.fn(), retry: vi.fn() };
+      if (Worker.queue) await Worker.queue({ queue, messages: [message] } as any, env, ctx);
+      expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+      expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+      expect(message.ack).not.toHaveBeenCalled();
+      expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
+    }
+  );
+
+  it('routes the approved staging main Queue only to normal processing', async () => {
+    vi.mocked(consumer.handleQueueEvent).mockClear();
+    vi.mocked(dlqConsumer.captureDlqMessage).mockClear();
+    Object.assign(env, {
+      EXPECTED_MAIN_QUEUE_NAME: 'cz2128-4c-staging-queue',
+      EXPECTED_DLQ_QUEUE_NAME: 'cz2128-4c-staging-dlq'
+    });
+    const message = {
+      id: 'staging-main-message',
+      body: { version: 1, source: 'internal', type: 'ai_trigger', eventId: 'staging-main', payload: {} },
+      ack: vi.fn(),
+      retry: vi.fn()
+    };
+    if (Worker.queue) {
+      await Worker.queue({ queue: 'cz2128-4c-staging-queue', messages: [message] } as any, env, ctx);
+    }
+    expect(consumer.handleQueueEvent).toHaveBeenCalledTimes(1);
+    expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledTimes(1);
+    expect(message.retry).not.toHaveBeenCalled();
+  });
+
+  it('routes the approved staging DLQ with its exact identity', async () => {
+    vi.mocked(consumer.handleQueueEvent).mockClear();
+    vi.mocked(dlqConsumer.captureDlqMessage).mockClear();
+    Object.assign(env, {
+      EXPECTED_MAIN_QUEUE_NAME: 'cz2128-4c-staging-queue',
+      EXPECTED_DLQ_QUEUE_NAME: 'cz2128-4c-staging-dlq'
+    });
+    const message = { id: 'staging-dlq-message', body: {}, ack: vi.fn(), retry: vi.fn() };
+    if (Worker.queue) {
+      await Worker.queue({ queue: 'cz2128-4c-staging-dlq', messages: [message] } as any, env, ctx);
+    }
+    expect(dlqConsumer.captureDlqMessage).toHaveBeenCalledWith(
+      env,
+      message,
+      undefined,
+      'cz2128-4c-staging-dlq'
+    );
+    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['cz2128-queue', 'cz2128-dlq', 'unexpected-queue'])(
+    'rejects non-staging Queue %s when the staging pair is selected',
+    async queue => {
+      vi.mocked(consumer.handleQueueEvent).mockClear();
+      vi.mocked(dlqConsumer.captureDlqMessage).mockClear();
+      Object.assign(env, {
+        EXPECTED_MAIN_QUEUE_NAME: 'cz2128-4c-staging-queue',
+        EXPECTED_DLQ_QUEUE_NAME: 'cz2128-4c-staging-dlq'
+      });
+      const message = { id: `rejected-${queue}`, body: {}, ack: vi.fn(), retry: vi.fn() };
+      if (Worker.queue) await Worker.queue({ queue, messages: [message] } as any, env, ctx);
+      expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+      expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+      expect(message.ack).not.toHaveBeenCalled();
+      expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
+    }
+  );
+
+  it('fails closed before routing when only one Queue identity variable is configured', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(consumer.handleQueueEvent).mockClear();
+    vi.mocked(dlqConsumer.captureDlqMessage).mockClear();
+    env.EXPECTED_MAIN_QUEUE_NAME = 'cz2128-4c-staging-queue';
+    const message = { id: 'partial-config', body: {}, ack: vi.fn(), retry: vi.fn() };
+    if (Worker.queue) {
+      await Worker.queue({ queue: 'cz2128-4c-staging-queue', messages: [message] } as any, env, ctx);
+    }
+    expect(consumer.handleQueueEvent).not.toHaveBeenCalled();
+    expect(dlqConsumer.captureDlqMessage).not.toHaveBeenCalled();
+    expect(message.ack).not.toHaveBeenCalled();
+    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 5 });
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    errorLog.mockRestore();
+  });
+
   it('scheduled() registers bounded attachment cleanup with waitUntil', async () => {
     const waitUntil = vi.fn();
     const scheduledEnv = {

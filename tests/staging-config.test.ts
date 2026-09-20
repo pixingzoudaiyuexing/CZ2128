@@ -65,8 +65,17 @@ describe('isolated staging configuration', () => {
     ['wrong DLQ target', (config: any) => { config.queues.consumers[0].dead_letter_queue = 'cz2128-staging-dlq'; }, 'dead-letter target'],
     ['missing DLQ consumer', (config: any) => { config.queues.consumers.pop(); }, 'both required'],
     ['wrong cron', (config: any) => { config.triggers.crons = ['*/5 * * * *']; }, 'hourly cron'],
-    ['plaintext vars', (config: any) => { config.vars = { FEATURE_FLAG: 'true' }; }, 'plaintext vars'],
-    ['nested plaintext secret', (config: any) => { config.r2_buckets[0].api_token = 'synthetic-secret'; }, 'credential-like config key'],
+    ['missing main Queue identity', (config: any) => { delete config.vars.EXPECTED_MAIN_QUEUE_NAME; }, 'both approved Queue identity keys'],
+    ['missing DLQ identity', (config: any) => { delete config.vars.EXPECTED_DLQ_QUEUE_NAME; }, 'both approved Queue identity keys'],
+    ['empty main Queue identity', (config: any) => { config.vars.EXPECTED_MAIN_QUEUE_NAME = ''; }, 'expected main Queue identity'],
+    ['wrong main Queue identity', (config: any) => { config.vars.EXPECTED_MAIN_QUEUE_NAME = 'cz2128-staging-queue'; }, 'expected main Queue identity'],
+    ['wrong DLQ identity', (config: any) => { config.vars.EXPECTED_DLQ_QUEUE_NAME = 'cz2128-dlq'; }, 'expected DLQ identity'],
+    ['same Queue identities', (config: any) => { config.vars.EXPECTED_MAIN_QUEUE_NAME = config.vars.EXPECTED_DLQ_QUEUE_NAME; }, 'expected main Queue identity'],
+    ['unapproved variable', (config: any) => { config.vars.FEATURE_FLAG = 'true'; }, 'vars contains unexpected field'],
+    ['custom route', (config: any) => { config.routes = [{ pattern: 'staging.example/*' }]; }, 'must not declare production/custom routes'],
+    ['nested plaintext secret', (config: any) => { config.r2_buckets[0].api_token = 'synthetic-secret'; }, 'R2 binding contains unexpected field'],
+    ['extra D1 field', (config: any) => { config.d1_databases[0].preview_database_id = testUuid; }, 'D1 binding contains unexpected field'],
+    ['extra Queue consumer field', (config: any) => { config.queues.consumers[0].retry_delay = 10; }, 'main Queue consumer contains unexpected field'],
     ['unreviewed extra binding', (config: any) => { config.kv_namespaces = [{ binding: 'EXTRA', id: testUuid }]; }, 'unexpected top-level staging config key']
   ])('rejects %s before any deployment command', (_label, mutate, expected) => {
     const path = writeConfig(config => {

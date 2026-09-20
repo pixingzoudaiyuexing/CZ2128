@@ -16,8 +16,8 @@ import {
 } from './reliability-audit';
 import { RetryableProcessingError, SafeError } from './errors';
 import { MAX_AI_GENERATION_ATTEMPTS } from './ai-state';
+import { resolveQueueIdentities } from '../config/queue-identities';
 
-const DLQ_QUEUE_NAME = 'cz2128-dlq';
 const MAX_IDENTITY_BYTES = 256;
 
 export type DlqAiRedriveReason =
@@ -467,15 +467,16 @@ async function outboundEligibility(
 }
 
 export async function isOpenDlqAiRecoveryEvent(
-  env: Pick<Env, 'DB'>,
+  env: Pick<Env, 'DB' | 'EXPECTED_MAIN_QUEUE_NAME' | 'EXPECTED_DLQ_QUEUE_NAME'>,
   event: AiTriggerEvent
 ): Promise<boolean> {
+  const queueIdentities = resolveQueueIdentities(env);
   const receipt = await env.DB.prepare(
     `SELECT id FROM dlq_receipts
      WHERE queue_name = ? AND event_source = 'internal' AND source_event_ref = ?
        AND event_type = 'ai_trigger' AND conversation_id = ? AND status = 'OPEN'
      LIMIT 1`
-  ).bind(DLQ_QUEUE_NAME, event.eventId, event.payload.convId).first<{ id: string }>();
+  ).bind(queueIdentities.dlq, event.eventId, event.payload.convId).first<{ id: string }>();
   return boundedIdentity(receipt?.id);
 }
 
@@ -485,6 +486,7 @@ export async function getDlqAiRedriveEligibility(
   now = Math.floor(Date.now() / 1000)
 ): Promise<DlqAiRedriveEligibility> {
   if (!boundedIdentity(receiptId)) return ineligible('RECEIPT_MALFORMED');
+  const queueIdentities = resolveQueueIdentities(env);
   const receipt = await env.DB.prepare(
     `SELECT id, queue_name, event_source, source_event_ref, event_type, conversation_id, status
      FROM dlq_receipts WHERE id = ?`
@@ -492,7 +494,7 @@ export async function getDlqAiRedriveEligibility(
   if (!receipt) return ineligible('RECEIPT_NOT_FOUND');
   if (receipt.status !== 'OPEN') return ineligible('RECEIPT_RESOLVED');
   if (
-    receipt.queue_name !== DLQ_QUEUE_NAME ||
+    receipt.queue_name !== queueIdentities.dlq ||
     receipt.event_source !== 'internal' ||
     receipt.event_type !== 'ai_trigger'
   ) return ineligible('NOT_AI_TRIGGER');

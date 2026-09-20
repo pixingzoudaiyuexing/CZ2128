@@ -122,4 +122,22 @@ describe('DLQ terminal quarantine', () => {
     expect(JSON.stringify(result)).not.toContain(sentinels[0]);
     expect(JSON.stringify(result)).not.toContain(sentinels[1]);
   });
+
+  it('isolates staging and legacy quarantine metadata by expected DLQ identity', async () => {
+    const bucket = new MemoryBucket();
+    await persistDlqQuarantine(
+      bucket as any,
+      { id: 'staging-message', body: validEvent(), attempts: 1 },
+      'cz2128-4c-staging-dlq'
+    );
+
+    const staging = await listDlqQuarantine(bucket as any, 10, 'cz2128-4c-staging-dlq');
+    expect(staging.entries).toHaveLength(1);
+    expect(staging.entries[0].queueName).toBe('cz2128-4c-staging-dlq');
+    expect(staging.invalidMetadataCount).toBe(0);
+
+    const legacy = await listDlqQuarantine(bucket as any, 10);
+    expect(legacy.entries).toHaveLength(0);
+    expect(legacy.invalidMetadataCount).toBe(1);
+  });
 });

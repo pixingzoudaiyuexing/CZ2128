@@ -4,6 +4,7 @@ import {
   convergeAbandonedAiOutboundOperations,
   convergeStaleAiOutboundOperations,
   getDlqAiRedriveEligibility,
+  isOpenDlqAiRecoveryEvent,
   requestDlqAiRedrive
 } from '../src/core/dlq-ai-redrive';
 import {
@@ -20,7 +21,7 @@ const CONVERSATION_ID = 'conv-1';
 const MESSAGE_REF = 'msg-1';
 const EVENT_ID = `ai_trigger:${CONVERSATION_ID}:${MESSAGE_REF}`;
 
-function makeEnv(db: SqliteD1, queue = vi.fn()): Env {
+function makeEnv(db: SqliteD1, queue = vi.fn(), overrides: Partial<Env> = {}): Env {
   return {
     DB: db as any,
     QUEUE: { send: queue } as any,
@@ -32,7 +33,8 @@ function makeEnv(db: SqliteD1, queue = vi.fn()): Env {
     AI_API_KEY: 'ai-key',
     AI_MODEL: 'model',
     AI_SYSTEM_PROMPT: 'System policy',
-    AI_GENERATION_LEASE_SECONDS: '60'
+    AI_GENERATION_LEASE_SECONDS: '60',
+    ...overrides
   } as Env;
 }
 
@@ -46,6 +48,7 @@ async function seedEligible(
     eventStatus?: string;
     eventLeaseUntil?: number | null;
     withChatwootEvidence?: boolean;
+    queueName?: string;
   } = {}
 ): Promise<void> {
   const runStatus = options.runStatus || 'FAILED_RETRYABLE';
@@ -56,6 +59,7 @@ async function seedEligible(
     : options.responseText;
   const eventStatus = options.eventStatus || 'FAILED';
   const eventLeaseUntil = options.eventLeaseUntil === undefined ? null : options.eventLeaseUntil;
+  const queueName = options.queueName || 'cz2128-dlq';
   await db.prepare(
     `INSERT INTO conversations
      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
@@ -93,9 +97,9 @@ async function seedEligible(
     `INSERT INTO dlq_receipts
      (id, queue_name, event_source, source_event_ref, event_type, conversation_id,
       safe_error_code, status, delivery_count, first_seen_at, last_seen_at)
-     VALUES (?, 'cz2128-dlq', 'internal', ?, 'ai_trigger', ?,
+     VALUES (?, ?, 'internal', ?, 'ai_trigger', ?,
              'QUEUE_RETRY_EXHAUSTED', 'OPEN', 1, 100, 100)`
-  ).bind(RECEIPT_ID, EVENT_ID, CONVERSATION_ID).run();
+  ).bind(RECEIPT_ID, queueName, EVENT_ID, CONVERSATION_ID).run();
   if (runStatus === 'FAILED_RETRYABLE' && options.withChatwootEvidence !== false) {
     await seedOutbound(db, makeEnv(db), 'CHATWOOT', 'PENDING');
   }
@@ -144,6 +148,93 @@ async function seedOutbound(
 
 describe('DLQ durable-state AI redrive eligibility', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('uses the legacy DLQ identity when both Queue variables are absent', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const env = makeEnv(db);
+    const event = {
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: EVENT_ID,
+      payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+    } as const;
+    expect(await isOpenDlqAiRecoveryEvent(env, event)).toBe(true);
+    expect(await getDlqAiRedriveEligibility(env, RECEIPT_ID, NOW)).toMatchObject({
+      eligible: true,
+      reason: 'ELIGIBLE'
+    });
+    db.close();
+  });
+
+  it('uses the staging DLQ identity and rejects a legacy receipt in staging', async () => {
+    const stagingVars = {
+      EXPECTED_MAIN_QUEUE_NAME: 'cz2128-4c-staging-queue',
+      EXPECTED_DLQ_QUEUE_NAME: 'cz2128-4c-staging-dlq'
+    };
+    const stagingDb = new SqliteD1();
+    stagingDb.migrate();
+    await seedEligible(stagingDb, { queueName: 'cz2128-4c-staging-dlq' });
+    const stagingEnv = makeEnv(stagingDb, vi.fn(), stagingVars);
+    const event = {
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: EVENT_ID,
+      payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+    } as const;
+    expect(await isOpenDlqAiRecoveryEvent(stagingEnv, event)).toBe(true);
+    expect(await getDlqAiRedriveEligibility(stagingEnv, RECEIPT_ID, NOW)).toMatchObject({
+      eligible: true,
+      reason: 'ELIGIBLE'
+    });
+    stagingDb.close();
+
+    const legacyDb = new SqliteD1();
+    legacyDb.migrate();
+    await seedEligible(legacyDb);
+    const selectedStagingEnv = makeEnv(legacyDb, vi.fn(), stagingVars);
+    expect(await isOpenDlqAiRecoveryEvent(selectedStagingEnv, event)).toBe(false);
+    expect(await getDlqAiRedriveEligibility(selectedStagingEnv, RECEIPT_ID, NOW)).toMatchObject({
+      eligible: false,
+      reason: 'NOT_AI_TRIGGER'
+    });
+    legacyDb.close();
+  });
+
+  it('does not accept a staging receipt in the legacy environment', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { queueName: 'cz2128-4c-staging-dlq' });
+    const env = makeEnv(db);
+    expect(await getDlqAiRedriveEligibility(env, RECEIPT_ID, NOW)).toMatchObject({
+      eligible: false,
+      reason: 'NOT_AI_TRIGGER'
+    });
+    db.close();
+  });
+
+  it('rejects partial Queue identity configuration before receipt lookup', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db);
+    const env = makeEnv(db, vi.fn(), {
+      EXPECTED_MAIN_QUEUE_NAME: 'cz2128-4c-staging-queue'
+    });
+    const event = {
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: EVENT_ID,
+      payload: { convId: CONVERSATION_ID, messageId: MESSAGE_REF }
+    } as const;
+    await expect(isOpenDlqAiRecoveryEvent(env, event)).rejects.toThrow('QUEUE_IDENTITY_CONFIG_INVALID');
+    await expect(getDlqAiRedriveEligibility(env, RECEIPT_ID, NOW))
+      .rejects.toThrow('QUEUE_IDENTITY_CONFIG_INVALID');
+    db.close();
+  });
 
   it.each([0, 1, 2])('reconstructs the exact original event with attempt_count %s', async attemptCount => {
     const db = new SqliteD1();

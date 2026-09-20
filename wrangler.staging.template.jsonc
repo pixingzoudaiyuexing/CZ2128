@@ -6,6 +6,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "vars": {
+    "EXPECTED_MAIN_QUEUE_NAME": "cz2128-4c-staging-queue",
+    "EXPECTED_DLQ_QUEUE_NAME": "cz2128-4c-staging-dlq"
+  },
   "triggers": {
     "crons": ["0 * * * *"]
   },

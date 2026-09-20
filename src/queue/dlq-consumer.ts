@@ -1,8 +1,8 @@
 import { Env } from '../config/env';
 import { EventReceipt } from '../core/domain';
 import { SafeErrorCode, isSafeErrorCode } from '../core/error-taxonomy';
+import { LEGACY_DLQ_QUEUE_NAME } from '../config/queue-identities';
 
-const DLQ_QUEUE_NAME = 'cz2128-dlq';
 const MAX_IDENTITY_LENGTH = 256;
 const VALID_SOURCES = new Set(['chatwoot', 'telegram', 'internal']);
 const VALID_TYPES = new Set([
@@ -131,7 +131,7 @@ async function receiptIdentity(queueName: string, event: SanitizedEnvelope | nul
 
 async function parseDlqMessage(
   message: DlqQueueMessage,
-  queueName = DLQ_QUEUE_NAME
+  queueName = LEGACY_DLQ_QUEUE_NAME
 ): Promise<ParsedDlqMessage> {
   if (typeof message.id !== 'string' || message.id.length === 0) {
     throw new Error('Invalid Cloudflare Queue message identity');
@@ -151,7 +151,7 @@ async function parseDlqMessage(
 
 export async function sanitizeDlqMessage(
   message: DlqQueueMessage,
-  queueName = DLQ_QUEUE_NAME
+  queueName = LEGACY_DLQ_QUEUE_NAME
 ): Promise<SanitizedDlqMessage> {
   return (await parseDlqMessage(message, queueName)).sanitized;
 }
@@ -184,7 +184,7 @@ export async function captureDlqMessage(
   env: Pick<Env, 'DB'>,
   message: DlqQueueMessage,
   now = Math.floor(Date.now() / 1000),
-  queueName = DLQ_QUEUE_NAME
+  queueName = LEGACY_DLQ_QUEUE_NAME
 ): Promise<CapturedDlqReceipt> {
   const parsed = await parseDlqMessage(message, queueName);
   const sanitized = parsed.sanitized;

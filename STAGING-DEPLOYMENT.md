@@ -24,7 +24,7 @@ Related documents:
 | Attachment R2 | `cz2128-4c-staging-attachments` |
 | Quarantine R2 | `cz2128-4c-staging-dlq-quarantine` |
 
-Before every future write, re-confirm the exact Cloudflare account and prove all six names remain absent. Stop if any name exists or resolves outside the approved account. Do not modify, reuse, empty or delete legacy `cz2128-staging-*`, unsuffixed `cz2128*`, production or other-project resources.
+Before the first Gate A write, re-confirm the exact Cloudflare account and prove all six names remain absent. A later continuation after a partially completed authorized Gate A must follow the evidence requirements in that gate; a matching name alone is never proof of ownership. Stop if any identity cannot be proven inside the approved account. Do not modify, reuse, empty or delete legacy `cz2128-staging-*`, unsuffixed `cz2128*`, production or other-project resources.
 
 ## 2. Configuration Artifacts
 
@@ -39,7 +39,8 @@ The template declares:
 - main Queue and DLQ consumers, with three main-queue retries and the exact main-to-DLQ relationship;
 - `ATTACHMENTS_BUCKET` and `DLQ_QUARANTINE` R2 bindings;
 - hourly cron `0 * * * *`;
-- no plaintext vars, secrets, Provider identities or webhook configuration.
+- exactly two non-sensitive Queue identity variables matching the staging Queue and DLQ bindings;
+- no other plaintext variables, secrets, Provider identities or webhook configuration.
 
 The generated `wrangler.staging.jsonc` is ignored by Git. After D1 creation, an authorized operator may create it locally from the template and replace only the D1 placeholder with the independently recorded D1 UUID.
 
@@ -124,7 +125,9 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 
 **Failure handling**
 
-- Stop without deleting anything. Record which resources were created and return to Primary for cleanup/continuation authorization.
+- Stop without deleting, emptying or recreating anything. Record which resources were created and return to Primary.
+- Continuation requires the previous authorization record, the same account identity, each created resource's exact ID and creation evidence, current metadata matching that record, and a new Owner/Primary continuation authorization.
+- Treat an existing same-name resource as a conflict unless that complete chain of evidence proves it is the resource created by the interrupted Gate A. Never adopt an identity-unknown resource.
 
 ### Gate B: Finalize and Review Configuration
 
@@ -136,6 +139,7 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 **Allowed scope**
 
 - Replace only the D1 placeholder; run strict validator and Wrangler `deploy --dry-run` with the staging config.
+- Confirm the two Queue identity variables exactly match the producer, main consumer, DLQ consumer and main-to-DLQ relationship.
 
 **Permissions**
 
@@ -225,11 +229,11 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 
 **Evidence**
 
-- Worker version/deployment ID, exact SHA record, handler list, compatibility settings, four expected environment bindings and two expected Queue consumers.
+- Worker version/deployment ID, exact SHA record, handler list, compatibility settings, four expected resource bindings, two approved Queue identity variables and two expected Queue consumers.
 
 **Stop conditions**
 
-- Remote drift, wrong account/name, unexpected secret/route, missing DLQ consumer/quarantine binding or non-empty Queue.
+- Remote drift, wrong account/name, unexpected secret/route, Queue identity variable/binding mismatch, missing DLQ consumer/quarantine binding or non-empty Queue.
 
 **Failure handling**
 
@@ -277,6 +281,7 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 - legacy `cz2128-staging-*` and unsuffixed resources show zero changes from the preflight snapshot;
 - no Provider/Admin secrets, webhook routes or custom domains are configured;
 - Queue metadata shows one main producer/consumer, one DLQ consumer and the main-to-DLQ relationship;
+- runtime Queue identity variables exactly match those bindings, and legacy/staging cross-environment receipts are rejected by reviewed regression tests;
 - R2 buckets are private and attachment lifecycle matches the frozen rule;
 - D1 migration metadata contains exactly `0001`–`0005`;
 - all evidence references the exact reviewed Git SHA and staging account fingerprint;

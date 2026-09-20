@@ -36,6 +36,7 @@ const ALLOWED_ROOT_KEYS = new Set([
   'compatibility_flags',
   'workers_dev',
   'preview_urls',
+  'vars',
   'triggers',
   'd1_databases',
   'queues',
@@ -58,6 +59,11 @@ function array(value, label) {
 
 function exactly(value, expected, label) {
   if (value !== expected) fail(`${label} must equal ${expected}`);
+}
+
+function onlyKeys(value, allowed, label) {
+  const unexpected = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unexpected.length > 0) fail(`${label} contains unexpected field ${unexpected[0]}`);
 }
 
 function stringValues(value, values = []) {
@@ -98,7 +104,6 @@ export function validateStagingConfig(config, options = {}) {
   const expectedD1Id = options.expectedD1Id;
 
   if ('routes' in root || 'route' in root) fail('staging config must not declare production/custom routes');
-  if ('vars' in root) fail('staging config must not contain plaintext vars or credentials');
   const unexpectedRootKeys = Object.keys(root).filter(key => !ALLOWED_ROOT_KEYS.has(key));
   if (unexpectedRootKeys.length > 0) fail(`unexpected top-level staging config key: ${unexpectedRootKeys[0]}`);
 
@@ -112,13 +117,24 @@ export function validateStagingConfig(config, options = {}) {
   exactly(root.workers_dev, true, 'workers_dev');
   exactly(root.preview_urls, false, 'preview_urls');
 
+  const vars = record(root.vars, 'vars');
+  onlyKeys(vars, ['EXPECTED_MAIN_QUEUE_NAME', 'EXPECTED_DLQ_QUEUE_NAME'], 'vars');
+  if (Object.keys(vars).length !== 2) fail('vars must contain both approved Queue identity keys');
+  exactly(vars.EXPECTED_MAIN_QUEUE_NAME, EXPECTED.mainQueue, 'expected main Queue identity');
+  exactly(vars.EXPECTED_DLQ_QUEUE_NAME, EXPECTED.dlq, 'expected DLQ identity');
+  if (vars.EXPECTED_MAIN_QUEUE_NAME === vars.EXPECTED_DLQ_QUEUE_NAME) {
+    fail('main Queue and DLQ identities must differ');
+  }
+
   const triggers = record(root.triggers, 'triggers');
+  onlyKeys(triggers, ['crons'], 'triggers');
   const crons = array(triggers.crons, 'triggers.crons');
   if (crons.length !== 1 || crons[0] !== '0 * * * *') fail('hourly cron must be exactly 0 * * * *');
 
   const databases = array(root.d1_databases, 'd1_databases');
   if (databases.length !== 1) fail('exactly one D1 binding is required');
   const database = record(databases[0], 'D1 binding');
+  onlyKeys(database, ['binding', 'database_name', 'database_id', 'migrations_dir'], 'D1 binding');
   exactly(database.binding, 'DB', 'D1 binding name');
   exactly(database.database_name, EXPECTED.d1, 'D1 database name');
   exactly(database.migrations_dir, 'migrations', 'D1 migrations directory');
@@ -131,21 +147,33 @@ export function validateStagingConfig(config, options = {}) {
     exactly(database.database_id, expectedD1Id, 'D1 database identity');
   }
 
-  const r2 = keyedRows(array(root.r2_buckets, 'r2_buckets'), 'binding', 'r2_buckets');
+  const r2Rows = array(root.r2_buckets, 'r2_buckets');
+  r2Rows.forEach(value => onlyKeys(record(value, 'R2 binding'), ['binding', 'bucket_name'], 'R2 binding'));
+  const r2 = keyedRows(r2Rows, 'binding', 'r2_buckets');
   if (r2.size !== 2) fail('exactly two R2 bindings are required');
   exactly(r2.get('ATTACHMENTS_BUCKET')?.bucket_name, EXPECTED.attachments, 'attachment bucket');
   exactly(r2.get('DLQ_QUARANTINE')?.bucket_name, EXPECTED.quarantine, 'quarantine bucket');
 
   const queues = record(root.queues, 'queues');
-  const producers = keyedRows(array(queues.producers, 'queues.producers'), 'binding', 'queue producers');
+  onlyKeys(queues, ['producers', 'consumers'], 'queues');
+  const producerRows = array(queues.producers, 'queues.producers');
+  producerRows.forEach(value => onlyKeys(record(value, 'Queue producer'), ['binding', 'queue'], 'Queue producer'));
+  const producers = keyedRows(producerRows, 'binding', 'queue producers');
   if (producers.size !== 1) fail('exactly one Queue producer is required');
   exactly(producers.get('QUEUE')?.queue, EXPECTED.mainQueue, 'main Queue producer');
 
-  const consumers = keyedRows(array(queues.consumers, 'queues.consumers'), 'queue', 'queue consumers');
+  const consumerRows = array(queues.consumers, 'queues.consumers');
+  const consumers = keyedRows(consumerRows, 'queue', 'queue consumers');
   if (consumers.size !== 2) fail('main Queue and DLQ consumers are both required');
   const main = consumers.get(EXPECTED.mainQueue);
   const dlq = consumers.get(EXPECTED.dlq);
   if (!main || !dlq) fail('approved main Queue and DLQ consumers are required');
+  onlyKeys(
+    main,
+    ['queue', 'max_batch_size', 'max_batch_timeout', 'max_retries', 'dead_letter_queue'],
+    'main Queue consumer'
+  );
+  onlyKeys(dlq, ['queue', 'max_batch_size', 'max_batch_timeout'], 'DLQ consumer');
   exactly(main.max_batch_size, 10, 'main Queue max_batch_size');
   exactly(main.max_batch_timeout, 1, 'main Queue max_batch_timeout');
   exactly(main.max_retries, 3, 'main Queue max_retries');
