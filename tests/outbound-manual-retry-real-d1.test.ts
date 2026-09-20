@@ -310,4 +310,38 @@ describe('real D1 manual retry and domain CAS', () => {
       operator_thread_ref: '88', operator_thread_status: 'OPEN', audit_count: 1
     });
   }, 60_000);
+
+  it('real D1 service does not apply an older managed topic lifecycle operation', async () => {
+    runSql(`
+      INSERT INTO conversations
+      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
+       operator_channel, operator_thread_ref, operator_thread_status, created_at, updated_at, version)
+      VALUES ('conv-lifecycle-order', 'chatwoot', '1', '8', '9', 'telegram', '99', 'OPEN', 1, 1, 1);
+
+      INSERT INTO outbound_operations
+      (id, conversation_id, destination_provider, operation_type, status, attempt_count,
+       request_started_at, reconciliation_status, subject_type, subject_ref, target_evidence_json,
+       created_at, updated_at)
+      VALUES
+      ('topic_lifecycle_v2_conv-lifecycle-order_00000001_closed', 'conv-lifecycle-order',
+       'telegram', 'CLOSE_TOPIC', 'SENT', 1, 1, 'NOT_REQUIRED', 'CONVERSATION',
+       'conv-lifecycle-order',
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"99","method":"closeForumTopic"}', 1, 1),
+      ('topic_lifecycle_v2_conv-lifecycle-order_00000002_open', 'conv-lifecycle-order',
+       'telegram', 'REOPEN_TOPIC', 'SENT', 1, 1, 'NOT_REQUIRED', 'CONVERSATION',
+       'conv-lifecycle-order',
+       '{"version":1,"provider":"telegram","supportProfileSource":"ENV","botGroupIdSource":"ENV","groupRef":"-1001","threadRef":"99","method":"reopenForumTopic"}', 2, 2);
+    `);
+    const env = { DB: realD1, BOT_GROUP_ID: '-1001' } as any;
+
+    await expect(resolveOutboundDomainState(
+      env,
+      'topic_lifecycle_v2_conv-lifecycle-order_00000001_closed'
+    )).resolves.toEqual({ changed: false, domain: 'CONVERSATION' });
+
+    const row = runSql(`
+      SELECT operator_thread_status, version FROM conversations WHERE id = 'conv-lifecycle-order';
+    `)[0].results[0];
+    expect(row).toEqual({ operator_thread_status: 'OPEN', version: 1 });
+  }, 60_000);
 });

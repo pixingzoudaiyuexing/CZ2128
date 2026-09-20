@@ -448,6 +448,17 @@ Lifecycle:
 - on Chatwoot reopen/open, reopen the Telegram topic
 - do not delete topics automatically in V1
 
+Chatwoot lifecycle webhooks are reconciliation triggers, not ordering evidence. Delivery IDs,
+Worker receive time, Queue order and the local conversation version do not establish provider
+chronology. Before a close/reopen side effect, the consumer reads the current conversation status
+from Chatwoot. Close and reopen share one per-conversation ordered operation sequence, so opposite
+intents cannot independently cross the Telegram boundary for the same lifecycle position. A
+successful Telegram operation is repaired into D1 through the outbound domain resolver, then the
+consumer reads Chatwoot again and performs a bounded compensating transition if the provider state
+changed during the request. Query failure, malformed/unsupported status, active/ambiguous delivery
+or exhausted/final operation history fails closed. Managed lifecycle operations are not eligible
+for generic manual retry; older operations and any existing descendants cannot overwrite newer state.
+
 If real production volume proves topic clutter unacceptable, revisit one-customer-one-topic only with an explicit design for concurrent active conversations and reply targeting.
 
 ## 12. Security Baseline

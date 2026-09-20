@@ -29,6 +29,9 @@ import { resolveOutboundDomainState } from './outbound-domain-resolution';
 import { executeOutboundOperation, OutboundAttemptLifecycle } from './outbound-operations';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 import { ensureAiRunProviderResponseRef } from './ai-state';
+import {
+  findManagedTopicLifecycleRoot
+} from './topic-lifecycle-operations';
 
 export const MANUAL_RETRY_REASONS = ['OPERATOR_ACCEPTS_DUPLICATE_RISK'] as const;
 export type ManualRetryReason = typeof MANUAL_RETRY_REASONS[number];
@@ -416,6 +419,10 @@ async function prepareRetry(
   },
   childId: string
 ): Promise<RetryPlan> {
+  const lifecycleRoot = await findManagedTopicLifecycleRoot(env, parent);
+  if (lifecycleRoot) {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
+  }
   const conversation = await loadConversation(env, parent);
   const plan = parent.subject_type === 'MESSAGE'
     ? await prepareMessageRetry(env, parent, conversation, childId)

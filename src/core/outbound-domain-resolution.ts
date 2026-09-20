@@ -5,6 +5,7 @@ import { RetryableProcessingError, SafeError } from './errors';
 import { parseTargetEvidence } from './outbound-evidence';
 import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 import { ensureAiRunProviderResponseRef } from './ai-state';
+import { findManagedTopicLifecycleRoot, isLatestTopicLifecycleRoot } from './topic-lifecycle-operations';
 
 export interface DomainResolutionResult {
   changed: boolean;
@@ -199,6 +200,10 @@ async function resolveTopicStatus(
   conversation: Conversation,
   nextStatus: 'OPEN' | 'CLOSED'
 ): Promise<DomainResolutionResult> {
+  const lifecycleRoot = await findManagedTopicLifecycleRoot(env, operation);
+  if (lifecycleRoot && !(await isLatestTopicLifecycleRoot(env, lifecycleRoot))) {
+    return { changed: false, domain: 'CONVERSATION' };
+  }
   let evidence;
   try {
     evidence = operation.target_evidence_json ? parseTargetEvidence(operation.target_evidence_json) : null;
