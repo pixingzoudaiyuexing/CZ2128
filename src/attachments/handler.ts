@@ -18,7 +18,13 @@ import {
   loadAttachmentBuffer,
   telegramAttachmentMethod
 } from './delivery';
-import { AttachmentProcessingError, downloadChatwootAttachment, downloadTelegramAttachment, storeAttachmentStream } from './source';
+import {
+  AttachmentProcessingError,
+  AttachmentSourceTelemetryContext,
+  downloadChatwootAttachment,
+  downloadTelegramAttachment,
+  storeAttachmentStream
+} from './source';
 import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 
 export async function processAttachmentTransfer(event: AttachmentTransferEvent, env: Env): Promise<void> {
@@ -61,12 +67,34 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       if (event.payload.locator.provider !== row.source_provider) {
         throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
       }
-      const source = event.payload.locator.provider === 'telegram'
-        ? await downloadTelegramAttachment(env, event.payload.locator.fileId, row.size_bytes, config)
-        : await downloadChatwootAttachment(env, event.payload.locator.dataUrl, config);
+      let sourceTelemetry: AttachmentSourceTelemetryContext | undefined = event.payload.locator.provider === 'telegram'
+        ? { attachmentId: row.id, attempt: row.attempt_count }
+        : undefined;
+      let source: { body: ReadableStream<Uint8Array>; finish: () => void };
+      if (event.payload.locator.provider === 'telegram') {
+        const telegramSource = await downloadTelegramAttachment(
+          env,
+          event.payload.locator.fileId,
+          row.size_bytes,
+          config,
+          sourceTelemetry
+        );
+        source = telegramSource;
+        if (sourceTelemetry) {
+          sourceTelemetry = { ...sourceTelemetry, didTimeout: telegramSource.didTimeout };
+        }
+      } else {
+        source = await downloadChatwootAttachment(env, event.payload.locator.dataUrl, config);
+      }
       let size: number;
       try {
-        size = await storeAttachmentStream(env.ATTACHMENTS_BUCKET, row, source.body, config.maxBytes);
+        size = await storeAttachmentStream(
+          env.ATTACHMENTS_BUCKET,
+          row,
+          source.body,
+          config.maxBytes,
+          sourceTelemetry
+        );
       } finally {
         source.finish();
       }

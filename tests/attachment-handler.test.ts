@@ -279,6 +279,11 @@ describe('attachment transfer ledger', () => {
 
   it('streams a Telegram source through multipart R2 storage before Chatwoot delivery', async () => {
     const fixture = await setup('telegram', 'PENDING');
+    const telemetryLogs: any[] = [];
+    vi.spyOn(console, 'log').mockImplementation(value => {
+      const entry = JSON.parse(String(value));
+      if (entry.msg === 'Attachment source telemetry') telemetryLogs.push(entry);
+    });
     const storedParts: Uint8Array[] = [];
     const bytes = new Uint8Array([1, 2, 3]);
     fixture.env.ATTACHMENTS_BUCKET = {
@@ -305,6 +310,11 @@ describe('attachment transfer ledger', () => {
     expect(fixture.db.attachments[0].expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
     expect(JSON.stringify(fixture.db.attachments[0])).not.toContain('docs/private.bin');
     expect(JSON.stringify(fixture.db.attachments[0])).not.toContain('bot');
+    expect(telemetryLogs.map(entry => [entry.source_stage, entry.source_result, entry.attempt])).toEqual([
+      ['TELEGRAM_GET_FILE', 'SUCCESS', 1],
+      ['TELEGRAM_FILE_GET', 'SUCCESS', 1],
+      ['SOURCE_STREAM', 'SUCCESS', 1]
+    ]);
   });
 
   it('marks R2 multipart failure retryable without persisting private details', async () => {

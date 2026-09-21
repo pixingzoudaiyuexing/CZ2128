@@ -5,9 +5,57 @@ import { ErrorProvider, SafeErrorCode, getSafeErrorDefinition } from '../core/er
 import { SafeError, SafeErrorOptions } from '../core/errors';
 import { resolveRetryAfterSeconds, retryAfterHeader } from '../core/retry';
 import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adapters/telegram/error-metadata';
+import { logger } from '../observability/logger';
 
 const R2_PART_BYTES = 5 * 1024 * 1024;
 const MAX_CHATWOOT_REDIRECTS = 3;
+const MAX_SOURCE_TELEMETRY_DURATION_MS = 3_600_000;
+
+export type AttachmentSourceStage = 'TELEGRAM_GET_FILE' | 'TELEGRAM_FILE_GET' | 'SOURCE_STREAM';
+export type AttachmentSourceResult =
+  | 'HTTP_4XX'
+  | 'HTTP_429'
+  | 'HTTP_408'
+  | 'HTTP_5XX'
+  | 'TRANSPORT'
+  | 'TIMEOUT'
+  | 'INVALID_RESPONSE'
+  | 'STREAM_ERROR'
+  | 'SUCCESS';
+
+export interface AttachmentSourceTelemetryContext {
+  attachmentId: string;
+  attempt: number;
+  didTimeout?: () => boolean;
+}
+
+function sourceResultForHttpStatus(status: number): AttachmentSourceResult {
+  if (status === 408) return 'HTTP_408';
+  if (status === 429) return 'HTTP_429';
+  if (status >= 500) return 'HTTP_5XX';
+  return 'HTTP_4XX';
+}
+
+function recordSourceTelemetry(
+  context: AttachmentSourceTelemetryContext | undefined,
+  stage: AttachmentSourceStage,
+  result: AttachmentSourceResult,
+  startedAt: number,
+  details: { errorCode?: SafeErrorCode; httpStatus?: number } = {}
+): void {
+  if (!context) return;
+  const duration = Math.min(Math.max(Date.now() - startedAt, 0), MAX_SOURCE_TELEMETRY_DURATION_MS);
+  logger.info('Attachment source telemetry', {
+    attachment_id: context.attachmentId,
+    attempt: Number.isSafeInteger(context.attempt) && context.attempt > 0 ? context.attempt : 1,
+    source: 'TELEGRAM',
+    source_stage: stage,
+    source_result: result,
+    duration_ms: duration,
+    ...(details.errorCode ? { error_code: details.errorCode } : {}),
+    ...(Number.isSafeInteger(details.httpStatus) ? { http_status: details.httpStatus } : {})
+  });
+}
 
 export class AttachmentProcessingError extends SafeError {
   public readonly retryable: boolean;
@@ -140,15 +188,33 @@ function validateChatwootUrl(url: URL, config: AttachmentConfig, initial: boolea
 async function fetchWithDeadline(
   url: string,
   init: RequestInit,
-  deadline: number
-): Promise<{ response: Response; finish: () => void }> {
+  deadline: number,
+  telemetry?: {
+    context: AttachmentSourceTelemetryContext;
+    stage: AttachmentSourceStage;
+    startedAt: number;
+  }
+): Promise<{ response: Response; finish: () => void; didTimeout: () => boolean }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(deadline - Date.now(), 1));
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
-    return { response, finish: () => clearTimeout(timeout) };
+    return {
+      response,
+      finish: () => clearTimeout(timeout),
+      didTimeout: () => controller.signal.aborted
+    };
   } catch {
     clearTimeout(timeout);
+    if (telemetry) {
+      recordSourceTelemetry(
+        telemetry.context,
+        telemetry.stage,
+        controller.signal.aborted ? 'TIMEOUT' : 'TRANSPORT',
+        telemetry.startedAt,
+        { errorCode: 'ATTACHMENT_SOURCE_TRANSIENT' }
+      );
+    }
     throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT');
   }
 }
@@ -228,8 +294,14 @@ export async function downloadTelegramAttachment(
   env: Env,
   fileId: string,
   declaredSize: number | null,
-  config: AttachmentConfig
-): Promise<{ body: ReadableStream<Uint8Array>; contentLength?: number; finish: () => void }> {
+  config: AttachmentConfig,
+  telemetry?: AttachmentSourceTelemetryContext
+): Promise<{
+  body: ReadableStream<Uint8Array>;
+  contentLength?: number;
+  finish: () => void;
+  didTimeout: () => boolean;
+}> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.TELEGRAM_SUPPORT_PROFILE
@@ -240,6 +312,7 @@ export async function downloadTelegramAttachment(
     throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TOO_LARGE', { provider: 'TELEGRAM' });
   }
   const deadline = Date.now() + config.sourceTimeoutMs;
+  const metadataStartedAt = Date.now();
   const metadataRequest = await fetchWithDeadline(
     `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile`,
     {
@@ -247,7 +320,8 @@ export async function downloadTelegramAttachment(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_id: fileId })
     },
-    deadline
+    deadline,
+    telemetry ? { context: telemetry, stage: 'TELEGRAM_GET_FILE', startedAt: metadataStartedAt } : undefined
   );
   const metadata = metadataRequest.response;
   if (!metadata.ok) {
@@ -255,55 +329,108 @@ export async function downloadTelegramAttachment(
       ? await readTelegramRetryAfterMetadata(metadata)
       : undefined;
     metadataRequest.finish();
-    throw classifyAttachmentSourceHttpFailure(metadata.status, {
+    const failure = classifyAttachmentSourceHttpFailure(metadata.status, {
       provider: 'TELEGRAM',
       telegramRetryAfter,
       httpRetryAfter: retryAfterHeader(metadata)
     });
+    recordSourceTelemetry(
+      telemetry,
+      'TELEGRAM_GET_FILE',
+      sourceResultForHttpStatus(metadata.status),
+      metadataStartedAt,
+      { errorCode: failure.code, httpStatus: metadata.status }
+    );
+    throw failure;
   }
   let payload: any;
   try {
     payload = await metadata.json();
   } catch (error) {
     if (error instanceof AttachmentProcessingError) throw error;
+    recordSourceTelemetry(
+      telemetry,
+      'TELEGRAM_GET_FILE',
+      metadataRequest.didTimeout() ? 'TIMEOUT' : 'INVALID_RESPONSE',
+      metadataStartedAt,
+      {
+        errorCode: 'ATTACHMENT_SOURCE_TRANSIENT',
+        httpStatus: metadata.status
+      }
+    );
     throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'TELEGRAM' });
   } finally {
     metadataRequest.finish();
   }
   if (payload?.ok !== true || typeof payload?.result?.file_path !== 'string') {
     const status = typeof payload?.error_code === 'number' ? payload.error_code : 400;
-    throw classifyAttachmentSourceHttpFailure(status, {
+    const failure = classifyAttachmentSourceHttpFailure(status, {
       provider: 'TELEGRAM',
       telegramRetryAfter: telegramRetryAfterValue(payload),
       httpRetryAfter: retryAfterHeader(metadata)
     });
+    recordSourceTelemetry(
+      telemetry,
+      'TELEGRAM_GET_FILE',
+      typeof payload?.error_code === 'number' ? sourceResultForHttpStatus(status) : 'INVALID_RESPONSE',
+      metadataStartedAt,
+      { errorCode: failure.code, httpStatus: metadata.status }
+    );
+    throw failure;
   }
+  recordSourceTelemetry(telemetry, 'TELEGRAM_GET_FILE', 'SUCCESS', metadataStartedAt, {
+    httpStatus: metadata.status
+  });
   const safePath = payload.result.file_path.split('/').map((part: string) => encodeURIComponent(part)).join('/');
+  const downloadStartedAt = Date.now();
   const downloaded = await fetchWithDeadline(
     `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${safePath}`,
     { method: 'GET', redirect: 'error' },
-    deadline
+    deadline,
+    telemetry ? { context: telemetry, stage: 'TELEGRAM_FILE_GET', startedAt: downloadStartedAt } : undefined
   );
   const response = downloaded.response;
   if (!response.ok) {
     downloaded.finish();
-    throw classifyAttachmentSourceHttpFailure(response.status, {
+    const failure = classifyAttachmentSourceHttpFailure(response.status, {
       provider: 'TELEGRAM',
       httpRetryAfter: retryAfterHeader(response)
     });
+    recordSourceTelemetry(
+      telemetry,
+      'TELEGRAM_FILE_GET',
+      sourceResultForHttpStatus(response.status),
+      downloadStartedAt,
+      { errorCode: failure.code, httpStatus: response.status }
+    );
+    throw failure;
   }
   if (!response.body) {
     downloaded.finish();
+    recordSourceTelemetry(telemetry, 'TELEGRAM_FILE_GET', 'INVALID_RESPONSE', downloadStartedAt, {
+      errorCode: 'ATTACHMENT_SOURCE_TRANSIENT',
+      httpStatus: response.status
+    });
     throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'TELEGRAM' });
   }
   try {
-    return {
+    const result = {
       body: response.body,
       contentLength: parseContentLength(response, config.maxBytes),
-      finish: downloaded.finish
+      finish: downloaded.finish,
+      didTimeout: downloaded.didTimeout
     };
+    recordSourceTelemetry(telemetry, 'TELEGRAM_FILE_GET', 'SUCCESS', downloadStartedAt, {
+      httpStatus: response.status
+    });
+    return result;
   } catch (error) {
     downloaded.finish();
+    const code = error instanceof AttachmentProcessingError ? error.code : 'ATTACHMENT_SOURCE_TRANSIENT';
+    recordSourceTelemetry(telemetry, 'TELEGRAM_FILE_GET', 'INVALID_RESPONSE', downloadStartedAt, {
+      errorCode: code,
+      httpStatus: response.status
+    });
     throw error;
   }
 }
@@ -312,8 +439,10 @@ export async function storeAttachmentStream(
   bucket: R2Bucket,
   row: AttachmentRow,
   body: ReadableStream<Uint8Array>,
-  maxBytes: number
+  maxBytes: number,
+  telemetry?: AttachmentSourceTelemetryContext
 ): Promise<number> {
+  const streamStartedAt = Date.now();
   let upload: R2MultipartUpload | undefined;
   const reader = body.getReader();
   let buffer = new Uint8Array(R2_PART_BYTES);
@@ -332,6 +461,15 @@ export async function storeAttachmentStream(
       try {
         chunk = await reader.read();
       } catch {
+        recordSourceTelemetry(
+          telemetry,
+          'SOURCE_STREAM',
+          telemetry?.didTimeout?.() ? 'TIMEOUT' : 'STREAM_ERROR',
+          streamStartedAt,
+          {
+            errorCode: 'ATTACHMENT_SOURCE_TRANSIENT'
+          }
+        );
         throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT');
       }
       const { done, value } = chunk;
@@ -357,6 +495,7 @@ export async function storeAttachmentStream(
     if (total === 0) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     if (used > 0) parts.push(await upload.uploadPart(partNumber, buffer.slice(0, used)));
     await upload.complete(parts);
+    recordSourceTelemetry(telemetry, 'SOURCE_STREAM', 'SUCCESS', streamStartedAt);
     return total;
   } catch (error) {
     if (upload) {
