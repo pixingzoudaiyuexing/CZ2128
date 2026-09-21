@@ -18,7 +18,7 @@ export interface Env {
     beforeAbandonedOutboundConvergence?: (
       env: Env,
       eventId: string,
-      reason: 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF'
+      reason: 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF' | 'AI_SCOPE_DENIED'
     ) => Promise<void>;
     beforeVisibleSend?: (
       env: Env,
@@ -57,6 +57,8 @@ export interface Env {
   AI_CONTEXT_MAX_CHARS?: string;
   AI_GENERATION_LEASE_SECONDS?: string;
   AI_OPERATOR_PAUSE_TIMEOUT_SECONDS?: string;
+  AI_TEST_SCOPE_ENABLED?: string;
+  AI_TEST_ALLOWED_CONVERSATION_IDS?: string;
   RUNTIME_CONFIG_MASTER_KEY?: string;
   ADMIN_TELEGRAM_BOT_TOKEN?: string;
   ADMIN_TELEGRAM_WEBHOOK_SECRET?: string;

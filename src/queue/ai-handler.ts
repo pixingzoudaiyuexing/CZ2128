@@ -2,11 +2,13 @@ import { generateChatCompletion } from '../adapters/ai/openai-compatible';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
+import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { Env } from '../config/env';
 import { buildAIContext } from '../core/ai-context';
 import {
   acquireGenerationLease,
   aiRunRetryDelay,
+  cancelDurableAiRunForScope,
   cancelDurableAiRunForHandoff,
   cancelOwnedAiRunAfterHandoff,
   checkAutoResume,
@@ -29,6 +31,7 @@ import {
 } from '../core/ai-state';
 import { AiRun, Conversation } from '../core/domain';
 import {
+  AiScopeDeniedBeforeDeliveryError,
   CancelledBeforeDeliveryError,
   RetryableProcessingError,
   SafeError,
@@ -80,6 +83,36 @@ async function convergeStaleAiRecovery(env: Env, event: AiTriggerEvent): Promise
   if (chatwoot?.status === 'SENT') {
     await resolveOutboundDomainState(env, chatwootOperationId);
   }
+}
+
+async function cancelAiWorkOutsideScope(env: Env, event: AiTriggerEvent): Promise<void> {
+  const cancelled = await cancelDurableAiRunForScope(
+    env,
+    event.eventId,
+    event.payload.convId,
+    event.payload.messageId
+  );
+  if (!cancelled) {
+    const current = await getDurableAiRun(env, event.eventId);
+    if (current?.status === 'PENDING' || current?.status === 'FAILED_RETRYABLE') {
+      throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', 2);
+    }
+  }
+  await convergeAbandonedAiWork(env, event, 'AI_SCOPE_DENIED', false);
+  logger.info('AI work cancelled by test scope', {
+    conversation_id: event.payload.convId,
+    operation_id: event.eventId
+  });
+}
+
+async function canCompleteSentChatwootConvergence(env: Env, event: AiTriggerEvent): Promise<boolean> {
+  const [run, chatwoot] = await Promise.all([
+    getDurableAiRun(env, event.eventId),
+    getOutboundOperation(env, `ai_reply:${event.eventId}`)
+  ]);
+  return run?.status === 'SUCCESS' && run.response_text !== null &&
+    chatwoot?.status === 'SENT' && typeof chatwoot.provider_message_ref === 'string' &&
+    chatwoot.provider_message_ref.length > 0 && chatwoot.provider_message_ref.length <= 256;
 }
 
 type GenerationRetirement = 'HANDOFF' | 'STALE' | 'OWNER_REPLACED' | 'MISSING';
@@ -181,6 +214,13 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     (existingRun.conversation_id !== convId || existingRun.trigger_message_ref !== messageId)
   ) {
     throw new Error('AI run identity collision');
+  }
+  if (
+    !isAiConversationAllowed(env, convId) &&
+    !await canCompleteSentChatwootConvergence(env, event)
+  ) {
+    await cancelAiWorkOutsideScope(env, event);
+    return;
   }
 
   if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
@@ -356,6 +396,10 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       }
 
       const messages = await buildAIContext(env, convId, config);
+      if (!isAiConversationAllowed(env, convId)) {
+        await cancelAiWorkOutsideScope(env, event);
+        return;
+      }
       const attemptCount = await startAiGenerationAttempt(
         env,
         stableAiJobId,
@@ -376,6 +420,10 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
       const startTime = Date.now();
       const result = await generateChatCompletion(config, messages);
+      if (!isAiConversationAllowed(env, convId)) {
+        await cancelAiWorkOutsideScope(env, event);
+        return;
+      }
       if (!result.success) {
         const providerError = new SafeError(result.error, {
           provider: 'AI_PROVIDER',
@@ -470,6 +518,14 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
   if (aiContent === undefined || !responseId) return;
 
+  if (
+    !isAiConversationAllowed(env, convId) &&
+    !await canCompleteSentChatwootConvergence(env, event)
+  ) {
+    await cancelAiWorkOutsideScope(env, event);
+    return;
+  }
+
   if (reusedDurableSuccess && !await verifyHandoffEpoch(env, convId, handoffEpoch)) {
     logger.info('Historical durable AI success fenced before outbound recovery', {
       conversation_id: convId,
@@ -488,6 +544,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     async (opId, lifecycle) => {
       if (env.hooks?.beforeAiDispatchPreflight) {
         await env.hooks.beforeAiDispatchPreflight(env, convId);
+      }
+      if (!isAiConversationAllowed(env, convId)) {
+        throw new AiScopeDeniedBeforeDeliveryError();
       }
       const isEpochValid = await verifyHandoffEpoch(env, convId, handoffEpoch);
       if (!isEpochValid) {
@@ -588,6 +647,12 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     async (_opId, lifecycle) => {
       if (env.hooks?.beforeAiTelegramDispatchPreflight) {
         await env.hooks.beforeAiTelegramDispatchPreflight(env, convId);
+      }
+      if (!isAiConversationAllowed(env, convId)) {
+        logger.info('Completing Telegram AI mirror after confirmed Chatwoot delivery despite scope change', {
+          conversation_id: convId,
+          operation_id: stableAiJobId
+        });
       }
       if (isDlqRecovery && !await isLatestCustomerTextMessage(env, convId, messageId)) {
         throw new StaleAiTriggerBeforeDeliveryError();

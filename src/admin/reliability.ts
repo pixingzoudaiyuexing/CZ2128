@@ -52,6 +52,7 @@ const REDRIVE_REASON_LABELS: Record<DlqAiRedriveReason, string> = {
   AI_RETRY_NOT_DUE: 'retry deadline not reached',
   AI_ATTEMPTS_EXHAUSTED: 'attempts exhausted',
   AI_PAUSED: 'AI paused',
+  AI_SCOPE_DENIED: 'AI test scope denied',
   HANDOFF_EPOCH_CHANGED: 'handoff epoch changed',
   ACTIVE_GENERATION: 'active generation',
   EVENT_RECEIPT_MISSING: 'event receipt missing',

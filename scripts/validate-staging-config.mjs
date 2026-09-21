@@ -118,12 +118,44 @@ export function validateStagingConfig(config, options = {}) {
   exactly(root.preview_urls, false, 'preview_urls');
 
   const vars = record(root.vars, 'vars');
-  onlyKeys(vars, ['EXPECTED_MAIN_QUEUE_NAME', 'EXPECTED_DLQ_QUEUE_NAME'], 'vars');
-  if (Object.keys(vars).length !== 2) fail('vars must contain both approved Queue identity keys');
+  onlyKeys(vars, [
+    'EXPECTED_MAIN_QUEUE_NAME',
+    'EXPECTED_DLQ_QUEUE_NAME',
+    'AI_TEST_SCOPE_ENABLED',
+    'AI_TEST_ALLOWED_CONVERSATION_IDS'
+  ], 'vars');
+  if (!Object.hasOwn(vars, 'EXPECTED_MAIN_QUEUE_NAME') || !Object.hasOwn(vars, 'EXPECTED_DLQ_QUEUE_NAME')) {
+    fail('vars must contain both approved Queue identity keys');
+  }
   exactly(vars.EXPECTED_MAIN_QUEUE_NAME, EXPECTED.mainQueue, 'expected main Queue identity');
   exactly(vars.EXPECTED_DLQ_QUEUE_NAME, EXPECTED.dlq, 'expected DLQ identity');
   if (vars.EXPECTED_MAIN_QUEUE_NAME === vars.EXPECTED_DLQ_QUEUE_NAME) {
     fail('main Queue and DLQ identities must differ');
+  }
+  const hasScopeFlag = Object.hasOwn(vars, 'AI_TEST_SCOPE_ENABLED');
+  const hasScopeAllowlist = Object.hasOwn(vars, 'AI_TEST_ALLOWED_CONVERSATION_IDS');
+  if (hasScopeFlag !== hasScopeAllowlist) fail('AI test scope variables must be configured together');
+  if (hasScopeFlag) {
+    if (vars.AI_TEST_SCOPE_ENABLED !== 'true' && vars.AI_TEST_SCOPE_ENABLED !== 'false') {
+      fail('AI_TEST_SCOPE_ENABLED must be exactly true or false');
+    }
+    let allowlist;
+    try {
+      allowlist = JSON.parse(vars.AI_TEST_ALLOWED_CONVERSATION_IDS);
+    } catch {
+      fail('AI_TEST_ALLOWED_CONVERSATION_IDS must be valid JSON');
+    }
+    if (!Array.isArray(allowlist) || allowlist.length > 100) {
+      fail('AI test allowlist must be a JSON array with at most 100 entries');
+    }
+    if (new Set(allowlist).size !== allowlist.length || allowlist.some(value => {
+      return typeof value !== 'string' || !UUID_PATTERN.test(value) || value !== value.toLowerCase();
+    })) {
+      fail('AI test allowlist must contain unique canonical internal conversation UUIDs');
+    }
+    if (vars.AI_TEST_SCOPE_ENABLED === 'true' && allowlist.length === 0) {
+      fail('enabled AI test scope requires a non-empty allowlist');
+    }
   }
 
   const triggers = record(root.triggers, 'triggers');

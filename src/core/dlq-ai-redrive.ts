@@ -1,4 +1,5 @@
 import { getAIConfig } from '../config/ai';
+import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { Env } from '../config/env';
 import { AiRun, Conversation, EventReceipt, OutboundOperation } from './domain';
 import { AiTriggerEvent } from './events';
@@ -36,6 +37,7 @@ export type DlqAiRedriveReason =
   | 'AI_RETRY_NOT_DUE'
   | 'AI_ATTEMPTS_EXHAUSTED'
   | 'AI_PAUSED'
+  | 'AI_SCOPE_DENIED'
   | 'HANDOFF_EPOCH_CHANGED'
   | 'ACTIVE_GENERATION'
   | 'EVENT_RECEIPT_MISSING'
@@ -80,7 +82,10 @@ interface DurableMessageRow {
   provider_message_ref: string;
 }
 
-export type AiOutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF';
+export type AiOutboundAbandonmentReason =
+  | 'DISCARDED_STALE'
+  | 'CANCELLED_BY_HANDOFF'
+  | 'AI_SCOPE_DENIED';
 
 interface AbandonedOutboundPlan {
   operation: OutboundOperation;
@@ -165,9 +170,9 @@ function sentDeliveryEvidenceIsValid(operation: OutboundOperation): boolean {
 }
 
 function abandonmentAuditAction(reason: AiOutboundAbandonmentReason): string {
-  return reason === 'DISCARDED_STALE'
-    ? 'HISTORICAL_AI_STALE_DISCARDED'
-    : 'AI_HANDOFF_CANCELLED';
+  if (reason === 'DISCARDED_STALE') return 'HISTORICAL_AI_STALE_DISCARDED';
+  if (reason === 'CANCELLED_BY_HANDOFF') return 'AI_HANDOFF_CANCELLED';
+  return 'AI_SCOPE_CANCELLED';
 }
 
 async function abandonmentAuditId(
@@ -510,6 +515,7 @@ export async function getDlqAiRedriveEligibility(
   const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
     .bind(conversationId).first<Conversation>();
   if (!conversation) return ineligible('CONVERSATION_MISSING');
+  if (!isAiConversationAllowed(env, conversationId)) return ineligible('AI_SCOPE_DENIED');
   if (conversation.ai_mode !== 'ENABLED') return ineligible('AI_PAUSED');
 
   const generationReason = activeGenerationReason(

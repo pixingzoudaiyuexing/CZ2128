@@ -1,6 +1,7 @@
 import { DatabaseEnv } from './database';
 import { logger } from '../observability/logger';
 import {
+  AiScopeDeniedBeforeDeliveryError,
   CancelledBeforeDeliveryError,
   ProviderDeliveryError,
   RetryableProcessingError,
@@ -42,12 +43,19 @@ export class OutboundOperationIdentityCollisionError extends Error {
   }
 }
 
-type OutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF';
+type OutboundAbandonmentReason = 'DISCARDED_STALE' | 'CANCELLED_BY_HANDOFF' | 'AI_SCOPE_DENIED';
 
 function abandonmentAction(reason: OutboundAbandonmentReason): string {
-  return reason === 'DISCARDED_STALE'
-    ? 'HISTORICAL_AI_STALE_DISCARDED'
-    : 'AI_HANDOFF_CANCELLED';
+  if (reason === 'DISCARDED_STALE') return 'HISTORICAL_AI_STALE_DISCARDED';
+  if (reason === 'CANCELLED_BY_HANDOFF') return 'AI_HANDOFF_CANCELLED';
+  return 'AI_SCOPE_CANCELLED';
+}
+
+function abandonmentReason(error: unknown): OutboundAbandonmentReason | null {
+  if (error instanceof StaleAiTriggerBeforeDeliveryError) return 'DISCARDED_STALE';
+  if (error instanceof CancelledBeforeDeliveryError) return 'CANCELLED_BY_HANDOFF';
+  if (error instanceof AiScopeDeniedBeforeDeliveryError) return 'AI_SCOPE_DENIED';
+  return null;
 }
 
 async function abandonmentFailureAuditId(
@@ -433,8 +441,8 @@ let result: { providerMessageRef?: string };
       throw error;
     }
 
-    const outcome = error instanceof CancelledBeforeDeliveryError ||
-      error instanceof StaleAiTriggerBeforeDeliveryError
+    const abandonment = abandonmentReason(error);
+    const outcome = abandonment
       ? 'FINAL'
       : error instanceof ProviderDeliveryError
         ? error.outcome
@@ -453,8 +461,7 @@ let result: { providerMessageRef?: string };
 
     if (!hasStarted) {
       if (
-        error instanceof CancelledBeforeDeliveryError ||
-        error instanceof StaleAiTriggerBeforeDeliveryError ||
+        abandonment ||
         (error instanceof ProviderDeliveryError && outcome === 'FINAL')
       ) {
         nextStatus = 'FAILED_FINAL';
@@ -505,25 +512,19 @@ let result: { providerMessageRef?: string };
     );
 
     let failureResult: D1Result;
-    const abandonmentReason: OutboundAbandonmentReason | null =
-      error instanceof StaleAiTriggerBeforeDeliveryError
-        ? 'DISCARDED_STALE'
-        : error instanceof CancelledBeforeDeliveryError
-          ? 'CANCELLED_BY_HANDOFF'
-          : null;
-    if (abandonmentReason) {
+    if (abandonment) {
       const results = await env.DB.batch([
         failureStatement,
         auditAfterPreviousChange(env, {
-          id: await abandonmentFailureAuditId(id, 'SENDING', abandonmentReason),
+          id: await abandonmentFailureAuditId(id, 'SENDING', abandonment),
           entityType: 'OUTBOUND_OPERATION',
           entityId: id,
-          action: abandonmentAction(abandonmentReason),
+          action: abandonmentAction(abandonment),
           actorType: 'SYSTEM',
           actorRef: 'system:ai-handler',
           oldState: 'SENDING',
           newState: 'FAILED_FINAL',
-          reasonCode: abandonmentReason,
+          reasonCode: abandonment,
           createdAt: ts
         })
       ]);

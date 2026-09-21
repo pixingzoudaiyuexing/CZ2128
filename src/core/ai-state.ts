@@ -387,6 +387,43 @@ export async function cancelDurableAiRunForHandoff(
   return result.meta.changes === 1;
 }
 
+export async function cancelDurableAiRunForScope(
+  env: Env,
+  triggerEventRef: string,
+  convId: string,
+  triggerMessageRef: string
+): Promise<boolean> {
+  const current = await getDurableAiRun(env, triggerEventRef);
+  if (
+    !current ||
+    current.conversation_id !== convId ||
+    current.trigger_message_ref !== triggerMessageRef ||
+    (current.status !== 'PENDING' && current.status !== 'FAILED_RETRYABLE')
+  ) return false;
+
+  const result = await env.DB.prepare(
+    `UPDATE ai_runs
+     SET status = 'FAILED_FINAL', next_retry_at = NULL,
+         last_error = 'AI_SCOPE_DENIED', updated_at = ?
+     WHERE trigger_event_ref = ? AND conversation_id = ? AND trigger_message_ref = ?
+       AND status = ? AND generation_id IS ? AND handoff_epoch = ? AND attempt_count = ?`
+  ).bind(
+    Math.floor(Date.now() / 1000),
+    triggerEventRef,
+    convId,
+    triggerMessageRef,
+    current.status,
+    current.generation_id,
+    current.handoff_epoch,
+    current.attempt_count
+  ).run();
+  if (result.meta.changes !== 1) return false;
+  if (current.generation_id) {
+    await releaseGenerationLease(env, convId, current.generation_id);
+  }
+  return true;
+}
+
 export async function claimDurableAiRun(
   env: Env,
   triggerEventRef: string,

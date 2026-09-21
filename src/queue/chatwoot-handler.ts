@@ -11,6 +11,7 @@ import { executeOutboundOperation } from '../core/outbound-operations';
 import { buildTelegramTargetEvidence } from '../core/outbound-evidence';
 import { logger } from '../observability/logger';
 import { getAttachmentConfig } from '../config/attachments';
+import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { reconcileChatwootLifecycle } from './chatwoot-lifecycle';
 
@@ -101,7 +102,7 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
       );
     }
 
-    if (!isOperator && content) {
+    if (!isOperator && content && isAiConversationAllowed(env, conv.id)) {
       await env.QUEUE.send({
         version: 1,
         source: 'internal',
@@ -112,6 +113,8 @@ export async function processChatwootEvent(event: ChatwootEvent, env: Env): Prom
           messageId: payload.messageRef
         }
       });
+    } else if (!isOperator && content) {
+      logger.info('AI trigger suppressed by test scope', { conversation_id: conv.id });
     }
     return;
   }
