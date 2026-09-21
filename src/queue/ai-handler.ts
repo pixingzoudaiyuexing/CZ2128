@@ -49,6 +49,7 @@ import {
   AiOutboundAbandonmentReason,
   convergeAbandonedAiOutboundOperations,
   convergeStaleAiOutboundOperations,
+  hasConfirmedChatwootAiDelivery,
   isOpenDlqAiRecoveryEvent
 } from '../core/dlq-ai-redrive';
 import { logger } from '../observability/logger';
@@ -103,16 +104,6 @@ async function cancelAiWorkOutsideScope(env: Env, event: AiTriggerEvent): Promis
     conversation_id: event.payload.convId,
     operation_id: event.eventId
   });
-}
-
-async function canCompleteSentChatwootConvergence(env: Env, event: AiTriggerEvent): Promise<boolean> {
-  const [run, chatwoot] = await Promise.all([
-    getDurableAiRun(env, event.eventId),
-    getOutboundOperation(env, `ai_reply:${event.eventId}`)
-  ]);
-  return run?.status === 'SUCCESS' && run.response_text !== null &&
-    chatwoot?.status === 'SENT' && typeof chatwoot.provider_message_ref === 'string' &&
-    chatwoot.provider_message_ref.length > 0 && chatwoot.provider_message_ref.length <= 256;
 }
 
 type GenerationRetirement = 'HANDOFF' | 'STALE' | 'OWNER_REPLACED' | 'MISSING';
@@ -217,7 +208,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   }
   if (
     !isAiConversationAllowed(env, convId) &&
-    !await canCompleteSentChatwootConvergence(env, event)
+    !await hasConfirmedChatwootAiDelivery(env, event, conv, existingRun || undefined)
   ) {
     await cancelAiWorkOutsideScope(env, event);
     return;
@@ -520,7 +511,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
   if (
     !isAiConversationAllowed(env, convId) &&
-    !await canCompleteSentChatwootConvergence(env, event)
+    !await hasConfirmedChatwootAiDelivery(env, event, conv, existingRun || undefined)
   ) {
     await cancelAiWorkOutsideScope(env, event);
     return;

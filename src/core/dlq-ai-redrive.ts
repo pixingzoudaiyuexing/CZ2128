@@ -471,6 +471,43 @@ async function outboundEligibility(
   return null;
 }
 
+export async function hasConfirmedChatwootAiDelivery(
+  env: Env,
+  event: AiTriggerEvent,
+  conversation?: Conversation,
+  run?: AiRun,
+  now = Math.floor(Date.now() / 1000)
+): Promise<boolean> {
+  const canonicalConversation = conversation || await env.DB.prepare(
+    'SELECT * FROM conversations WHERE id = ?'
+  ).bind(event.payload.convId).first<Conversation>();
+  const canonicalRun = run || await env.DB.prepare(
+    'SELECT * FROM ai_runs WHERE trigger_event_ref = ?'
+  ).bind(event.eventId).first<AiRun>();
+  if (
+    !canonicalConversation ||
+    !canonicalRun ||
+    canonicalRun.status !== 'SUCCESS' ||
+    canonicalRun.response_text === null ||
+    canonicalRun.conversation_id !== event.payload.convId ||
+    canonicalRun.trigger_message_ref !== event.payload.messageId ||
+    Number(canonicalRun.handoff_epoch) !== Number(canonicalConversation.ai_handoff_epoch)
+  ) return false;
+
+  const operation = await env.DB.prepare(
+    'SELECT * FROM outbound_operations WHERE id = ?'
+  ).bind(`ai_reply:${event.eventId}`).first<OutboundOperation>();
+  if (!operation || operation.status !== 'SENT') return false;
+  return await validateOutboundOperation(
+    env,
+    operation,
+    canonicalConversation,
+    event.eventId,
+    'CHATWOOT',
+    now
+  ) === null;
+}
+
 export async function isOpenDlqAiRecoveryEvent(
   env: Pick<Env, 'DB' | 'EXPECTED_MAIN_QUEUE_NAME' | 'EXPECTED_DLQ_QUEUE_NAME'>,
   event: AiTriggerEvent
@@ -515,8 +552,19 @@ export async function getDlqAiRedriveEligibility(
   const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
     .bind(conversationId).first<Conversation>();
   if (!conversation) return ineligible('CONVERSATION_MISSING');
-  if (!isAiConversationAllowed(env, conversationId)) return ineligible('AI_SCOPE_DENIED');
+  const scopeAllowed = isAiConversationAllowed(env, conversationId);
   if (conversation.ai_mode !== 'ENABLED') return ineligible('AI_PAUSED');
+  const event: AiTriggerEvent = {
+    version: 1,
+    source: 'internal',
+    type: 'ai_trigger',
+    eventId,
+    payload: { convId: conversationId, messageId }
+  };
+  if (
+    !scopeAllowed &&
+    !await hasConfirmedChatwootAiDelivery(env, event, conversation, undefined, now)
+  ) return ineligible('AI_SCOPE_DENIED');
 
   const generationReason = activeGenerationReason(
     conversation,
@@ -594,13 +642,7 @@ export async function getDlqAiRedriveEligibility(
     eligible: true,
     reason: 'ELIGIBLE',
     aiRunStatus: run.status,
-    event: {
-      version: 1,
-      source: 'internal',
-      type: 'ai_trigger',
-      eventId,
-      payload: { convId: conversationId, messageId }
-    }
+    event
   };
 }
 

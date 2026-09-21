@@ -149,6 +149,46 @@ async function seedOutbound(
 describe('DLQ durable-state AI redrive eligibility', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it('allows scope-denied recovery only after durable AI success and confirmed Chatwoot delivery', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const env = makeEnv(db, vi.fn(), {
+      AI_TEST_SCOPE_ENABLED: 'true',
+      AI_TEST_ALLOWED_CONVERSATION_IDS: '["11111111-1111-4111-8111-111111111111"]'
+    });
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, env, 'TELEGRAM', 'FAILED_RETRYABLE', {
+      attemptCount: 1,
+      nextRetryAt: 0,
+      safeRetryEvidence: true
+    });
+
+    expect(await getDlqAiRedriveEligibility(env, RECEIPT_ID, NOW)).toMatchObject({
+      eligible: true,
+      reason: 'ELIGIBLE',
+      aiRunStatus: 'SUCCESS'
+    });
+    db.close();
+  });
+
+  it('blocks scope-denied recovery when Chatwoot delivery is not SENT', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const env = makeEnv(db, vi.fn(), {
+      AI_TEST_SCOPE_ENABLED: 'true',
+      AI_TEST_ALLOWED_CONVERSATION_IDS: '["11111111-1111-4111-8111-111111111111"]'
+    });
+    await seedOutbound(db, env, 'CHATWOOT', 'PENDING');
+
+    expect(await getDlqAiRedriveEligibility(env, RECEIPT_ID, NOW)).toMatchObject({
+      eligible: false,
+      reason: 'AI_SCOPE_DENIED'
+    });
+    db.close();
+  });
+
   it('uses the legacy DLQ identity when both Queue variables are absent', async () => {
     const db = new SqliteD1();
     db.migrate();
@@ -493,6 +533,75 @@ describe('DLQ durable-state AI redrive eligibility', () => {
 });
 
 describe('DLQ AI redrive request idempotency', () => {
+  it('scope-denied redrive converges only the existing Telegram mirror after Chatwoot SENT', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedEligible(db, { runStatus: 'SUCCESS' });
+    const bodies: any[] = [];
+    const env = makeEnv(db, vi.fn(async body => { bodies.push(body); }), {
+      AI_TEST_SCOPE_ENABLED: 'true',
+      AI_TEST_ALLOWED_CONVERSATION_IDS: '["11111111-1111-4111-8111-111111111111"]'
+    });
+    await seedOutbound(db, env, 'CHATWOOT', 'SENT');
+    await seedOutbound(db, env, 'TELEGRAM', 'FAILED_RETRYABLE', {
+      attemptCount: 1,
+      nextRetryAt: 0,
+      safeRetryEvidence: true
+    });
+
+    expect((await requestDlqAiRedrive(env, RECEIPT_ID, '1001', '4901', NOW)).status)
+      .toBe('ENQUEUED');
+    expect(bodies).toHaveLength(1);
+    let aiCalls = 0;
+    let chatwootCalls = 0;
+    let telegramCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      const target = String(url);
+      if (target.includes('ai.example')) {
+        aiCalls += 1;
+        throw new Error('AI Provider boundary crossed');
+      }
+      if (target.includes('chatwoot.example')) {
+        chatwootCalls += 1;
+        throw new Error('Chatwoot duplicate boundary crossed');
+      }
+      telegramCalls += 1;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 902 } }), {
+        status: 200
+      });
+    });
+
+    await handleQueueEvent(bodies[0], env);
+
+    expect({ aiCalls, chatwootCalls, telegramCalls }).toEqual({
+      aiCalls: 0,
+      chatwootCalls: 0,
+      telegramCalls: 1
+    });
+    expect((await db.prepare(
+      'SELECT COUNT(*) AS c FROM ai_runs WHERE trigger_event_ref = ?'
+    ).bind(EVENT_ID).first<any>()).c).toBe(1);
+    expect((await db.prepare(
+      'SELECT status, attempt_count FROM ai_runs WHERE trigger_event_ref = ?'
+    ).bind(EVENT_ID).first<any>())).toMatchObject({ status: 'SUCCESS', attempt_count: 1 });
+    expect((await db.prepare(
+      'SELECT status, attempt_count, provider_message_ref FROM outbound_operations WHERE id = ?'
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'SENT', attempt_count: 1, provider_message_ref: 'chatwoot-provider-ref'
+    });
+    expect((await db.prepare(
+      'SELECT status, attempt_count, provider_message_ref FROM outbound_operations WHERE id = ?'
+    ).bind(`ai_tg_mirror:${EVENT_ID}`).first<any>())).toMatchObject({
+      status: 'SENT', attempt_count: 2, provider_message_ref: '902'
+    });
+    expect((await db.prepare(
+      "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND actor_role = 'AI'"
+    ).bind(CONVERSATION_ID).first<any>()).c).toBe(1);
+    expect((await db.prepare('SELECT status FROM dlq_receipts WHERE id = ?')
+      .bind(RECEIPT_ID).first<any>()).status).toBe('RESOLVED');
+    db.close();
+  });
+
   it('deduplicates concurrent same-command intent and sends at most one Queue message', async () => {
     const db = new SqliteD1();
     db.migrate();
