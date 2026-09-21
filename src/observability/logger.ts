@@ -9,6 +9,7 @@ export interface LogContext {
   operation_id?: string;
   generation_id?: string;
   retry_count?: number;
+  attempt?: number;
   result?: string;
   error_category?: string;
   duration_ms?: number;
@@ -23,6 +24,17 @@ export interface LogContext {
   http_status?: number;
   retry_after_seconds?: number;
   retry_exhausted?: boolean;
+  source_stage?: 'TELEGRAM_GET_FILE' | 'TELEGRAM_FILE_GET' | 'SOURCE_STREAM';
+  source_result?:
+    | 'HTTP_4XX'
+    | 'HTTP_429'
+    | 'HTTP_408'
+    | 'HTTP_5XX'
+    | 'TRANSPORT'
+    | 'TIMEOUT'
+    | 'INVALID_RESPONSE'
+    | 'STREAM_ERROR'
+    | 'SUCCESS';
 }
 
 export const logger = {
