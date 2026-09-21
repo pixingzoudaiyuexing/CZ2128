@@ -57,6 +57,16 @@ describe('isolated staging configuration', () => {
       .toContain('D1 database identity');
   });
 
+  it('accepts a non-empty exact AI test allowlist only with the explicit scope switch', () => {
+    const path = writeConfig(config => {
+      config.d1_databases[0].database_id = testUuid;
+      config.vars.AI_TEST_SCOPE_ENABLED = 'true';
+      config.vars.AI_TEST_ALLOWED_CONVERSATION_IDS = JSON.stringify([testUuid]);
+    });
+    expect(validate(path, ['--expected-d1-id', testUuid]))
+      .toContain('Validated isolated staging config for cz2128-4c-staging');
+  });
+
   it.each([
     ['local D1 ID', (config: any) => { config.d1_databases[0].database_id = 'local-dev-only'; }, 'D1 database ID is unsafe'],
     ['legacy Worker', (config: any) => { config.name = 'cz2128-staging'; }, 'Worker name'],
@@ -71,6 +81,13 @@ describe('isolated staging configuration', () => {
     ['wrong main Queue identity', (config: any) => { config.vars.EXPECTED_MAIN_QUEUE_NAME = 'cz2128-staging-queue'; }, 'expected main Queue identity'],
     ['wrong DLQ identity', (config: any) => { config.vars.EXPECTED_DLQ_QUEUE_NAME = 'cz2128-dlq'; }, 'expected DLQ identity'],
     ['same Queue identities', (config: any) => { config.vars.EXPECTED_MAIN_QUEUE_NAME = config.vars.EXPECTED_DLQ_QUEUE_NAME; }, 'expected main Queue identity'],
+    ['missing AI scope pair', (config: any) => { delete config.vars.AI_TEST_ALLOWED_CONVERSATION_IDS; }, 'AI test scope variables must be configured together'],
+    ['invalid AI scope switch', (config: any) => { config.vars.AI_TEST_SCOPE_ENABLED = 'TRUE'; }, 'AI_TEST_SCOPE_ENABLED must be exactly true or false'],
+    ['enabled empty AI scope', (config: any) => { config.vars.AI_TEST_SCOPE_ENABLED = 'true'; }, 'enabled AI test scope requires a non-empty allowlist'],
+    ['non-canonical AI scope ID', (config: any) => {
+      config.vars.AI_TEST_SCOPE_ENABLED = 'true';
+      config.vars.AI_TEST_ALLOWED_CONVERSATION_IDS = JSON.stringify(['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'.toUpperCase()]);
+    }, 'unique canonical internal conversation UUIDs'],
     ['unapproved variable', (config: any) => { config.vars.FEATURE_FLAG = 'true'; }, 'vars contains unexpected field'],
     ['custom route', (config: any) => { config.routes = [{ pattern: 'staging.example/*' }]; }, 'must not declare production/custom routes'],
     ['nested plaintext secret', (config: any) => { config.r2_buckets[0].api_token = 'synthetic-secret'; }, 'R2 binding contains unexpected field'],

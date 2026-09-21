@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Env } from '../src/config/env';
 import {
+  cancelDurableAiRunForScope,
   claimDurableAiRun,
   discardOwnedStaleAiRun,
   getDurableAiRun,
@@ -115,7 +116,8 @@ describe('real D1 durable AI retry CAS', () => {
       ('conv-exhaust', 'chatwoot', '1', '2', '2', 'telegram', 1, 1, 1),
       ('conv-race', 'chatwoot', '1', '3', '3', 'telegram', 1, 1, 1),
       ('conv-legacy', 'chatwoot', '1', '4', '4', 'telegram', 1, 1, 1),
-      ('conv-stale', 'chatwoot', '1', '5', '5', 'telegram', 1, 1, 1);
+      ('conv-stale', 'chatwoot', '1', '5', '5', 'telegram', 1, 1, 1),
+      ('conv-scope', 'chatwoot', '1', '6', '6', 'telegram', 1, 1, 1);
     `);
   }, 60_000);
 
@@ -258,6 +260,47 @@ describe('real D1 durable AI retry CAS', () => {
     `)[0].results[0]).toEqual({
       status: 'PENDING', generation_id: 'generation-new', attempt_count: 2,
       provider_response_ref: null, response_text: null
+    });
+  }, 60_000);
+
+  it('terminalizes a retryable run and releases its generation lease when scope denies it', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    runSql(`
+      UPDATE conversations
+      SET ai_generation_id = 'generation-scope', ai_generation_started_at = ${now},
+          ai_generation_message_id = 'message-scope'
+      WHERE id = 'conv-scope';
+    `);
+    expect(await claimDurableAiRun(
+      env, 'run-scope', 'conv-scope', 'message-scope', 'generation-scope', 0
+    )).toBe(true);
+    expect(await startAiGenerationAttempt(
+      env, 'run-scope', 'conv-scope', 'generation-scope', 0
+    )).toBe(1);
+    expect((await saveAiGenerationFailure(
+      env, 'run-scope', 'conv-scope', 'generation-scope', 0, 'AI_PROVIDER_5XX', true, 5
+    ))?.status).toBe('FAILED_RETRYABLE');
+
+    expect(await cancelDurableAiRunForScope(
+      env, 'run-scope', 'conv-scope', 'message-scope'
+    )).toBe(true);
+    expect(await cancelDurableAiRunForScope(
+      env, 'run-scope', 'conv-scope', 'message-scope'
+    )).toBe(false);
+    expect(runSql(`
+      SELECT status, attempt_count, next_retry_at, last_error
+      FROM ai_runs WHERE trigger_event_ref = 'run-scope';
+    `)[0].results[0]).toEqual({
+      status: 'FAILED_FINAL', attempt_count: 1,
+      next_retry_at: null, last_error: 'AI_SCOPE_DENIED'
+    });
+    expect(runSql(`
+      SELECT ai_generation_id, ai_generation_started_at, ai_generation_message_id
+      FROM conversations WHERE id = 'conv-scope';
+    `)[0].results[0]).toEqual({
+      ai_generation_id: null,
+      ai_generation_started_at: null,
+      ai_generation_message_id: null
     });
   }, 60_000);
 });

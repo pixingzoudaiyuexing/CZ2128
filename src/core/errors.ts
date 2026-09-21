@@ -71,6 +71,13 @@ export class StaleAiTriggerBeforeDeliveryError extends SafeError {
   }
 }
 
+export class AiScopeDeniedBeforeDeliveryError extends SafeError {
+  constructor() {
+    super('AI_SCOPE_DENIED');
+    this.name = 'AiScopeDeniedBeforeDeliveryError';
+  }
+}
+
 export function retryExhaustionSemantic(attempt: number, maximumAttempts: number): RetryExhaustionSemantic {
   return attempt >= maximumAttempts ? 'RETRY_EXHAUSTED' : 'RETRY_PENDING';
 }

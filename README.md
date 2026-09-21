@@ -97,6 +97,12 @@ Optional AI configuration:
 - `AI_GENERATION_LEASE_SECONDS`: generation lease duration
 - `AI_OPERATOR_PAUSE_TIMEOUT_SECONDS`: operator pause timeout, default 3600
 
+Deployment-only staging AI isolation:
+- `AI_TEST_SCOPE_ENABLED`: absent or exact `false` preserves the existing unrestricted production semantics; exact `true` enables the test allowlist
+- `AI_TEST_ALLOWED_CONVERSATION_IDS`: JSON array of unique canonical internal conversation UUIDs; matching is exact and case-sensitive
+
+These two values are intentionally excluded from the Admin runtime control plane. When the scope switch is enabled, a missing, empty, malformed or invalid allowlist denies every AI trigger, retry, recovery and pre-send path. This gate does not replace `ai_mode`: an allowlisted conversation must still be `ENABLED`, and complete AI provider configuration is still required.
+
 Bootstrap-only runtime control plane:
 - `RUNTIME_CONFIG_MASTER_KEY`: exactly 32 random bytes encoded as unpadded base64url
 - `ADMIN_TELEGRAM_BOT_TOKEN`: dedicated Admin Bot token; never reuse the Support Bot
@@ -131,6 +137,7 @@ Runtime overrides cover AI provider/settings, the atomic Support Telegram profil
 - Telegram `/ai_off` sets `PAUSED_MANUAL`; `/ai_on` enables AI for future customer messages.
 - `PAUSED_OPERATOR` can auto-resume only when a new customer event arrives after the configured timeout.
 - Missing AI configuration does not stop the human Chatwoot/Telegram bridge.
+- Staging AI test scope is checked before trigger enqueue, generation/retry, DLQ redrive and visible sends. If scope is removed after Chatwoot delivery is durably `SENT`, the same deterministic operation may finish only its Telegram mirror and provider-free state convergence.
 - AI context represents customer text as `user`, generated answers as `assistant`, and human operator replies as labeled `system` messages.
 
 ## Temporary Attachments

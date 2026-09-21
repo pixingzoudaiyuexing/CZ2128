@@ -8,7 +8,9 @@
   "preview_urls": false,
   "vars": {
     "EXPECTED_MAIN_QUEUE_NAME": "cz2128-4c-staging-queue",
-    "EXPECTED_DLQ_QUEUE_NAME": "cz2128-4c-staging-dlq"
+    "EXPECTED_DLQ_QUEUE_NAME": "cz2128-4c-staging-dlq",
+    "AI_TEST_SCOPE_ENABLED": "false",
+    "AI_TEST_ALLOWED_CONVERSATION_IDS": "[]"
   },
   "triggers": {
     "crons": ["0 * * * *"]

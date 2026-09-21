@@ -315,6 +315,14 @@ On provider failure, clear/release the generation lease and record the error. Do
 
 If another customer event encounters an active generation lease, it must not be silently discarded. V1 processing should retry/defer that AI trigger or detect that newer customer messages arrived and schedule a subsequent generation after the lease clears.
 
+### Staging AI test scope
+
+The deployment-level `AI_TEST_SCOPE_ENABLED=true` gate restricts AI work to exact internal conversation UUIDs listed in `AI_TEST_ALLOWED_CONVERSATION_IDS`. The allowlist is a strict JSON array and is not part of the mutable Admin runtime control plane. A missing, empty, malformed, duplicate or non-canonical list fails closed. An absent switch or exact `false` preserves the established production semantics.
+
+The scope gate is independent from `ai_mode` and provider configuration. It is checked before customer-trigger enqueue, auto-resume, generation/retry, the Provider boundary, durable-success recovery, DLQ redrive, Chatwoot visible delivery and Telegram mirror delivery. A denied fresh event creates no AI success or outbound evidence. Existing unstarted retry work converges to `FAILED_FINAL / AI_SCOPE_DENIED` without changing the conversation's handoff mode.
+
+If scope tightens before Chatwoot delivery, generation output may remain as truthful durable Provider evidence but no customer-visible send is allowed. Once the deterministic Chatwoot operation is durably `SENT`, its evidence is never rewritten or hidden; the same event may complete provider-free domain repair and its deterministic Telegram mirror. This is finite convergence of an already-visible side effect, not authorization for a new generation or Chatwoot send.
+
 ## 7. AI Conversation Context
 
 V1 uses bounded recent context from D1.
