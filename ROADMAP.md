@@ -2,6 +2,15 @@
 
 Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged**
 
+## Crisp-01 - Basic Crisp support bridge
+
+In progress: Crisp is now the sole active helpdesk target. The first slice adds
+signed webhook admission, website/session identity isolation, Crisp text ingress,
+deterministic Crisp outbound operations, Telegram topic mapping, human handoff,
+and optional welcome/Picker menus. Crisp AI generation/outbound recovery, real Crisp
+credentials, Staging E2E, attachment delivery and production migration remain
+explicit follow-up gates.
+
 ## Phase 0 — Architecture Freeze
 
 Status: **COMPLETE**

@@ -8,7 +8,7 @@ CZ2128 is an independent, platform-agnostic customer support gateway. It connect
 
 The first production target is:
 
-- Helpdesk: Chatwoot
+- Helpdesk: Crisp (current Owner target; Chatwoot is historical compatibility)
 - Operator channel: Telegram forum topics
 - Runtime: Cloudflare Workers
 - Database: Cloudflare D1
@@ -17,6 +17,19 @@ The first production target is:
 - AI: OpenAI-compatible API
 
 Chatwoot, Telegram, Cloudflare, and any future business system are adapters/infrastructure, not the product's core identity.
+
+## Owner Platform Decision: Crisp-01
+
+The Owner has selected Crisp as CZ2128's sole target customer-support platform.
+New helpdesk development targets Crisp only. Chatwoot adapter code and historical
+Chatwoot rows remain preserved for data and reliability safety, but Chatwoot is no
+longer a parallel product target. New Crisp conversations use `helpdesk_provider =
+crisp` and the stable `(Crisp website_id, session_id)` identity; they never reuse
+historical Chatwoot identities. Crisp attachments and later delivery-mode changes
+remain separate follow-up work after the basic text bridge. Crisp AI generation and
+durable AI outbound recovery remain a separate adaptation gate; this slice preserves
+AI mode and operator handoff state without routing Crisp events into Chatwoot AI
+outbound code.
 
 ## V1 Goals
 

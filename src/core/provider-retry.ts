@@ -15,7 +15,7 @@ export function classifyVisibleHttpFailure(status: number): ProviderFailureClass
 }
 
 export function visibleHttpDeliveryError(
-  provider: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT'>,
+  provider: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT' | 'CRISP'>,
   status: number,
   options: { telegramRetryAfter?: unknown; httpRetryAfter?: string | null } = {}
 ): ProviderDeliveryError {
@@ -33,13 +33,13 @@ export function visibleHttpDeliveryError(
 }
 
 export function visibleTransportDeliveryError(
-  provider: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT'>
+  provider: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT' | 'CRISP'>
 ): ProviderDeliveryError {
   return new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_TRANSPORT_AMBIGUOUS', { provider });
 }
 
 export function invalidVisibleSuccessError(
-  provider: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT'>
+  provider: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT' | 'CRISP'>
 ): ProviderDeliveryError {
   return new ProviderDeliveryError('AMBIGUOUS', 'OUTBOUND_INVALID_SUCCESS_AMBIGUOUS', {
     provider,

@@ -28,6 +28,14 @@ export interface ChatwootTargetEvidenceV1 {
   apiBaseFingerprint: string;
 }
 
+export interface CrispTargetEvidenceV1 {
+  version: 1;
+  provider: 'crisp';
+  websiteRef: string;
+  sessionRef: string;
+  apiBase: 'https://api.crisp.chat/v1';
+}
+
 export type TelegramMethod =
   | 'sendMessage'
   | 'createForumTopic'
@@ -51,7 +59,7 @@ export interface TelegramTargetEvidenceV1 {
   method: TelegramMethod;
 }
 
-export type OutboundTargetEvidence = ChatwootTargetEvidenceV1 | TelegramTargetEvidenceV1;
+export type OutboundTargetEvidence = ChatwootTargetEvidenceV1 | CrispTargetEvidenceV1 | TelegramTargetEvidenceV1;
 
 const TELEGRAM_METHODS: readonly TelegramMethod[] = [
   'sendMessage', 'createForumTopic', 'closeForumTopic', 'reopenForumTopic',
@@ -155,6 +163,16 @@ export function serializeTargetEvidence(evidence: OutboundTargetEvidence): strin
       apiBaseFingerprint: evidence.apiBaseFingerprint
     });
   }
+  if (evidence.provider === 'crisp') {
+    if (evidence.apiBase !== 'https://api.crisp.chat/v1') throw new Error('Invalid Crisp API base');
+    return JSON.stringify({
+      version: 1,
+      provider: 'crisp',
+      websiteRef: finiteRef(evidence.websiteRef, 'websiteRef'),
+      sessionRef: finiteRef(evidence.sessionRef, 'sessionRef'),
+      apiBase: evidence.apiBase
+    });
+  }
   if (!TELEGRAM_METHODS.includes(evidence.method)) throw new Error('Invalid Telegram evidence method');
   return JSON.stringify({
     version: 1,
@@ -189,7 +207,8 @@ export function manualRetryDestinationMatches(
   try {
     const parent = parseTargetEvidence(storedParentEvidence);
     if (parent.provider !== childEvidence.provider) return false;
-    if (parent.provider === 'telegram' || childEvidence.provider === 'telegram') {
+    if (parent.provider === 'telegram' || childEvidence.provider === 'telegram' ||
+        parent.provider === 'crisp' || childEvidence.provider === 'crisp') {
       return serializeTargetEvidence(parent) === serializeTargetEvidence(childEvidence);
     }
     const { sourceId: _parentSourceId, ...parentDestination } = parent;
@@ -198,4 +217,14 @@ export function manualRetryDestinationMatches(
   } catch {
     return false;
   }
+}
+
+export function buildCrispTargetEvidence(websiteRef: string, sessionRef: string): CrispTargetEvidenceV1 {
+  return {
+    version: 1,
+    provider: 'crisp',
+    websiteRef: finiteRef(websiteRef, 'websiteRef'),
+    sessionRef: finiteRef(sessionRef, 'sessionRef'),
+    apiBase: 'https://api.crisp.chat/v1'
+  };
 }

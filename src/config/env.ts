@@ -48,6 +48,12 @@ export interface Env {
   ATTACHMENT_SOURCE_TIMEOUT_MS?: string;
   ATTACHMENT_DESTINATION_TIMEOUT_MS?: string;
   CHATWOOT_ATTACHMENT_ALLOWED_HOSTS?: string;
+  CRISP_WEBHOOK_SECRET?: string;
+  CRISP_API_IDENTIFIER?: string;
+  CRISP_API_KEY?: string;
+  CRISP_WEBSITE_ID?: string;
+  CRISP_WELCOME_TEXT?: string;
+  CRISP_MENU_JSON?: string;
   AI_BASE_URL?: string;
   AI_API_KEY?: string;
   AI_MODEL?: string;

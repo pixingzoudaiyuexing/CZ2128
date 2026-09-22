@@ -71,6 +71,11 @@ Before deployment, replace the local-only D1 database ID in `wrangler.toml`, cre
 
 ## Environment Variables
 Core:
+- `CRISP_WEBHOOK_SECRET`: Crisp Web Hooks signing secret used with `X-Crisp-Request-Timestamp` and `X-Crisp-Signature`
+- `CRISP_WEBSITE_ID`: exact Crisp Website ID accepted by the webhook
+- `CRISP_API_IDENTIFIER` and `CRISP_API_KEY`: Crisp plugin-tier REST credentials
+- `CRISP_WELCOME_TEXT`: optional first-conversation welcome text
+- `CRISP_MENU_JSON`: optional bounded welcome/Picker menu JSON; malformed values fail closed
 - `CHATWOOT_WEBHOOK_SECRET`: Chatwoot webhook signature secret
 - `TELEGRAM_WEBHOOK_SECRET`: Telegram secret token
 - `TELEGRAM_SECRET_PATH`: Secret path segment for Telegram webhook

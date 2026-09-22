@@ -110,6 +110,33 @@ describe('DLQ sanitized receipt capture', () => {
     expect(rows.results[0]).toMatchObject({ delivery_count: 2, first_seen_at: 100, last_seen_at: 200 });
   });
 
+  it('captures Crisp identity and resolves the isolated website/session conversation', async () => {
+    const db = database();
+    db.exec(`
+      INSERT INTO conversations
+      (id, helpdesk_provider, helpdesk_account_ref, helpdesk_conversation_ref, customer_ref,
+       operator_channel, created_at, updated_at, version)
+      VALUES ('crisp-conv', 'crisp', 'website-1', 'session-1', 'visitor-1', 'telegram', 1, 1, 1);
+      INSERT INTO event_receipts
+      (source, source_event_ref, status, attempt_count, last_error)
+      VALUES ('crisp', 'crisp-event', 'FAILED', 3, 'D1_WRITE_FAILED');
+    `);
+    const event = {
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp-event',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: '1', actorRole: 'CUSTOMER', content: sentinels[0]
+      }
+    };
+    const captured = await captureDlqMessage({ DB: db as any }, message('crisp-physical', event), 250);
+    const receipt = await db.prepare('SELECT * FROM dlq_receipts WHERE id = ?').bind(captured.id).first<any>();
+    expect(receipt).toMatchObject({
+      event_source: 'crisp', source_event_ref: 'crisp-event',
+      event_type: 'message_created', conversation_id: 'crisp-conv'
+    });
+    expect(JSON.stringify(receipt)).not.toContain(sentinels[0]);
+  });
+
   it.each([
     ['undefined body', undefined],
     ['wrong body', 'not-an-object'],

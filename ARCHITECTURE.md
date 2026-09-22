@@ -12,7 +12,7 @@ The core must remain usable if the first helpdesk or operator channel is replace
 Customer
   |
   v
-Chatwoot Widget / Chatwoot
+Crisp Widget / Crisp
   |
   | signed webhook + REST API
   v
@@ -25,6 +25,16 @@ CZ2128 Support Gateway
   +--> R2 temporary attachments
   +--> optional external integrations later
 ```
+
+## 1A. Current Helpdesk Target
+
+Owner decision for Crisp-01: Crisp is the only active helpdesk target. The
+helpdesk adapter boundary remains provider-neutral, while the new implementation
+is `CrispAdapter`. Chatwoot remains a historical adapter and data compatibility
+surface only; its records, receipts, outbound operations, attachments and DLQ
+history are not rewritten during the migration. A Crisp conversation is identified
+by `(website_id, session_id)` and maps to exactly one CZ2128 conversation and one
+Telegram forum topic.
 
 ## 2. Runtime Baseline
 

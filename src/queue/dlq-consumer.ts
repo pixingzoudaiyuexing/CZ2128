@@ -4,7 +4,7 @@ import { SafeErrorCode, isSafeErrorCode } from '../core/error-taxonomy';
 import { LEGACY_DLQ_QUEUE_NAME } from '../config/queue-identities';
 
 const MAX_IDENTITY_LENGTH = 256;
-const VALID_SOURCES = new Set(['chatwoot', 'telegram', 'internal']);
+const VALID_SOURCES = new Set(['chatwoot', 'crisp', 'telegram', 'internal']);
 const VALID_TYPES = new Set([
   'message_created',
   'conversation_status_changed',
@@ -13,7 +13,7 @@ const VALID_TYPES = new Set([
 ]);
 
 type DlqStatus = 'OPEN' | 'RESOLVED';
-export type DlqEventSource = 'chatwoot' | 'telegram' | 'internal';
+export type DlqEventSource = 'chatwoot' | 'crisp' | 'telegram' | 'internal';
 export type DlqEventType = 'message_created' | 'conversation_status_changed' | 'ai_trigger' | 'attachment_transfer';
 
 export interface DlqQueueMessage {
@@ -45,6 +45,7 @@ export interface CapturedDlqReceipt {
 
 type DlqLookup =
   | { kind: 'chatwoot'; accountRef: string; conversationRef: string }
+  | { kind: 'crisp'; websiteRef: string; sessionRef: string }
   | { kind: 'telegram'; threadRef: string }
   | { kind: 'ai'; conversationId: string }
   | { kind: 'attachment'; attachmentId: string };
@@ -100,6 +101,12 @@ function parseEnvelope(body: unknown): SanitizedEnvelope | null {
     const conversationRef = boundedIdentity(payload.conversationRef);
     if (!accountRef || !conversationRef) return null;
     return { source, type, eventId, lookup: { kind: 'chatwoot', accountRef, conversationRef } };
+  } else if (source === 'crisp') {
+    if (type !== 'message_created') return null;
+    const websiteRef = boundedIdentity(payload.websiteRef);
+    const sessionRef = boundedIdentity(payload.sessionRef);
+    if (!websiteRef || !sessionRef) return null;
+    return { source, type, eventId, lookup: { kind: 'crisp', websiteRef, sessionRef } };
   } else if (source === 'telegram') {
     const threadRef = boundedIdentity(payload.threadRef);
     if (type !== 'message_created' || !threadRef) return null;
@@ -168,6 +175,13 @@ async function resolveConversationId(env: Pick<Env, 'DB'>, lookup: DlqLookup): P
     const row = await env.DB.prepare(
       `SELECT id FROM conversations WHERE operator_channel = 'telegram' AND operator_thread_ref = ?`
     ).bind(lookup.threadRef).first<{ id: string }>();
+    return boundedIdentity(row?.id);
+  }
+  if (lookup.kind === 'crisp') {
+    const row = await env.DB.prepare(
+      `SELECT id FROM conversations
+       WHERE helpdesk_provider = 'crisp' AND helpdesk_account_ref = ? AND helpdesk_conversation_ref = ?`
+    ).bind(lookup.websiteRef, lookup.sessionRef).first<{ id: string }>();
     return boundedIdentity(row?.id);
   }
   if (lookup.kind === 'ai') {

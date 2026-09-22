@@ -1,0 +1,258 @@
+import { createCrispMessage, createCrispPicker, CrispPickerChoice } from '../adapters/crisp/api';
+import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
+import { Env } from '../config/env';
+import { pauseOperator } from '../core/ai-state';
+import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
+import { CrispMessageEvent } from '../core/events';
+import { executeOutboundOperation } from '../core/outbound-operations';
+import { buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { isAiConversationAllowed } from '../config/ai-test-scope';
+import { logger } from '../observability/logger';
+
+export interface CrispMenuOption {
+  value: string;
+  label: string;
+  response?: string;
+  next?: { id: string; text: string; choices: CrispPickerChoice[] };
+  handoff?: boolean;
+}
+
+export interface CrispMenuConfig {
+  welcome?: string;
+  picker?: { id: string; text: string; choices: CrispPickerChoice[] };
+  options?: CrispMenuOption[];
+}
+
+function boundedMenuText(value: unknown, maximum: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function validChoices(value: unknown): value is CrispPickerChoice[] {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 20 && value.every(choice =>
+    choice && boundedMenuText(choice.value, 128) && boundedMenuText(choice.label, 128)
+  );
+}
+
+export function parseCrispMenu(value: string | undefined): CrispMenuConfig | null {
+  if (!value || value.length > 20_000) return null;
+  try {
+    const parsed = JSON.parse(value) as CrispMenuConfig;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.welcome !== undefined && !boundedMenuText(parsed.welcome, 4000)) return null;
+    if (parsed.picker && (
+      !boundedMenuText(parsed.picker.id, 128) || !boundedMenuText(parsed.picker.text, 4000) ||
+      !validChoices(parsed.picker.choices)
+    )) return null;
+    if (parsed.options && (
+      !Array.isArray(parsed.options) || parsed.options.length > 50 || parsed.options.some(option =>
+        !option || !boundedMenuText(option.value, 128) || !boundedMenuText(option.label, 128) ||
+        (option.response !== undefined && !boundedMenuText(option.response, 4000)) ||
+        (option.next !== undefined && (
+          !boundedMenuText(option.next.id, 128) || !boundedMenuText(option.next.text, 4000) ||
+          !validChoices(option.next.choices)
+        ))
+      )
+    )) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function sendCrispTextOperation(
+  env: Env,
+  conversationId: string,
+  websiteRef: string,
+  sessionRef: string,
+  operationId: string,
+  content: string,
+  subjectRef: string
+): Promise<void> {
+  await executeOutboundOperation(
+    env,
+    conversationId,
+    'crisp',
+    'SEND_MESSAGE',
+    async (_opId, lifecycle) => {
+      const response = await createCrispMessage(
+        env, websiteRef, sessionRef, content, operationId, lifecycle
+      );
+      return { providerMessageRef: response.messageId };
+    },
+    operationId,
+    {
+      subject: { type: 'MESSAGE', ref: subjectRef },
+      targetEvidence: buildCrispTargetEvidence(websiteRef, sessionRef)
+    }
+  );
+}
+
+async function sendCrispPickerOperation(
+  env: Env,
+  conversationId: string,
+  websiteRef: string,
+  sessionRef: string,
+  operationId: string,
+  picker: { id: string; text: string; choices: CrispPickerChoice[] }
+): Promise<void> {
+  await executeOutboundOperation(
+    env,
+    conversationId,
+    'crisp',
+    'SEND_MESSAGE',
+    async (opId, lifecycle) => {
+      const response = await createCrispPicker(
+        env, websiteRef, sessionRef, picker.id, picker.text, picker.choices, String(opId), lifecycle
+      );
+      return { providerMessageRef: response.messageId };
+    },
+    operationId,
+    {
+      subject: { type: 'MESSAGE', ref: `picker:${picker.id}` },
+      targetEvidence: buildCrispTargetEvidence(websiteRef, sessionRef)
+    }
+  );
+}
+
+async function ensureTelegramTopic(
+  env: Env,
+  conversationId: string,
+  customerName: string | undefined,
+  sessionRef: string,
+  existingThreadRef: string | null
+): Promise<string | null> {
+  if (existingThreadRef) return existingThreadRef;
+  const result = await executeOutboundOperation(
+    env,
+    conversationId,
+    'telegram',
+    'CREATE_TOPIC',
+    async (_opId, lifecycle) => {
+      const title = `${customerName || 'Crisp customer'} | Crisp ${sessionRef}`.slice(0, 128);
+      const response = await createTelegramTopic(env, env.BOT_GROUP_ID, title, lifecycle);
+      return { providerMessageRef: response.messageThreadId };
+    },
+    `create_topic_${conversationId}`,
+    {
+      subject: { type: 'CONVERSATION', ref: conversationId },
+      targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, null, 'createForumTopic')
+    }
+  );
+  if (result.status !== 'SENT' || !result.providerMessageRef) {
+    logger.warn('Crisp topic creation not SENT', { conversation_id: conversationId });
+    return null;
+  }
+  return updateOperatorThreadRef(env, conversationId, result.providerMessageRef);
+}
+
+export async function processCrispEvent(event: CrispMessageEvent, env: Env): Promise<void> {
+  const payload = event.payload;
+  const content = payload.content || '';
+  const conv = await getOrCreateConversation(
+    env, 'crisp', payload.websiteRef, payload.sessionRef, payload.customerRef
+  );
+  const isOperator = payload.actorRole === 'OPERATOR';
+  if (isOperator) await pauseOperator(env, conv.id);
+  if (content) {
+    await insertMessage(
+      env, conv.id, 'crisp', payload.messageRef,
+      isOperator ? 'OUTBOUND' : 'INBOUND', payload.actorRole, 'TEXT', content
+    );
+  }
+
+  const wasNewConversation = !conv.operator_thread_ref;
+  const threadRef = await ensureTelegramTopic(
+    env, conv.id, payload.customerName, payload.sessionRef, conv.operator_thread_ref
+  );
+  if (!threadRef) return;
+
+  if (content) {
+    await executeOutboundOperation(
+      env,
+      conv.id,
+      'telegram',
+      'SEND_MESSAGE',
+      async (_opId, lifecycle) => {
+        const response = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle);
+        return { providerMessageRef: response.messageId };
+      },
+      `send_tg_crisp_${payload.messageRef}`,
+      {
+        subject: { type: 'MESSAGE', ref: `crisp:${payload.messageRef}` },
+        targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage')
+      }
+    );
+  }
+
+  const menu = parseCrispMenu(env.CRISP_MENU_JSON);
+  if (!isOperator && wasNewConversation && (menu || env.CRISP_WELCOME_TEXT)) {
+    if (menu?.welcome || env.CRISP_WELCOME_TEXT) {
+      await sendCrispTextOperation(
+        env, conv.id, payload.websiteRef, payload.sessionRef,
+        `crisp_welcome:${conv.id}`, menu?.welcome || env.CRISP_WELCOME_TEXT!, `crisp-welcome:${conv.id}`
+      );
+    }
+    if (menu?.picker) {
+      await sendCrispPickerOperation(
+        env, conv.id, payload.websiteRef, payload.sessionRef,
+        `crisp_picker:${conv.id}:${menu.picker.id}`, menu.picker
+      );
+    }
+  }
+
+  if (!isOperator && payload.selectionValue && menu?.options) {
+    const selected = menu.options.find(option => option.value === payload.selectionValue);
+    if (selected?.response) {
+      await sendCrispTextOperation(
+        env, conv.id, payload.websiteRef, payload.sessionRef,
+        `crisp_option:${event.eventId}:response`, selected.response, `crisp-option:${event.eventId}`
+      );
+    }
+    if (selected?.next) {
+      await sendCrispPickerOperation(
+        env, conv.id, payload.websiteRef, payload.sessionRef,
+        `crisp_option:${event.eventId}:picker:${selected.next.id}`, selected.next
+      );
+    }
+    if (selected?.handoff) {
+      await pauseOperator(env, conv.id);
+      await executeOutboundOperation(
+        env,
+        conv.id,
+        'telegram',
+        'SEND_MESSAGE',
+        async (_opId, lifecycle) => {
+          const response = await sendTelegramMessage(
+            env,
+            env.BOT_GROUP_ID,
+            threadRef,
+            `Crisp customer requested human support: ${selected.label}`,
+            lifecycle
+          );
+          return { providerMessageRef: response.messageId };
+        },
+        `crisp_handoff_tg:${event.eventId}`,
+        {
+          subject: { type: 'MESSAGE', ref: `crisp-handoff:${event.eventId}` },
+          targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage')
+        }
+      );
+    }
+  }
+
+  if (!isOperator && content && conv.helpdesk_provider === 'crisp' && isAiConversationAllowed(env, conv.id)) {
+    logger.info('Crisp AI trigger deferred until Crisp AI outbound contract is implemented', {
+      conversation_id: conv.id,
+      source_event_ref: event.eventId
+    });
+  } else if (!isOperator && content && isAiConversationAllowed(env, conv.id)) {
+    await env.QUEUE.send({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: `ai_trigger:${conv.id}:${payload.messageRef}`,
+      payload: { convId: conv.id, messageId: payload.messageRef }
+    });
+  }
+}

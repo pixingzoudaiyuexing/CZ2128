@@ -1,4 +1,5 @@
 import { verifyChatwootWebhook } from './adapters/chatwoot/webhook';
+import { crispMessageEventId, verifyCrispWebhook } from './adapters/crisp/webhook';
 import { verifyTelegramWebhook } from './adapters/telegram/webhook';
 import { Env } from './config/env';
 import { RetryableProcessingError } from './core/errors';
@@ -105,6 +106,58 @@ function normalizeChatwootEvent(
   };
 }
 
+export function normalizeCrispEvent(
+  payload: Record<string, any>,
+  eventId: string,
+  expectedWebsiteId?: string
+): SupportEvent | null {
+  if (expectedWebsiteId && String(payload.data?.website_id) !== expectedWebsiteId) return null;
+  if (!['message:send', 'message:received', 'message:updated'].includes(payload.event)) return null;
+  const data = payload.data;
+  if (typeof data?.website_id !== 'string' || typeof data?.session_id !== 'string') return null;
+  if (
+    data.automated === true || data.user?.user_id === 'cz2128' ||
+    typeof data.properties?.cz2128_operation_id === 'string'
+  ) return null;
+  if (payload.event !== 'message:updated' && data.type !== 'text' && data.type !== 'picker') return null;
+  const selectedChoice = Array.isArray(data.content?.choices)
+    ? data.content.choices.find((choice: any) => choice?.selected === true)
+    : undefined;
+  const selectionValue = typeof selectedChoice?.value === 'string' ? selectedChoice.value : undefined;
+  const content = typeof data.content === 'string'
+    ? data.content
+    : selectionValue || (typeof data.content?.text === 'string' ? data.content.text : undefined);
+  if (!content) return null;
+  const isOperator = payload.event === 'message:received' || data.from === 'operator';
+  const customerRef = typeof data.user?.user_id === 'string' && data.user.user_id
+    ? data.user.user_id
+    : `session:${data.session_id}`;
+  const customerName = typeof data.user?.nickname === 'string' && data.user.nickname.trim()
+    ? data.user.nickname.trim()
+    : undefined;
+  const messageRef = data.fingerprint === undefined
+    ? eventId
+    : String(data.fingerprint);
+  return {
+    version: 1,
+    source: 'crisp',
+    type: 'message_created',
+    eventId,
+    payload: {
+      websiteRef: data.website_id,
+      sessionRef: data.session_id,
+      customerRef,
+      ...(customerName ? { customerName } : {}),
+      messageRef,
+      actorRole: isOperator ? 'OPERATOR' : 'CUSTOMER',
+      content,
+      ...(!isOperator && (selectionValue || typeof content === 'string')
+        ? { selectionValue: selectionValue || content }
+        : {})
+    }
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -159,6 +212,21 @@ export default {
       if (!event) return new Response('Ignored', { status: 200 });
       await env.QUEUE.send(event);
 
+      return new Response('Accepted', { status: 200 });
+    }
+
+    if (url.pathname === '/webhooks/crisp') {
+      const verified = await verifyCrispWebhook(request, env.CRISP_WEBHOOK_SECRET, env.CRISP_WEBSITE_ID);
+      if (!verified.valid || !verified.payload || !verified.rawBody) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+      const event = normalizeCrispEvent(
+        verified.payload,
+        await crispMessageEventId(verified.payload, verified.rawBody),
+        env.CRISP_WEBSITE_ID
+      );
+      if (!event) return new Response('Ignored', { status: 200 });
+      await env.QUEUE.send(event);
       return new Response('Accepted', { status: 200 });
     }
 
