@@ -227,6 +227,13 @@ export default {
     if (url.pathname === '/webhooks/crisp') {
       const verified = await verifyCrispWebhook(request, env.CRISP_WEBHOOK_SECRET, env.CRISP_WEBSITE_ID);
       if (!verified.valid || !verified.payload || !verified.rawBody) {
+        logger.warn('Crisp webhook verification rejected', {
+          source: 'crisp',
+          error_category: verified.failure ?? 'CRISP_VERIFY_UNKNOWN',
+          stage: 'CRISP_WEBHOOK_VERIFY',
+          result: verified.timestampFormat ?? 'unknown',
+          http_status: 401
+        });
         return new Response('Unauthorized', { status: 401 });
       }
       const event = normalizeCrispEvent(

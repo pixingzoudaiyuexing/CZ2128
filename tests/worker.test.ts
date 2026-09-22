@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Worker from '../src/index';
 import { RetryableProcessingError } from '../src/core/errors';
@@ -81,6 +82,10 @@ describe('Worker Integration', () => {
     return Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
+  function signCrispWire(rawBody: string, timestamp: string): string {
+    return createHmac('sha256', 'crisp-secret').update(`[${timestamp};${rawBody}]`).digest('hex');
+  }
+
   it('fetch() -> Chatwoot ingress -> QUEUE.send', async () => {
     const payload = JSON.stringify({
       event: 'message_created',
@@ -147,6 +152,28 @@ describe('Worker Integration', () => {
     });
   });
 
+  it('accepts raw-body Crisp wire signatures with millisecond timestamps before enqueue', async () => {
+    const rawBody = '{\n  "event": "message:send",\n  "data": { "website_id": "website-1", "session_id": "session-ms", "fingerprint": 109, "type": "text", "from": "user", "content": "Wire payload", "user": { "user_id": "visitor-ms" } }\n}';
+    const timestamp = String(Date.now());
+    const req = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': timestamp,
+        'X-Crisp-Signature': signCrispWire(rawBody, timestamp)
+      },
+      body: rawBody
+    });
+
+    const res = await Worker.fetch(req, env, ctx);
+
+    expect(res.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({
+      source: 'crisp', type: 'message_created',
+      payload: { websiteRef: 'website-1', sessionRef: 'session-ms', customerRef: 'visitor-ms', content: 'Wire payload' }
+    });
+  });
+
   it('enqueues a signed non-CZ2128 automated Crisp message', async () => {
     const payload = {
       event: 'message:received',
@@ -193,6 +220,34 @@ describe('Worker Integration', () => {
     const response = await Worker.fetch(request, env, ctx);
     expect(response.status).toBe(200);
     expect(env.QUEUE.messages).toHaveLength(0);
+  });
+
+  it('logs only a safe Crisp verification category for rejected ingress', async () => {
+    const rawBody = JSON.stringify({ event: 'message:send', data: { website_id: 'website-1', session_id: 'sensitive-session', content: 'SENSITIVE-BODY' } });
+    const timestamp = String(Date.now());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const req = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': timestamp,
+        'X-Crisp-Signature': '0'.repeat(64)
+      },
+      body: rawBody
+    });
+
+    const res = await Worker.fetch(req, env, ctx);
+
+    expect(res.status).toBe(401);
+    expect(env.QUEUE.messages).toHaveLength(0);
+    expect(warn).toHaveBeenCalledOnce();
+    const logged = String(warn.mock.calls[0][0]);
+    expect(logged).toContain('CRISP_VERIFY_SIGNATURE_MISMATCH');
+    expect(logged).toContain('CRISP_WEBHOOK_VERIFY');
+    expect(logged).toContain('milliseconds');
+    expect(logged).not.toContain('SENSITIVE-BODY');
+    expect(logged).not.toContain('sensitive-session');
+    expect(logged).not.toContain('crisp-secret');
+    expect(logged).not.toContain('0'.repeat(64));
   });
 
   it('rejects a Crisp request with stale timestamp before enqueue', async () => {
