@@ -147,6 +147,54 @@ describe('Worker Integration', () => {
     });
   });
 
+  it('enqueues a signed non-CZ2128 automated Crisp message', async () => {
+    const payload = {
+      event: 'message:received',
+      data: {
+        website_id: 'website-1', session_id: 'session-1', fingerprint: 110,
+        type: 'text', from: 'operator', origin: 'chat', automated: true, content: 'Automation reply',
+        user: { type: 'operator', user_id: 'other-automation' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({ payload: { actorRole: 'OPERATOR', content: 'Automation reply' } });
+  });
+
+  it('drops a signed Crisp echo only when the complete CZ2128 identity is present', async () => {
+    const payload = {
+      event: 'message:received',
+      data: {
+        website_id: 'website-1', session_id: 'session-1', fingerprint: 111,
+        type: 'text', from: 'operator', origin: 'chat', automated: true, content: 'Gateway reply',
+        user: { type: 'operator', user_id: 'cz2128' },
+        properties: { cz2128_operation_id: 'send_crisp_0:9' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(0);
+  });
+
   it('rejects a Crisp request with stale timestamp before enqueue', async () => {
     const payload = { event: 'message:send', data: { website_id: 'website-1', session_id: 'session-1', fingerprint: 102, type: 'text', content: 'stale' } };
     const timestamp = Math.floor(Date.now() / 1000) - 301;

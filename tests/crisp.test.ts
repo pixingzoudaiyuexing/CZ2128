@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCrispMessage, createCrispPicker } from '../src/adapters/crisp/api';
 import { verifyCrispWebhook } from '../src/adapters/crisp/webhook';
-import { parseCrispMenu } from '../src/queue/crisp-handler';
+import { parseCrispMenu, resolveCrispMenuOption } from '../src/queue/crisp-handler';
 
 const env = {
   CRISP_API_IDENTIFIER: 'identifier',
@@ -96,12 +96,29 @@ describe('Crisp adapter', () => {
     expect(parseCrispMenu(JSON.stringify({
       welcome: 'Welcome',
       picker: { id: 'main', text: 'Choose', choices: [{ value: 'human', label: 'Human' }] },
-      options: [{ value: 'human', label: 'Human', response: 'A human will help.' }]
+      options: [{ pickerId: 'main', value: 'human', label: 'Human', response: 'A human will help.' }]
     }))).toMatchObject({ welcome: 'Welcome' });
     expect(parseCrispMenu('{bad-json')).toBeNull();
     expect(parseCrispMenu(JSON.stringify({ picker: { id: '', text: '', choices: [] } }))).toBeNull();
     expect(parseCrispMenu(JSON.stringify({
       picker: { id: 'x'.repeat(129), text: 'Choose', choices: [{ value: 'a', label: 'A' }] }
+    }))).toBeNull();
+  });
+
+  it('binds equal option values to distinct Picker identities and rejects duplicate keys', () => {
+    const menu = parseCrispMenu(JSON.stringify({
+      options: [
+        { pickerId: 'main', value: 'same', label: 'Main', response: 'main-response' },
+        { pickerId: 'secondary', value: 'same', label: 'Secondary', response: 'secondary-response' }
+      ]
+    }));
+    expect(resolveCrispMenuOption(menu, 'main', 'same')?.response).toBe('main-response');
+    expect(resolveCrispMenuOption(menu, 'secondary', 'same')?.response).toBe('secondary-response');
+    expect(parseCrispMenu(JSON.stringify({
+      options: [
+        { pickerId: 'main', value: 'same', label: 'A' },
+        { pickerId: 'main', value: 'same', label: 'B' }
+      ]
     }))).toBeNull();
   });
 });

@@ -9,7 +9,11 @@ vi.mock('../src/core/conversation-service', () => ({
   getOrCreateConversation: vi.fn(), insertMessage: vi.fn(), updateOperatorThreadRef: vi.fn()
 }));
 vi.mock('../src/core/outbound-operations', () => ({ executeOutboundOperation: vi.fn() }));
-vi.mock('../src/core/ai-state', () => ({ pauseOperator: vi.fn(), applyTelegramOperatorAction: vi.fn() }));
+vi.mock('../src/core/ai-state', () => ({
+  pauseOperator: vi.fn(),
+  pauseOperatorForCrispSelection: vi.fn(),
+  applyTelegramOperatorAction: vi.fn()
+}));
 vi.mock('../src/adapters/telegram/api', () => ({
   createTelegramTopic: vi.fn(), sendTelegramMessage: vi.fn()
 }));
@@ -100,16 +104,17 @@ describe('Crisp basic bridge orchestration', () => {
 
   it('pauses AI and notifies the mapped topic for a human handoff option', async () => {
     env.CRISP_MENU_JSON = JSON.stringify({
-      options: [{ value: 'human', label: 'Contact human', handoff: true }]
+      options: [{ pickerId: 'main', value: 'human', label: 'Contact human', handoff: true }]
     });
     await processCrispEvent({
       version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:handoff',
       payload: {
         websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
-        messageRef: '104', actorRole: 'CUSTOMER', content: 'human', selectionValue: 'human'
+        messageRef: '104', actorRole: 'CUSTOMER', content: 'Contact human',
+        selection: { pickerId: 'main', pickerMessageRef: 'picker-1', value: 'human', label: 'Contact human' }
       }
     }, env);
-    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
+    expect(aiState.pauseOperatorForCrispSelection).toHaveBeenCalledWith(env, 'conv-crisp', 'crisp:handoff');
     expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]))
       .toContain('crisp_handoff_tg:crisp:handoff');
   });
@@ -117,7 +122,7 @@ describe('Crisp basic bridge orchestration', () => {
   it('sends a preset response and next Picker for a matching option', async () => {
     env.CRISP_MENU_JSON = JSON.stringify({
       options: [{
-        value: 'sales', label: 'Sales', response: 'Sales will reply.',
+        pickerId: 'main', value: 'sales', label: 'Sales', response: 'Sales will reply.',
         next: { id: 'sales-next', text: 'Choose sales topic', choices: [{ value: 'pricing', label: 'Pricing' }] }
       }]
     });
@@ -125,11 +130,28 @@ describe('Crisp basic bridge orchestration', () => {
       version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:sales',
       payload: {
         websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
-        messageRef: '105', actorRole: 'CUSTOMER', content: 'sales', selectionValue: 'sales'
+        messageRef: '105', actorRole: 'CUSTOMER', content: 'Sales',
+        selection: { pickerId: 'main', pickerMessageRef: 'picker-2', value: 'sales', label: 'Sales' }
       }
     }, env);
     const operationIds = vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]);
     expect(operationIds).toContain('crisp_option:crisp:sales:response');
     expect(operationIds).toContain('crisp_option:crisp:sales:picker:sales-next');
+  });
+
+  it('does not treat ordinary text matching an option value as a Picker selection', async () => {
+    env.CRISP_MENU_JSON = JSON.stringify({
+      options: [{ pickerId: 'main', value: 'human', label: 'Contact human', handoff: true }]
+    });
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:text-human',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: '106', actorRole: 'CUSTOMER', content: 'human'
+      }
+    }, env);
+    expect(aiState.pauseOperatorForCrispSelection).not.toHaveBeenCalled();
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]))
+      .not.toContain('crisp_handoff_tg:crisp:text-human');
   });
 });

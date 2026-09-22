@@ -41,7 +41,12 @@ export interface CrispMessageEvent extends QueueEventBase {
     messageRef: string;
     actorRole: 'CUSTOMER' | 'OPERATOR';
     content?: string;
-    selectionValue?: string;
+    selection?: {
+      pickerId: string;
+      pickerMessageRef: string;
+      value: string;
+      label: string;
+    };
   };
 }
 

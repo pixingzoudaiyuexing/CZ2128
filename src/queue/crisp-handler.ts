@@ -1,7 +1,7 @@
 import { createCrispMessage, createCrispPicker, CrispPickerChoice } from '../adapters/crisp/api';
 import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
 import { Env } from '../config/env';
-import { pauseOperator } from '../core/ai-state';
+import { pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { CrispMessageEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
@@ -10,6 +10,7 @@ import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { logger } from '../observability/logger';
 
 export interface CrispMenuOption {
+  pickerId: string;
   value: string;
   label: string;
   response?: string;
@@ -21,6 +22,14 @@ export interface CrispMenuConfig {
   welcome?: string;
   picker?: { id: string; text: string; choices: CrispPickerChoice[] };
   options?: CrispMenuOption[];
+}
+
+export function resolveCrispMenuOption(
+  menu: CrispMenuConfig | null,
+  pickerId: string,
+  value: string
+): CrispMenuOption | undefined {
+  return menu?.options?.find(option => option.pickerId === pickerId && option.value === value);
 }
 
 function boundedMenuText(value: unknown, maximum: number): value is string {
@@ -46,13 +55,14 @@ export function parseCrispMenu(value: string | undefined): CrispMenuConfig | nul
     )) return null;
     if (parsed.options && (
       !Array.isArray(parsed.options) || parsed.options.length > 50 || parsed.options.some(option =>
-        !option || !boundedMenuText(option.value, 128) || !boundedMenuText(option.label, 128) ||
+        !option || !boundedMenuText(option.pickerId, 128) ||
+        !boundedMenuText(option.value, 128) || !boundedMenuText(option.label, 128) ||
         (option.response !== undefined && !boundedMenuText(option.response, 4000)) ||
         (option.next !== undefined && (
           !boundedMenuText(option.next.id, 128) || !boundedMenuText(option.next.text, 4000) ||
           !validChoices(option.next.choices)
         ))
-      )
+      ) || new Set(parsed.options.map(option => `${option.pickerId}\u0000${option.value}`)).size !== parsed.options.length
     )) return null;
     return parsed;
   } catch {
@@ -201,8 +211,8 @@ export async function processCrispEvent(event: CrispMessageEvent, env: Env): Pro
     }
   }
 
-  if (!isOperator && payload.selectionValue && menu?.options) {
-    const selected = menu.options.find(option => option.value === payload.selectionValue);
+  if (!isOperator && payload.selection && menu?.options) {
+    const selected = resolveCrispMenuOption(menu, payload.selection.pickerId, payload.selection.value);
     if (selected?.response) {
       await sendCrispTextOperation(
         env, conv.id, payload.websiteRef, payload.sessionRef,
@@ -216,7 +226,10 @@ export async function processCrispEvent(event: CrispMessageEvent, env: Env): Pro
       );
     }
     if (selected?.handoff) {
-      await pauseOperator(env, conv.id);
+      const handoffResult = await pauseOperatorForCrispSelection(env, conv.id, event.eventId);
+      if (env.hooks?.afterCrispHandoffStateApplied) {
+        await env.hooks.afterCrispHandoffStateApplied(env, conv.id, event.eventId, handoffResult);
+      }
       await executeOutboundOperation(
         env,
         conv.id,

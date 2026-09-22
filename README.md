@@ -84,6 +84,13 @@ Core:
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
 - `CHATWOOT_ATTACHMENT_ALLOWED_HOSTS`: comma-separated exact HTTPS storage/CDN hosts permitted for Chatwoot attachment redirects
 
+Crisp menu actions bind to both `pickerId` and `value`. A normal text message is
+never interpreted as a Picker selection. Example option:
+
+```json
+{"pickerId":"main","value":"human","label":"Contact human","handoff":true}
+```
+
 Optional attachment limits:
 - `ATTACHMENT_MAX_BYTES`: maximum bytes per attachment, capped at 20 MiB
 - `ATTACHMENT_MAX_COUNT_PER_MESSAGE`: maximum attachments processed per provider message, capped at 10

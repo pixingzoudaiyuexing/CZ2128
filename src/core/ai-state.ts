@@ -5,6 +5,7 @@ import { getAIConfig } from '../config/ai';
 import { RetryableProcessingError } from './errors';
 import { SafeErrorCode } from './error-taxonomy';
 import { boundedQueueRetryDelay, RETRY_DELAY_FALLBACK_SECONDS } from './retry';
+import { auditAfterPreviousChange, d1Changed } from './reliability-audit';
 
 export const MAX_AI_GENERATION_ATTEMPTS = 3;
 
@@ -37,6 +38,60 @@ export async function pauseOperator(env: Env, convId: string): Promise<void> {
   ).bind(now, now, convId).run();
   
   logger.info('AI paused due to operator reply', { conversation_id: convId });
+}
+
+async function crispHandoffAuditId(selectionIdentity: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(`cz2128:crisp-handoff:${selectionIdentity}`)
+  );
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `crisp-handoff:${hex}`;
+}
+
+export async function pauseOperatorForCrispSelection(
+  env: Env,
+  convId: string,
+  selectionIdentity: string
+): Promise<'APPLIED' | 'CURRENT'> {
+  const now = Math.floor(Date.now() / 1000);
+  const auditId = await crispHandoffAuditId(selectionIdentity);
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE conversations
+       SET ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
+           last_operator_reply_at = ?, ai_generation_id = NULL,
+           ai_generation_started_at = NULL, ai_generation_message_id = NULL,
+           ai_handoff_epoch = ai_handoff_epoch + 1, updated_at = ?, version = version + 1
+       WHERE id = ? AND NOT EXISTS (
+         SELECT 1 FROM reliability_audit WHERE id = ?
+       )`
+    ).bind(now, now, convId, auditId),
+    auditAfterPreviousChange(env, {
+      id: auditId,
+      entityType: 'CONVERSATION',
+      entityId: convId,
+      action: 'CRISP_PICKER_HANDOFF_APPLIED',
+      actorType: 'SYSTEM',
+      actorRef: selectionIdentity,
+      oldState: 'UNCLAIMED',
+      newState: 'PAUSED_OPERATOR',
+      reasonCode: 'CRISP_PICKER_HANDOFF',
+      createdAt: now
+    })
+  ]);
+  const updated = d1Changed(results[0]);
+  const audited = d1Changed(results[1]);
+  if (updated && audited) return 'APPLIED';
+  if (updated !== audited) throw new Error('Crisp handoff state/audit mismatch');
+  const existing = await env.DB.prepare(
+    `SELECT c.id AS conversation_id, a.id AS audit_id
+     FROM conversations c LEFT JOIN reliability_audit a ON a.id = ?
+     WHERE c.id = ?`
+  ).bind(auditId, convId).first<{ conversation_id: string; audit_id: string | null }>();
+  if (!existing?.conversation_id || !existing.audit_id) {
+    throw new Error('Crisp handoff idempotency evidence missing');
+  }
+  return 'CURRENT';
 }
 
 export async function pauseManual(env: Env, convId: string): Promise<void> {

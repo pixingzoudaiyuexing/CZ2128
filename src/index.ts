@@ -1,5 +1,10 @@
 import { verifyChatwootWebhook } from './adapters/chatwoot/webhook';
-import { crispMessageEventId, verifyCrispWebhook } from './adapters/crisp/webhook';
+import {
+  CrispWebhookPayload,
+  crispMessageEventId,
+  readCrispPickerSelection,
+  verifyCrispWebhook
+} from './adapters/crisp/webhook';
 import { verifyTelegramWebhook } from './adapters/telegram/webhook';
 import { Env } from './config/env';
 import { RetryableProcessingError } from './core/errors';
@@ -115,27 +120,26 @@ export function normalizeCrispEvent(
   if (!['message:send', 'message:received', 'message:updated'].includes(payload.event)) return null;
   const data = payload.data;
   if (typeof data?.website_id !== 'string' || typeof data?.session_id !== 'string') return null;
-  if (
-    data.automated === true || data.user?.user_id === 'cz2128' ||
-    typeof data.properties?.cz2128_operation_id === 'string'
-  ) return null;
-  if (payload.event !== 'message:updated' && data.type !== 'text' && data.type !== 'picker') return null;
-  const selectedChoice = Array.isArray(data.content?.choices)
-    ? data.content.choices.find((choice: any) => choice?.selected === true)
-    : undefined;
-  const selectionValue = typeof selectedChoice?.value === 'string' ? selectedChoice.value : undefined;
-  const content = typeof data.content === 'string'
-    ? data.content
-    : selectionValue || (typeof data.content?.text === 'string' ? data.content.text : undefined);
+  const operationMarker = data.properties?.cz2128_operation_id;
+  const isCz2128Echo = payload.event === 'message:received' &&
+    data.from === 'operator' && data.origin === 'chat' && data.automated === true &&
+    data.user?.type === 'operator' && data.user?.user_id === 'cz2128' &&
+    typeof operationMarker === 'string' && /^[A-Za-z0-9:_-]{1,512}$/.test(operationMarker);
+  if (isCz2128Echo) return null;
+
+  const selection = readCrispPickerSelection(payload as CrispWebhookPayload);
+  if (payload.event === 'message:updated' && !selection) return null;
+  if (payload.event !== 'message:updated' && data.type !== 'text') return null;
+  const content = selection?.label || (typeof data.content === 'string' ? data.content : undefined);
   if (!content) return null;
-  const isOperator = payload.event === 'message:received' || data.from === 'operator';
+  const isOperator = payload.event === 'message:received';
   const customerRef = typeof data.user?.user_id === 'string' && data.user.user_id
     ? data.user.user_id
     : `session:${data.session_id}`;
   const customerName = typeof data.user?.nickname === 'string' && data.user.nickname.trim()
     ? data.user.nickname.trim()
     : undefined;
-  const messageRef = data.fingerprint === undefined
+  const messageRef = selection ? eventId : data.fingerprint === undefined
     ? eventId
     : String(data.fingerprint);
   return {
@@ -151,9 +155,14 @@ export function normalizeCrispEvent(
       messageRef,
       actorRole: isOperator ? 'OPERATOR' : 'CUSTOMER',
       content,
-      ...(!isOperator && (selectionValue || typeof content === 'string')
-        ? { selectionValue: selectionValue || content }
-        : {})
+      ...(selection ? {
+        selection: {
+          pickerId: selection.pickerId,
+          pickerMessageRef: selection.pickerMessageRef,
+          value: selection.value,
+          label: selection.label
+        }
+      } : {})
     }
   };
 }
