@@ -6,11 +6,13 @@ import {
   visibleTransportDeliveryError
 } from '../../core/provider-retry';
 import { OutboundAttemptLifecycle } from '../../core/outbound-operations';
+import { insertReliabilityAuditOnce } from '../../core/reliability-audit';
 import { logger } from '../../observability/logger';
 
 const CRISP_API_BASE = 'https://api.crisp.chat/v1';
 const CRISP_AUTOMATED_USER = { nickname: 'CZ2128' };
 const CRISP_ERROR_DIAGNOSTIC_MAX_BYTES = 4096;
+const CRISP_OPERATION_ID_PATTERN = /^[A-Za-z0-9:_-]{1,512}$/;
 
 type CrispProviderReasonCode = 'invalid_data' | 'invalid_session' | 'UNKNOWN_PROVIDER_REASON';
 type CrispProviderResponseState = 'JSON_OBJECT' | 'EMPTY' | 'NON_JSON' | 'TOO_LARGE' | 'READ_ERROR';
@@ -19,6 +21,45 @@ interface CrispProviderDiagnostic {
   providerError?: boolean;
   reasonCode: CrispProviderReasonCode;
   responseState: CrispProviderResponseState;
+}
+
+type CrispRequestType = 'text' | 'picker' | 'unknown';
+type CrispProviderErrorState = 'ERROR_TRUE' | 'ERROR_FALSE' | 'ERROR_UNKNOWN';
+
+function crispRequestType(body: Record<string, unknown>): CrispRequestType {
+  return body.type === 'picker' ? 'picker' : body.type === 'text' ? 'text' : 'unknown';
+}
+
+function crispOperationId(body: Record<string, unknown>): string | null {
+  const properties = body.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return null;
+  const operationId = (properties as { cz2128_operation_id?: unknown }).cz2128_operation_id;
+  return typeof operationId === 'string' && CRISP_OPERATION_ID_PATTERN.test(operationId) ? operationId : null;
+}
+
+function crispProviderErrorState(providerError: boolean | undefined): CrispProviderErrorState {
+  return providerError === true ? 'ERROR_TRUE' : providerError === false ? 'ERROR_FALSE' : 'ERROR_UNKNOWN';
+}
+
+async function persistCrispHttp400Diagnostic(
+  env: Env,
+  body: Record<string, unknown>,
+  diagnostic: CrispProviderDiagnostic
+): Promise<void> {
+  const operationId = crispOperationId(body);
+  if (!operationId) return;
+  await insertReliabilityAuditOnce(env, {
+    id: `crisp-http400-diagnostic:v1:${operationId}`,
+    entityType: 'OUTBOUND_OPERATION',
+    entityId: operationId,
+    action: 'CRISP_HTTP_400_DIAGNOSTIC',
+    actorType: 'SYSTEM',
+    actorRef: 'system:crisp-adapter',
+    oldState: 'HTTP_400',
+    newState: `${crispRequestType(body)}:${diagnostic.responseState}:${crispProviderErrorState(diagnostic.providerError)}`,
+    reasonCode: diagnostic.reasonCode,
+    createdAt: Math.floor(Date.now() / 1000)
+  });
 }
 
 function safeCrispReason(reason: unknown): CrispProviderReasonCode {
@@ -76,18 +117,22 @@ async function readBoundedCrispError(response: Response): Promise<CrispProviderD
   }
 }
 
-async function logCrispHttp400Diagnostic(response: Response, body: Record<string, unknown>): Promise<void> {
+async function recordCrispHttp400Diagnostic(
+  env: Env,
+  response: Response,
+  body: Record<string, unknown>
+): Promise<void> {
   const diagnostic = await readBoundedCrispError(response).catch((): CrispProviderDiagnostic => ({
     reasonCode: 'UNKNOWN_PROVIDER_REASON',
     responseState: 'READ_ERROR'
   }));
-  const requestType = body.type === 'picker' ? 'picker' : body.type === 'text' ? 'text' : 'unknown';
+  await persistCrispHttp400Diagnostic(env, body, diagnostic).catch(() => undefined);
   logger.warn('Crisp outbound provider rejected request', {
     source: 'crisp',
     provider: 'CRISP',
     stage: 'CRISP_PROVIDER_RESPONSE',
     http_status: response.status,
-    request_type: requestType,
+    request_type: crispRequestType(body),
     ...(diagnostic.providerError !== undefined ? { provider_error: diagnostic.providerError } : {}),
     provider_reason_code: diagnostic.reasonCode,
     provider_response_state: diagnostic.responseState
@@ -126,7 +171,7 @@ async function sendCrispMessage(
   }
   if (lifecycle) await lifecycle.responseObserved(response.status);
   if (!response.ok) {
-    if (response.status === 400) await logCrispHttp400Diagnostic(response, body).catch(() => undefined);
+    if (response.status === 400) await recordCrispHttp400Diagnostic(env, response, body).catch(() => undefined);
     throw visibleHttpDeliveryError('CRISP', response.status);
   }
   try {
