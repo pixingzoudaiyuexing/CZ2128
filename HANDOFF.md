@@ -1,5 +1,13 @@
 # CZ2128 - Phase 4B-5 Complete / Phase 4C Preparation Only
 
+## Current Platform Direction
+
+Owner selected Crisp as the sole active helpdesk target in Crisp-01. Chatwoot
+implementation and historical state are preserved but must not receive new
+feature work or be presented as Crisp validation. The current branch adds only
+the basic Crisp text bridge and local tests; no Crisp secrets, webhook, Staging
+deployment or production migration has been performed.
+
 ## 状态
 - **Current Main / Phase 4B-5 Documentation Merge**: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8` (PR #15 merge commit)
 - **Phase 4B-5 Implementation Base**: `62c7c51120ad4d44fcdc4cff089173258b719c28` (historical pre-PR #15 main)

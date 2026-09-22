@@ -5,6 +5,7 @@ import { SupportEvent } from '../core/events';
 import { logger } from '../observability/logger';
 import { processAiTrigger } from './ai-handler';
 import { processChatwootEvent } from './chatwoot-handler';
+import { processCrispEvent } from './crisp-handler';
 import { processTelegramEvent } from './telegram-handler';
 import { getAttachmentConfig } from '../config/attachments';
 import { processAttachmentTransfer } from '../attachments/handler';
@@ -117,6 +118,8 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
   try {
     if (event.source === 'chatwoot') {
       await processChatwootEvent(event, env);
+    } else if (event.source === 'crisp') {
+      await processCrispEvent(event, env);
     } else if (event.source === 'telegram') {
       await processTelegramEvent(event, env);
     } else if (event.type === 'ai_trigger') {

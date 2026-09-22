@@ -2,7 +2,7 @@ import { DatabaseEnv } from './database';
 
 export interface ReliabilityAuditInput {
   id: string;
-  entityType: 'OUTBOUND_OPERATION' | 'DLQ_RECEIPT';
+  entityType: 'OUTBOUND_OPERATION' | 'DLQ_RECEIPT' | 'CONVERSATION';
   entityId: string;
   action: string;
   actorType: 'SYSTEM' | 'ADMIN';

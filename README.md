@@ -71,6 +71,11 @@ Before deployment, replace the local-only D1 database ID in `wrangler.toml`, cre
 
 ## Environment Variables
 Core:
+- `CRISP_WEBHOOK_SECRET`: Crisp Web Hooks signing secret used with `X-Crisp-Request-Timestamp` and `X-Crisp-Signature`
+- `CRISP_WEBSITE_ID`: exact Crisp Website ID accepted by the webhook
+- `CRISP_API_IDENTIFIER` and `CRISP_API_KEY`: Crisp plugin-tier REST credentials
+- `CRISP_WELCOME_TEXT`: optional first-conversation welcome text
+- `CRISP_MENU_JSON`: optional bounded welcome/Picker menu JSON; malformed values fail closed
 - `CHATWOOT_WEBHOOK_SECRET`: Chatwoot webhook signature secret
 - `TELEGRAM_WEBHOOK_SECRET`: Telegram secret token
 - `TELEGRAM_SECRET_PATH`: Secret path segment for Telegram webhook
@@ -78,6 +83,13 @@ Core:
 - `CHATWOOT_API_TOKEN` and `CHATWOOT_API_URL`: Chatwoot API credentials
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
 - `CHATWOOT_ATTACHMENT_ALLOWED_HOSTS`: comma-separated exact HTTPS storage/CDN hosts permitted for Chatwoot attachment redirects
+
+Crisp menu actions bind to both `pickerId` and `value`. A normal text message is
+never interpreted as a Picker selection. Example option:
+
+```json
+{"pickerId":"main","value":"human","label":"Contact human","handoff":true}
+```
 
 Optional attachment limits:
 - `ATTACHMENT_MAX_BYTES`: maximum bytes per attachment, capped at 20 MiB

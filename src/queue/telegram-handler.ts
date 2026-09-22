@@ -1,4 +1,5 @@
 import { createChatwootMessage } from '../adapters/chatwoot/api';
+import { createCrispMessage } from '../adapters/crisp/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { getAttachmentConfig } from '../config/attachments';
@@ -8,7 +9,7 @@ import { insertMessage } from '../core/conversation-service';
 import { TelegramMessageEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
-import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 
 export async function processTelegramEvent(event: TelegramMessageEvent, env: Env): Promise<void> {
   const payload = event.payload;
@@ -67,7 +68,8 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
   );
   if (humanAction === 'STALE_PROFILE') return;
   if (content) {
-    const operationId = `send_chatwoot_${scopedMessageRef}`;
+    const destinationProvider = conv.helpdesk_provider === 'crisp' ? 'crisp' : 'chatwoot';
+    const operationId = `send_${destinationProvider}_${scopedMessageRef}`;
     await insertMessage(
       env,
       conv.id,
@@ -82,25 +84,31 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     await executeOutboundOperation(
       env,
       conv.id,
-      'chatwoot',
+      destinationProvider,
       'SEND_MESSAGE',
       async (opId, lifecycle) => {
-        const res = await createChatwootMessage(
-          env,
-          conv.helpdesk_account_ref,
-          conv.helpdesk_conversation_ref,
-          content,
-          opId,
-          lifecycle
-        );
+        const res = destinationProvider === 'crisp'
+          ? await createCrispMessage(
+              env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, content, String(opId), lifecycle
+            )
+          : await createChatwootMessage(
+              env,
+              conv.helpdesk_account_ref,
+              conv.helpdesk_conversation_ref,
+              content,
+              opId,
+              lifecycle
+            );
         return { providerMessageRef: res.messageId };
       },
       operationId,
       {
         subject: { type: 'MESSAGE', ref: `telegram:${scopedMessageRef}` },
-        targetEvidence: await buildChatwootTargetEvidence(
-          env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, operationId
-        )
+        targetEvidence: destinationProvider === 'crisp'
+          ? buildCrispTargetEvidence(conv.helpdesk_account_ref, conv.helpdesk_conversation_ref)
+          : await buildChatwootTargetEvidence(
+              env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, operationId
+            )
       }
     );
   }

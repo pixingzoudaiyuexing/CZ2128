@@ -57,6 +57,8 @@ describe('Worker Integration', () => {
       DB: new MockD1(),
       QUEUE: new MockQueue(),
       CHATWOOT_WEBHOOK_SECRET: 'secret',
+      CRISP_WEBHOOK_SECRET: 'crisp-secret',
+      CRISP_WEBSITE_ID: 'website-1',
       TELEGRAM_WEBHOOK_SECRET: 'tg-secret',
       TELEGRAM_SECRET_PATH: 'my-path',
       BOT_GROUP_ID: '-100',
@@ -69,6 +71,13 @@ describe('Worker Integration', () => {
     const enc = new TextEncoder();
     const key = await globalThis.crypto.subtle.importKey('raw', enc.encode('secret'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(`${timestamp}.${body}`));
+    return Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function signCrisp(payload: unknown, timestamp: number): Promise<string> {
+    const enc = new TextEncoder();
+    const key = await globalThis.crypto.subtle.importKey('raw', enc.encode('crisp-secret'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(`[${timestamp};${JSON.stringify(payload)}]`));
     return Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
@@ -108,6 +117,97 @@ describe('Worker Integration', () => {
         actorRole: 'CUSTOMER'
       }
     });
+  });
+
+  it('fetch() -> Crisp signed ingress -> QUEUE.send with website/session identity', async () => {
+    const payload = {
+      event: 'message:send',
+      data: {
+        website_id: 'website-1', session_id: 'session-1', fingerprint: 101,
+        type: 'text', from: 'user', content: 'Hello Crisp', user: { user_id: 'visitor-1' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = await signCrisp(payload, timestamp);
+    const req = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': signature
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const res = await Worker.fetch(req, env, ctx);
+    expect(res.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({
+      source: 'crisp', type: 'message_created',
+      payload: { websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1', content: 'Hello Crisp' }
+    });
+  });
+
+  it('enqueues a signed non-CZ2128 automated Crisp message', async () => {
+    const payload = {
+      event: 'message:received',
+      data: {
+        website_id: 'website-1', session_id: 'session-1', fingerprint: 110,
+        type: 'text', from: 'operator', origin: 'chat', automated: true, content: 'Automation reply',
+        user: { type: 'operator', user_id: 'other-automation' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({ payload: { actorRole: 'OPERATOR', content: 'Automation reply' } });
+  });
+
+  it('drops a signed Crisp echo only when the complete CZ2128 identity is present', async () => {
+    const payload = {
+      event: 'message:received',
+      data: {
+        website_id: 'website-1', session_id: 'session-1', fingerprint: 111,
+        type: 'text', from: 'operator', origin: 'chat', automated: true, content: 'Gateway reply',
+        user: { type: 'operator', user_id: 'cz2128' },
+        properties: { cz2128_operation_id: 'send_crisp_0:9' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(0);
+  });
+
+  it('rejects a Crisp request with stale timestamp before enqueue', async () => {
+    const payload = { event: 'message:send', data: { website_id: 'website-1', session_id: 'session-1', fingerprint: 102, type: 'text', content: 'stale' } };
+    const timestamp = Math.floor(Date.now() / 1000) - 301;
+    const signature = await signCrisp(payload, timestamp);
+    const req = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: { 'X-Crisp-Request-Timestamp': String(timestamp), 'X-Crisp-Signature': signature },
+      body: JSON.stringify(payload)
+    });
+
+    const res = await Worker.fetch(req, env, ctx);
+    expect(res.status).toBe(401);
+    expect(env.QUEUE.messages).toHaveLength(0);
   });
 
   it.each([

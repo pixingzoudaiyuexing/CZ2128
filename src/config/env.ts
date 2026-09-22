@@ -9,6 +9,12 @@ export interface Env {
     beforeAiDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
     beforeAiTelegramDispatchPreflight?: (env: Env, convId: string) => Promise<void>;
     beforeStaleOutboundConvergence?: (env: Env, eventId: string) => Promise<void>;
+    afterCrispHandoffStateApplied?: (
+      env: Env,
+      conversationId: string,
+      selectionIdentity: string,
+      result: 'APPLIED' | 'CURRENT'
+    ) => Promise<void>;
     afterChatwootLifecycleSnapshot?: (
       env: Env,
       eventId: string,
@@ -48,6 +54,12 @@ export interface Env {
   ATTACHMENT_SOURCE_TIMEOUT_MS?: string;
   ATTACHMENT_DESTINATION_TIMEOUT_MS?: string;
   CHATWOOT_ATTACHMENT_ALLOWED_HOSTS?: string;
+  CRISP_WEBHOOK_SECRET?: string;
+  CRISP_API_IDENTIFIER?: string;
+  CRISP_API_KEY?: string;
+  CRISP_WEBSITE_ID?: string;
+  CRISP_WELCOME_TEXT?: string;
+  CRISP_MENU_JSON?: string;
   AI_BASE_URL?: string;
   AI_API_KEY?: string;
   AI_MODEL?: string;

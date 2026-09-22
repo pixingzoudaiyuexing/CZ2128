@@ -555,7 +555,7 @@ function creationGuard(
          WHERE c.id = outbound_operations.conversation_id AND c.operator_thread_ref IS NULL
        )`
     );
-  } else {
+  } else if (targetEvidence.provider === 'telegram') {
     clauses.push(
       `AND EXISTS (
          SELECT 1 FROM conversations c
@@ -563,6 +563,8 @@ function creationGuard(
        )`
     );
     params.push(targetEvidence.threadRef || '');
+  } else {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_TARGET_CHANGED');
   }
 
   if (parent.subject_type === 'ATTACHMENT') {

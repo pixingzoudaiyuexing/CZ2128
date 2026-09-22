@@ -2,6 +2,19 @@
 
 Status: **APPROVED V1 DECISIONS**
 
+## D-022 - Crisp is the sole active helpdesk target
+
+**Decision:** New helpdesk ingress and outbound development targets Crisp only.
+The Crisp webhook uses its timestamp/signature contract, and Crisp API identity
+is `(website_id, session_id)`. CZ2128 stores Crisp conversations under
+`helpdesk_provider = 'crisp'` and preserves the existing D1 conversation,
+event-receipt, outbound-operation, AI handoff and Telegram topic contracts.
+
+**Reason:** The Owner ended the parallel Chatwoot/Crisp target strategy. Historical
+Chatwoot implementation and rows remain untouched so existing reliability and
+audit evidence cannot be invalidated. Crisp attachments, production migration,
+and real provider acceptance are separate gates.
+
 ## D-001 — Keep upstream helpdesk unmodified
 
 **Decision:** Do not fork or modify Chatwoot for V1. Integrate through supported Webhooks/API/Widget capabilities.

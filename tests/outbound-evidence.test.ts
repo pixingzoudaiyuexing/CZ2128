@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCrispTargetEvidence,
   buildChatwootTargetEvidence,
   buildTelegramTargetEvidence,
   parseTargetEvidence,
@@ -7,6 +8,17 @@ import {
 } from '../src/core/outbound-evidence';
 
 describe('outbound target evidence', () => {
+  it('serializes and round-trips Crisp website/session identity', () => {
+    const evidence = buildCrispTargetEvidence('website-1', 'session-1');
+    const serialized = serializeTargetEvidence(evidence);
+    expect(JSON.parse(serialized)).toEqual({
+      version: 1,
+      provider: 'crisp',
+      websiteRef: 'website-1',
+      sessionRef: 'session-1',
+      apiBase: 'https://api.crisp.chat/v1'
+    });
+  });
   it('distinguishes Chatwoot base paths on the same origin', async () => {
     const first = await buildChatwootTargetEvidence(
       { CHATWOOT_API_URL: 'https://chat.example/tenant-a' } as any,

@@ -441,6 +441,17 @@ export async function reconcileOutboundOperation(
       'TELEGRAM_HISTORICAL_LOOKUP_UNAVAILABLE'
     );
   }
+  if (evidence.provider === 'crisp') {
+    return transition(
+      env,
+      operation,
+      'STILL_AMBIGUOUS',
+      'RECONCILIATION_STILL_AMBIGUOUS',
+      'SYSTEM',
+      'crisp-conservative',
+      'CRISP_HISTORICAL_LOOKUP_UNAVAILABLE'
+    );
+  }
   let currentTarget: OutboundTargetEvidence;
   try {
     currentTarget = await buildChatwootTargetEvidence(
