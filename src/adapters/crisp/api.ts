@@ -8,7 +8,7 @@ import {
 import { OutboundAttemptLifecycle } from '../../core/outbound-operations';
 
 const CRISP_API_BASE = 'https://api.crisp.chat/v1';
-const CRISP_AUTOMATED_USER = { type: 'operator', user_id: 'cz2128', nickname: 'CZ2128' };
+const CRISP_AUTOMATED_USER = { nickname: 'CZ2128' };
 
 function crispAuth(env: Env): string {
   if (!env.CRISP_API_IDENTIFIER || !env.CRISP_API_KEY) {

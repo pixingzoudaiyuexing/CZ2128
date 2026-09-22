@@ -21,7 +21,7 @@ describe('Crisp event normalization', () => {
     });
   });
 
-  it('keeps sessions distinct and filters only fully identified CZ2128 echoes', async () => {
+  it('keeps sessions distinct and preserves bounded echo evidence for durable verification', async () => {
     const first = { event: 'message:send', data: { website_id: 'website-a', session_id: 's1', fingerprint: 1, type: 'text', from: 'user', content: 'A' } };
     const second = { ...first, data: { ...first.data, session_id: 's2' } };
     const firstEvent = normalizeCrispEvent(first, await crispMessageEventId(first, JSON.stringify(first)), 'website-a');
@@ -29,7 +29,7 @@ describe('Crisp event normalization', () => {
     expect(firstEvent?.eventId).not.toBe(secondEvent?.eventId);
     const legitimateAutomation = normalizeCrispEvent({
       event: 'message:received',
-      data: { ...first.data, automated: true, from: 'operator', origin: 'chat', user: { type: 'operator', user_id: 'other-bot' } }
+      data: { ...first.data, automated: true, from: 'operator', origin: 'chat', user: { nickname: 'Other bot', user_id: 'other-bot' } }
     }, 'automation', 'website-a');
     expect(legitimateAutomation).toMatchObject({ payload: { actorRole: 'OPERATOR', content: 'A' } });
 
@@ -43,10 +43,22 @@ describe('Crisp event normalization', () => {
       event: 'message:received',
       data: {
         ...first.data, from: 'operator', origin: 'chat', automated: true,
-        user: { type: 'operator', user_id: 'cz2128' },
+        user: { nickname: 'CZ2128' },
         properties: { cz2128_operation_id: 'send_crisp_1' }
       }
-    }, 'own-echo', 'website-a')).toBeNull();
+    }, 'own-echo', 'website-a')).toMatchObject({
+      payload: { actorRole: 'OPERATOR', automated: true, operationMarker: 'send_crisp_1' }
+    });
+
+    const invalidMarker = normalizeCrispEvent({
+      event: 'message:received',
+      data: {
+        ...first.data, from: 'operator', origin: 'chat', automated: true,
+        properties: { cz2128_operation_id: 'bad marker with spaces' }
+      }
+    }, 'invalid-marker', 'website-a');
+    expect(invalidMarker).not.toBeNull();
+    expect((invalidMarker?.payload as any).operationMarker).toBeUndefined();
   });
 
   it('normalizes operator and picker selection events', async () => {

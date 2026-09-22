@@ -120,12 +120,10 @@ export function normalizeCrispEvent(
   if (!['message:send', 'message:received', 'message:updated'].includes(payload.event)) return null;
   const data = payload.data;
   if (typeof data?.website_id !== 'string' || typeof data?.session_id !== 'string') return null;
-  const operationMarker = data.properties?.cz2128_operation_id;
-  const isCz2128Echo = payload.event === 'message:received' &&
-    data.from === 'operator' && data.origin === 'chat' && data.automated === true &&
-    data.user?.type === 'operator' && data.user?.user_id === 'cz2128' &&
-    typeof operationMarker === 'string' && /^[A-Za-z0-9:_-]{1,512}$/.test(operationMarker);
-  if (isCz2128Echo) return null;
+  const operationMarker = typeof data.properties?.cz2128_operation_id === 'string' &&
+    /^[A-Za-z0-9:_-]{1,512}$/.test(data.properties.cz2128_operation_id)
+    ? data.properties.cz2128_operation_id
+    : undefined;
 
   const selection = readCrispPickerSelection(payload as CrispWebhookPayload);
   if (payload.event === 'message:updated' && !selection) return null;
@@ -155,6 +153,8 @@ export function normalizeCrispEvent(
       messageRef,
       actorRole: isOperator ? 'OPERATOR' : 'CUSTOMER',
       content,
+      ...(data.automated === true ? { automated: true } : {}),
+      ...(operationMarker ? { operationMarker } : {}),
       ...(selection ? {
         selection: {
           pickerId: selection.pickerId,

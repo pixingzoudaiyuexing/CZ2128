@@ -4,7 +4,7 @@ import { Env } from '../config/env';
 import { pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { CrispMessageEvent } from '../core/events';
-import { executeOutboundOperation } from '../core/outbound-operations';
+import { executeOutboundOperation, getOutboundOperation } from '../core/outbound-operations';
 import { buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { logger } from '../observability/logger';
@@ -156,6 +156,22 @@ async function ensureTelegramTopic(
   return updateOperatorThreadRef(env, conversationId, result.providerMessageRef);
 }
 
+async function isOwnCrispEcho(
+  env: Env,
+  conversationId: string,
+  payload: CrispMessageEvent['payload']
+): Promise<boolean> {
+  if (payload.actorRole !== 'OPERATOR' || payload.automated !== true || !payload.operationMarker) return false;
+  const operation = await getOutboundOperation(env, payload.operationMarker);
+  if (!operation || operation.conversation_id !== conversationId ||
+      operation.destination_provider !== 'crisp' || operation.operation_type !== 'SEND_MESSAGE') {
+    return false;
+  }
+  if (operation.provider_message_ref) return operation.provider_message_ref === payload.messageRef;
+  return (operation.status === 'SENDING' || operation.status === 'AMBIGUOUS') &&
+    operation.request_started_at !== null;
+}
+
 export async function processCrispEvent(event: CrispMessageEvent, env: Env): Promise<void> {
   const payload = event.payload;
   const content = payload.content || '';
@@ -163,6 +179,14 @@ export async function processCrispEvent(event: CrispMessageEvent, env: Env): Pro
     env, 'crisp', payload.websiteRef, payload.sessionRef, payload.customerRef
   );
   const isOperator = payload.actorRole === 'OPERATOR';
+  if (await isOwnCrispEcho(env, conv.id, payload)) {
+    logger.info('Crisp self echo suppressed', {
+      conversation_id: conv.id,
+      operation_id: payload.operationMarker || 'provider-fingerprint',
+      result: 'SUPPRESSED'
+    });
+    return;
+  }
   if (isOperator) await pauseOperator(env, conv.id);
   if (content) {
     await insertMessage(
