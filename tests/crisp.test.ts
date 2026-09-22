@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCrispMessage, createCrispPicker } from '../src/adapters/crisp/api';
 import { verifyCrispWebhook } from '../src/adapters/crisp/webhook';
@@ -8,20 +9,16 @@ const env = {
   CRISP_API_KEY: 'key'
 } as any;
 
-async function sign(body: unknown, timestamp: number, secret: string): Promise<string> {
-  const trace = `[${timestamp};${JSON.stringify(body)}]`;
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const bytes = new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(trace)));
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+// Independent wire-level signer matching Crisp's documented Go/HTTP contract.
+function signWire(rawBody: string, timestamp: string, secret: string): string {
+  return createHmac('sha256', secret).update(`[${timestamp};${rawBody}]`).digest('hex');
 }
 
-function request(body: string, timestamp: number, signature: string, website = 'website-1'): Request {
+function request(body: string, timestamp: string, signature: string): Request {
   return new Request('https://gateway.example/webhooks/crisp', {
     method: 'POST',
     headers: {
-      'X-Crisp-Request-Timestamp': String(timestamp),
+      'X-Crisp-Request-Timestamp': timestamp,
       'X-Crisp-Signature': signature
     },
     body
@@ -31,32 +28,89 @@ function request(body: string, timestamp: number, signature: string, website = '
 describe('Crisp adapter', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('verifies the official Crisp signature and website binding', async () => {
-    const payload = {
+  it('verifies canonical wire bytes with a fresh seconds timestamp and website binding', async () => {
+    const rawBody = JSON.stringify({
       event: 'message:send',
       data: { website_id: 'website-1', session_id: 'session-1', fingerprint: 10, type: 'text', content: 'Hi' }
-    };
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = await sign(payload, timestamp, 'secret');
+    });
+    const timestamp = String(Math.floor(Date.now() / 1000));
     const result = await verifyCrispWebhook(
-      request(JSON.stringify(payload), timestamp, signature), 'secret', 'website-1'
+      request(rawBody, timestamp, signWire(rawBody, timestamp, 'secret')), 'secret', 'website-1'
     );
-    expect(result.valid).toBe(true);
+    expect(result).toMatchObject({ valid: true, timestampFormat: 'seconds' });
     expect(result.payload?.data.session_id).toBe('session-1');
+    expect(result.rawBody).toBe(rawBody);
   });
 
-  it('rejects tampering, wrong website and stale replay', async () => {
-    const payload = { event: 'message:send', data: { website_id: 'website-1' } };
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = await sign(payload, timestamp, 'secret');
+  it('verifies the exact raw request body with a fresh milliseconds timestamp', async () => {
+    const rawBody = '{\n  "event": "message:send",\n  "data": { "website_id": "website-1", "session_id": "session-raw", "fingerprint": 11, "type": "text", "content": "Hi" }\n}';
+    const timestamp = String(Date.now());
+    const signature = signWire(rawBody, timestamp, 'secret');
+
+    const result = await verifyCrispWebhook(request(rawBody, timestamp, signature), 'secret', 'website-1');
+
+    expect(result).toMatchObject({ valid: true, timestampFormat: 'milliseconds' });
+    expect(result.payload?.data.session_id).toBe('session-raw');
+    expect(result.rawBody).toBe(rawBody);
+  });
+
+  it('does not canonicalize a non-canonical body while verifying its signature', async () => {
+    const rawBody = '{ "event": "message:send", "data": { "website_id": "website-1" } }';
+    const canonicalBody = JSON.stringify(JSON.parse(rawBody));
+    expect(canonicalBody).not.toBe(rawBody);
+    const timestamp = String(Date.now());
+    const canonicalSignature = signWire(canonicalBody, timestamp, 'secret');
+
+    await expect(verifyCrispWebhook(request(rawBody, timestamp, canonicalSignature), 'secret', 'website-1'))
+      .resolves.toMatchObject({
+        valid: false,
+        failure: 'CRISP_VERIFY_SIGNATURE_MISMATCH',
+        timestampFormat: 'milliseconds'
+      });
+  });
+
+  it('rejects tampering, wrong website and stale replay in both supported timestamp units', async () => {
+    const rawBody = JSON.stringify({ event: 'message:send', data: { website_id: 'website-1' } });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = signWire(rawBody, timestamp, 'secret');
+
     await expect(verifyCrispWebhook(request('{"tampered":true}', timestamp, signature), 'secret', 'website-1'))
-      .resolves.toMatchObject({ valid: false });
-    await expect(verifyCrispWebhook(request(JSON.stringify(payload), timestamp, signature), 'secret', 'other'))
-      .resolves.toMatchObject({ valid: false });
-    const oldTimestamp = timestamp - 301;
-    const oldSignature = await sign(payload, oldTimestamp, 'secret');
-    await expect(verifyCrispWebhook(request(JSON.stringify(payload), oldTimestamp, oldSignature), 'secret', 'website-1'))
-      .resolves.toMatchObject({ valid: false });
+      .resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_SIGNATURE_MISMATCH' });
+    await expect(verifyCrispWebhook(request(rawBody, timestamp, signature), 'secret', 'other'))
+      .resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_WEBSITE_MISMATCH' });
+
+    await expect(verifyCrispWebhook(request(rawBody, timestamp, signature), 'wrong-secret', 'website-1'))
+      .resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_SIGNATURE_MISMATCH' });
+
+    const staleSeconds = String(Math.floor(Date.now() / 1000) - 301);
+    await expect(verifyCrispWebhook(
+      request(rawBody, staleSeconds, signWire(rawBody, staleSeconds, 'secret')), 'secret', 'website-1'
+    )).resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_TIMESTAMP_STALE' });
+
+    const staleMilliseconds = String(Date.now() - 301_000);
+    await expect(verifyCrispWebhook(
+      request(rawBody, staleMilliseconds, signWire(rawBody, staleMilliseconds, 'secret')), 'secret', 'website-1'
+    )).resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_TIMESTAMP_STALE' });
+  });
+
+  it('fails closed when the configured Website binding is missing', async () => {
+    const rawBody = JSON.stringify({ event: 'message:send', data: { website_id: 'website-1' } });
+    const timestamp = String(Date.now());
+    const signature = signWire(rawBody, timestamp, 'secret');
+
+    await expect(verifyCrispWebhook(request(rawBody, timestamp, signature), 'secret', undefined))
+      .resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_CONFIG_MISSING' });
+  });
+
+  it('fails closed on missing headers and malformed signature material', async () => {
+    const rawBody = JSON.stringify({ event: 'message:send', data: { website_id: 'website-1' } });
+    const withoutHeaders = new Request('https://gateway.example/webhooks/crisp', { method: 'POST', body: rawBody });
+    await expect(verifyCrispWebhook(withoutHeaders, 'secret', 'website-1'))
+      .resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_HEADERS_MISSING' });
+
+    const timestamp = String(Date.now());
+    await expect(verifyCrispWebhook(request(rawBody, timestamp, 'not-hex'), 'secret', 'website-1'))
+      .resolves.toMatchObject({ valid: false, failure: 'CRISP_VERIFY_SIGNATURE_FORMAT_INVALID' });
   });
 
   it('sends an automated Crisp text with deterministic API shape', async () => {
