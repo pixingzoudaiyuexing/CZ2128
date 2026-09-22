@@ -24,6 +24,10 @@ export interface LogContext {
   http_status?: number;
   retry_after_seconds?: number;
   retry_exhausted?: boolean;
+  request_type?: 'text' | 'picker' | 'unknown';
+  provider_error?: boolean;
+  provider_reason_code?: 'invalid_data' | 'invalid_session' | 'UNKNOWN_PROVIDER_REASON';
+  provider_response_state?: 'JSON_OBJECT' | 'EMPTY' | 'NON_JSON' | 'TOO_LARGE' | 'READ_ERROR';
   source_stage?: 'TELEGRAM_GET_FILE' | 'TELEGRAM_FILE_GET' | 'SOURCE_STREAM';
   source_result?:
     | 'HTTP_4XX'

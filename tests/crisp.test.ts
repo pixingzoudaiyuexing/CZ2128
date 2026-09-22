@@ -134,13 +134,136 @@ describe('Crisp adapter', () => {
     expect(lifecycle.responseObserved).toHaveBeenCalledWith(200);
   });
 
-  it('classifies a visible Crisp HTTP 400 as final provider failure', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ error: true, reason: 'invalid_payload' }), { status: 400 })
+  it('logs only whitelisted Crisp HTTP 400 metadata and keeps the failure final', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        error: true,
+        reason: 'invalid_data',
+        data: { message: 'user@example.com session-SECRET token-SECRET should never be logged' }
+      }), { status: 400 })
     );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
     await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'op-400')).rejects.toMatchObject({
-      code: 'OUTBOUND_PROVIDER_4XX_FINAL', provider: 'CRISP'
+      outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', provider: 'CRISP', httpStatus: 400
     });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
+    const logged = String(warn.mock.calls[0][0]);
+    expect(logged).toContain('invalid_data');
+    expect(logged).toContain('"provider_error":true');
+    expect(logged).toContain('"request_type":"text"');
+    expect(logged).toContain('"provider_response_state":"JSON_OBJECT"');
+    expect(logged).not.toContain('user@example.com');
+    expect(logged).not.toContain('session-SECRET');
+    expect(logged).not.toContain('token-SECRET');
+    expect(logged).not.toContain('Reply');
+    expect(logged).not.toContain('session-1');
+  });
+
+  it('never logs an arbitrary Crisp reason string', async () => {
+    const sensitiveReason = 'invalid for user@example.com token-SECRET session-SECRET';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: true, reason: sensitiveReason }), { status: 400 })
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(createCrispPicker(env, 'website-1', 'session-1', 'main', 'Choose', [
+      { value: 'human', label: 'Contact human' }
+    ], 'picker-op-400')).rejects.toMatchObject({
+      outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400
+    });
+
+    const logged = String(warn.mock.calls[0][0]);
+    expect(logged).toContain('UNKNOWN_PROVIDER_REASON');
+    expect(logged).toContain('"request_type":"picker"');
+    expect(logged).not.toContain(sensitiveReason);
+    expect(logged).not.toContain('user@example.com');
+    expect(logged).not.toContain('token-SECRET');
+    expect(logged).not.toContain('session-SECRET');
+    expect(logged).not.toContain('Contact human');
+  });
+
+  it.each([
+    ['empty', '', 'EMPTY'],
+    ['malformed JSON', '{bad-json', 'NON_JSON'],
+    ['oversized', 'x'.repeat(5000), 'TOO_LARGE']
+  ])('keeps HTTP 400 final when the diagnostic body is %s', async (_label, responseBody, expectedState) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(responseBody, { status: 400 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'diag-400')).rejects.toMatchObject({
+      outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400
+    });
+
+    const logged = String(warn.mock.calls[0][0]);
+    expect(logged).toContain('UNKNOWN_PROVIDER_REASON');
+    expect(logged).toContain(`"provider_response_state":"${expectedState}"`);
+    if (responseBody) expect(logged).not.toContain(responseBody.slice(0, 64));
+  });
+
+  it('keeps HTTP 400 final when diagnostic response reading fails', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error('token-SECRET diagnostic read failure'));
+      }
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream, { status: 400 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'read-error-400')).rejects.toMatchObject({
+      outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400
+    });
+    const logged = String(warn.mock.calls[0][0]);
+    expect(logged).toContain('READ_ERROR');
+    expect(logged).toContain('UNKNOWN_PROVIDER_REASON');
+    expect(logged).not.toContain('token-SECRET');
+  });
+
+  it('keeps HTTP 400 final even if diagnostic logging itself fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: true, reason: 'invalid_session' }), { status: 400 })
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => { throw new Error('diagnostic logger failure'); });
+
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'logger-fail-400')).rejects.toMatchObject({
+      outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', provider: 'CRISP', httpStatus: 400
+    });
+  });
+
+  it('whitelists the documented invalid_session reason without exposing other response fields', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        error: true, reason: 'invalid_session',
+        data: { message: 'token-SECRET user@example.com' }
+      }), { status: 400 })
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'invalid-session-400')).rejects.toMatchObject({
+      outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400
+    });
+    const logged = String(warn.mock.calls[0][0]);
+    expect(logged).toContain('invalid_session');
+    expect(logged).not.toContain('token-SECRET');
+    expect(logged).not.toContain('user@example.com');
+  });
+
+  it.each([
+    [429, 'RETRYABLE', 'OUTBOUND_RATE_LIMITED'],
+    [408, 'AMBIGUOUS', 'OUTBOUND_TIMEOUT_AMBIGUOUS'],
+    [503, 'AMBIGUOUS', 'OUTBOUND_PROVIDER_5XX_AMBIGUOUS']
+  ])('preserves Crisp HTTP %s reliability classification', async (status, outcome, code) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: true, reason: 'private_reason' }), { status })
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', `op-${status}`)).rejects.toMatchObject({
+      outcome, code, provider: 'CRISP', httpStatus: status
+    });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('sends a Crisp picker and fails closed on invalid success', async () => {
