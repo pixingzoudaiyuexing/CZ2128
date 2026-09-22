@@ -123,12 +123,24 @@ describe('Crisp adapter', () => {
     expect(url).toBe('https://api.crisp.chat/v1/website/website-1/conversation/session-1/message');
     expect(new Headers(init?.headers).get('Authorization')).toBe(`Basic ${btoa('identifier:key')}`);
     expect(new Headers(init?.headers).get('X-Crisp-Tier')).toBe('plugin');
-    expect(JSON.parse(String(init?.body))).toMatchObject({
+    const body = JSON.parse(String(init?.body));
+    expect(body).toMatchObject({
       type: 'text', from: 'operator', origin: 'chat', content: 'Reply', automated: true,
-      user: { user_id: 'cz2128' }, properties: { cz2128_operation_id: 'op-99' }
+      user: { nickname: 'CZ2128' }, properties: { cz2128_operation_id: 'op-99' }
     });
+    expect(body.user).not.toHaveProperty('type');
+    expect(body.user).not.toHaveProperty('user_id');
     expect(lifecycle.requestStarted).toHaveBeenCalledOnce();
     expect(lifecycle.responseObserved).toHaveBeenCalledWith(200);
+  });
+
+  it('classifies a visible Crisp HTTP 400 as final provider failure', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: true, reason: 'invalid_payload' }), { status: 400 })
+    );
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'op-400')).rejects.toMatchObject({
+      code: 'OUTBOUND_PROVIDER_4XX_FINAL', provider: 'CRISP'
+    });
   });
 
   it('sends a Crisp picker and fails closed on invalid success', async () => {
@@ -138,9 +150,14 @@ describe('Crisp adapter', () => {
     await createCrispPicker(env, 'website-1', 'session-1', 'main', 'Choose', [
       { value: 'human', label: 'Contact human' }
     ], 'picker-op');
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
-      type: 'picker', content: { id: 'main', text: 'Choose', choices: [{ value: 'human', selected: false }] }
+    const pickerBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(pickerBody).toMatchObject({
+      type: 'picker', from: 'operator', origin: 'chat', automated: true,
+      user: { nickname: 'CZ2128' }, properties: { cz2128_operation_id: 'picker-op' },
+      content: { id: 'main', text: 'Choose', choices: [{ value: 'human', selected: false }] }
     });
+    expect(pickerBody.user).not.toHaveProperty('type');
+    expect(pickerBody.user).not.toHaveProperty('user_id');
     await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'invalid-op')).rejects.toMatchObject({
       code: 'OUTBOUND_INVALID_SUCCESS_AMBIGUOUS', provider: 'CRISP'
     });

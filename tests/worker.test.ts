@@ -180,7 +180,7 @@ describe('Worker Integration', () => {
       data: {
         website_id: 'website-1', session_id: 'session-1', fingerprint: 110,
         type: 'text', from: 'operator', origin: 'chat', automated: true, content: 'Automation reply',
-        user: { type: 'operator', user_id: 'other-automation' }
+        user: { nickname: 'Other automation', user_id: 'other-automation' }
       }
     };
     const timestamp = Math.floor(Date.now() / 1000);
@@ -198,13 +198,13 @@ describe('Worker Integration', () => {
     expect(env.QUEUE.messages[0]).toMatchObject({ payload: { actorRole: 'OPERATOR', content: 'Automation reply' } });
   });
 
-  it('drops a signed Crisp echo only when the complete CZ2128 identity is present', async () => {
+  it('enqueues a signed Crisp echo candidate for durable handler verification', async () => {
     const payload = {
       event: 'message:received',
       data: {
         website_id: 'website-1', session_id: 'session-1', fingerprint: 111,
         type: 'text', from: 'operator', origin: 'chat', automated: true, content: 'Gateway reply',
-        user: { type: 'operator', user_id: 'cz2128' },
+        user: { nickname: 'CZ2128' },
         properties: { cz2128_operation_id: 'send_crisp_0:9' }
       }
     };
@@ -219,7 +219,10 @@ describe('Worker Integration', () => {
     });
     const response = await Worker.fetch(request, env, ctx);
     expect(response.status).toBe(200);
-    expect(env.QUEUE.messages).toHaveLength(0);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({
+      payload: { actorRole: 'OPERATOR', automated: true, operationMarker: 'send_crisp_0:9' }
+    });
   });
 
   it('logs only a safe Crisp verification category for rejected ingress', async () => {
