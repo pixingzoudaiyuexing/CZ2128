@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C in execution with Crisp-02 basic-support Staging acceptance complete**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C in execution with scoped Crisp-02 through Crisp-05 Staging evidence recorded / Production not validated**
 
 ## Crisp-01 - Basic Crisp support bridge
 
@@ -50,6 +50,106 @@ This acceptance does **not** close Crisp attachments, close/reopen lifecycle,
 Crisp AI generation/durable AI recovery, real R2 data-plane testing, Queue/D1
 concurrency/fault acceptance, Admin recovery, load/multi-region, monitoring,
 rollback drills or Production.
+
+## Crisp-03 - Crisp AI delivery and human-handoff fencing
+
+Status: **COMPLETE / SCOPED REAL STAGING EVIDENCE RECORDED**
+
+PR #29 adapted the existing durable AI state machine to Crisp without changing
+the historical Chatwoot reliability contracts. Exact head
+`0baa56160fff71f26fb2822e5bf67aab770cbdd0` passed CI run `35814372077`
+(#148) and merged as `04e49b609ec71ce08ec58a3dcb90cd270d830441`.
+A real Staging handoff observation then exposed a narrower trigger-gating defect;
+PR #30 fixed it at exact head `608107cca5780f3db8ed2d9addd4bb1f64f75546`,
+passed CI run `35817480866` (#150), and merged as
+`0cbe426f151ed378ad70c85615ac00c934e8505d`.
+
+Bounded real Staging evidence includes one Crisp AI run that reached durable
+`SUCCESS` at attempt 1, one Crisp AI visible send at HTTP 202, and one Telegram
+mirror at HTTP 200. The same test conversation later entered
+`PAUSED_OPERATOR`; the historical pre-fix zero-attempt
+`CANCELLED_BY_HANDOFF` row remains preserved, while post-fix customer traffic
+continued to Telegram without creating another AI run while paused.
+
+This does **not** prove real provider retry exhaustion, real AI-provider outage
+classification, load/multi-region behavior, historical DLQ redrive, or
+Production.
+
+## Crisp-04 - Crisp conversation lifecycle to the original Telegram Topic
+
+Status: **COMPLETE / SCOPED REAL STAGING E2E RECORDED**
+
+PR #31 implemented authoritative Crisp `session:set_state` coordination at
+exact head `9f1baf25269f51322012ab927f74b1a2744630f4`, passed CI run
+`35824245069` (#152), and merged as
+`4ba044d8c9f05c50cb7ce25b0b5bb809556aa964`.
+
+Read-only durable Staging evidence contains Crisp conversations on Telegram
+Topics 89 and 95 with one `CREATE_TOPIC` each, followed by
+`CLOSE_TOPIC -> REOPEN_TOPIC`; every lifecycle provider action is `SENT`,
+HTTP 200, attempt 1, and the final mapping is the same original Topic in
+`OPEN` state. Existing `PAUSED_OPERATOR` / handoff epochs were not reset.
+
+The automated suite covers duplicate, stale/out-of-order and concurrent
+lifecycle races. Those fault/race cases were not separately injected as real
+Staging faults, and Production remains unvalidated.
+
+## Crisp-05 - Crisp attachments and temporary ordinary-file upload
+
+Status: **STAGE A SCOPED TRANSPORT EVIDENCE RECORDED / STAGE B SCOPED ISOLATED STAGING ACCEPTED**
+
+### Stage A - Existing attachment core adapted to Crisp
+
+PR #32 exact head `ab1e3e5dd654b87d183f3f826d6e4924726909ec` passed CI run
+`35845173556` (#180). The first Telegram-source real Staging attempt exposed a
+Telegram file-body redirect failure before any Crisp attachment send. PR #33
+exact head `b53213364fa85baf520d858cb18d3b7b0a2e2aa3` passed CI run
+`35852934163` (#182) and fixed only the official Telegram file-body redirect
+handling.
+
+Retained durable evidence for Topic 103 contains five Stage A attachment rows:
+one 208,297-byte Crisp raster image delivered to Telegram at attempt 1; two
+pre-fix Telegram-source rows preserved as
+`FAILED_FINAL / ATTACHMENT_SOURCE_TRANSIENT / attempt 3`; and post-fix Telegram
+photo (18,031 bytes) plus ordinary text file (128 bytes) delivered to Crisp at
+attempt 1 / HTTP 202. The Crisp-source object's private R2 body was read back at
+the expected size. This proves the bounded transport/provider slice, not every
+client UX subcase: the record does not distinguish Crisp paste versus drag, and
+does not prove a human-observed Crisp Markdown image render or a Stage A
+ordinary-file download click.
+
+### Stage B - Operator-created temporary customer upload
+
+PR #34 exact head `cf956550718f6f235b76c720a83645873778d57f` passed CI
+#184; PR #35 exact head `3fc2af45100c08bdfbd802c03d6c9b76d36a0a09`
+passed CI #186; and the final HTTP-409 fix PR #36 exact head
+`f3c94fe7bc6a63ef7992408c4997553834eb35a0` passed CI run
+`35875802667` (#188), merged as
+`d635520b1cde7a49e75ef5f658c862d5e856c5db`, with main CI run
+`35881127038` (#189) successful.
+
+Primary accepted the isolated-Staging Stage B flow at Worker version
+`4d13f217-bd80-4c7c-a6bf-8ed13669be77`: an authorized Topic 117 command
+created a server-bound invite; `kefu.txt` (11,272 bytes) became
+`ACCEPTED`, was present in private R2 at the same size, reached attachment
+`DELIVERED`, and produced one Telegram `SEND_ATTACHMENT` at HTTP 200 /
+attempt 1. The operator successfully downloaded through the controlled
+forced-download link. The upload invite later failed closed as `EXPIRED` /
+`Not Found`; a separate fresh invite was explicitly `REVOKED` with a
+Telegram HTTP-200 acknowledgement. Final Topic 117 evidence had zero ACTIVE
+invites, `ai_runs = 0`, and one `CREATE_TOPIC`.
+
+The earlier real HTTP-409 failure remains preserved as one `EXHAUSTED` invite
+and three `FAILED_FINAL / UPLOAD_INVITE_LIMIT_EXCEEDED` attachment rows. PR
+#36 fixed the trigger-inclusive D1 `meta.changes` interpretation and the
+post-fix real upload E2E passed. Duplicate command/upload-id convergence is
+**AUTOMATED PASS**; real Staging observed no duplicate provider side effect but
+did not inject the same Telegram update twice.
+
+Crisp-05 does **not** establish real 20 MiB-boundary behavior, large-file
+multipart behavior, every media/file type, long-term R2 cleanup, proxy
+HEAD/Range coverage, real D1/R2 outage injection, real high concurrency/load,
+all Admin reliability operations, or Production.
 
 ## Phase 0 — Architecture Freeze
 

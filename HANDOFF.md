@@ -4,13 +4,14 @@
 
 Owner selected Crisp as the sole active helpdesk target in Crisp-01. Chatwoot
 implementation and historical state are preserved but must not receive new
-feature work or be presented as Crisp validation. Crisp-01 is merged and Crisp-02
-has completed Primary-accepted real Staging basic-support E2E. The isolated 4C
-staging Worker is deployed; Production has not been modified by Crisp-02 or the
-subsequent documentation reconciliation.
+feature work or be presented as Crisp validation. Phase 4C now has separately
+bounded real-Staging evidence for Crisp-02 basic support, Crisp-03 AI/handoff,
+Crisp-04 close/reopen lifecycle and Crisp-05 attachment/upload transport. The
+isolated 4C staging Worker is deployed; Production remains outside these
+acceptance results and has not been deployed by Crisp-02 through Crisp-06.
 
 ## 状态
-- **Current Main before this documentation PR**: `512917eecb75df534b5cf1733f296ae06818d125` (PR #27 merge commit)
+- **Current Main before this documentation PR**: `d635520b1cde7a49e75ef5f658c862d5e856c5db` (PR #36 merge commit)
 - **Phase 4B-5 Documentation Merge**: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8` (PR #15 merge commit)
 - **Phase 4B-5 Implementation Base**: `62c7c51120ad4d44fcdc4cff089173258b719c28` (historical pre-PR #15 main)
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
@@ -28,6 +29,14 @@ subsequent documentation reconciliation.
 - **PR #15**: merged; Phase 4B-5 reliability runbook and readiness documentation accepted
 - **PR #21**: merged; Crisp-01 basic Crisp support bridge complete
 - **PR #27**: merged; Crisp-02 standard numeric fingerprint correlation; real Staging basic-support acceptance subsequently completed
+- **PR #29**: merged; Crisp-03 durable Crisp AI delivery
+- **PR #30**: merged; Crisp-03 handoff-state trigger gate follow-up
+- **PR #31**: merged; Crisp-04 Crisp conversation close/reopen coordination
+- **PR #32**: merged; Crisp-05 Stage A attachment bridge through private R2
+- **PR #33**: merged; Crisp-05 Stage A Telegram file redirect fix
+- **PR #34**: merged; Crisp-05 Stage B temporary customer upload invites
+- **PR #35**: merged; Crisp-05 Stage B D1 trigger parser fix
+- **PR #36**: merged as `d635520b1cde7a49e75ef5f658c862d5e856c5db`; trigger-inclusive D1 change-count fix; main CI #189 passed
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
@@ -42,7 +51,7 @@ subsequent documentation reconciliation.
 - **Phase 4B-4B**: ACCEPTED / COMPLETE / FROZEN / MERGED
 - **Phase 4B-4 overall**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-5**: ACCEPTED / COMPLETE / FROZEN / MERGED
-- **Phase 4C**: IN EXECUTION — isolated staging foundation deployed; Crisp-02 scoped basic-support acceptance complete
+- **Phase 4C**: IN EXECUTION — isolated staging foundation deployed; bounded Crisp-02, Crisp-03, Crisp-04 and Crisp-05 Staging evidence recorded; broader matrix rows and Production remain open
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
@@ -82,7 +91,7 @@ subsequent documentation reconciliation.
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5 is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4C is IN EXECUTION with only the scoped Crisp-02 basic-support Staging result accepted; `CONFIRMED_NOT_SENT` activation remains NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5 is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4C is IN EXECUTION with separately bounded Crisp-02 basic-support, Crisp-03 AI/handoff, Crisp-04 lifecycle and Crisp-05 attachment/upload Staging evidence recorded; this does not activate `CONFIRMED_NOT_SENT` or close the broader pre-production matrix.
 
 ## Phase 4B-5 Documentation and Phase 4C Evidence
 - Operational state and incident handling: [RELIABILITY-RUNBOOK.md](RELIABILITY-RUNBOOK.md)
@@ -99,17 +108,27 @@ subsequent documentation reconciliation.
 - Chatwoot downloads use exact HTTPS allowlists, manual redirects and cross-origin credential stripping.
 - Secure proxy supports GET, HEAD and single byte ranges with uniform 404 access failures.
 - Hourly cleanup removes at most 100 expired rows after R2 deletion succeeds.
-- Real R2, Chatwoot and Telegram staging validation remains required.
+- Broader real R2 proxy/cleanup and historical Chatwoot compatibility validation remain required. Telegram has scoped Crisp real-Staging evidence, but complete attachment/media, bot-rotation/group-migration and concurrency/fault coverage remains incomplete.
 
 ## Pre-Production Requirements
 - Real Cloudflare R2: write, multipart, read, Range and delete.
 - Real Telegram: `getFile` plus multipart `sendPhoto`, `sendDocument`, `sendVideo`, `sendAudio` and `sendVoice`.
-- Historical Chatwoot compatibility: attachment `data_url` download/redirect behavior and multipart `attachments[]` remain unvalidated. Current-target Crisp attachments require their own future acceptance scope.
+- Historical Chatwoot compatibility: attachment `data_url` download/redirect behavior and multipart `attachments[]` remain unvalidated. Crisp-05 now supplies separate scoped Crisp attachment/upload evidence, but Stage A paste-vs-drag UX, human-observed Crisp Markdown render/Stage A download, proxy HEAD/Range, 20 MiB/large-file multipart, long-term cleanup/lifecycle, real R2/D1 faults and high concurrency remain unvalidated.
 - Secure proxy: GET, HEAD, Range and response headers in staging.
 - Cleanup: hourly scheduled trigger and R2-before-D1 deletion behavior.
 - Real Queue/D1 concurrency and 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` memory/load behavior.
 - Apply and verify the seven-day R2 object/aborted-multipart lifecycle.
 - Residual risks include DNS rebinding through an explicitly trusted allowlisted DNS hostname and an extreme R2 I/O stall outliving the attachment event receipt lease.
+
+## Current Crisp Staging Acceptance Snapshot
+
+- **Crisp-02:** scoped real basic-support bridge, Picker, numeric fingerprint self-echo suppression and Picker-driven handoff accepted.
+- **Crisp-03:** real AI happy-path delivery plus Telegram mirror observed at attempt 1; handoff trigger defect was preserved, fixed by PR #30, and post-fix paused customer traffic produced no new AI run.
+- **Crisp-04:** Crisp close/reopen was observed on the same original Telegram Topics 89 and 95, with one CREATE_TOPIC per conversation and lifecycle sends at HTTP 200 / attempt 1.
+- **Crisp-05 Stage A:** retained Topic 103 evidence contains one Crisp image delivered to Telegram, two pre-hotfix Telegram-source failures, and post-hotfix Telegram image/file provider delivery to Crisp. The record does not prove paste-vs-drag gesture identity, human-observed Crisp Markdown rendering, or a Stage A download click.
+- **Crisp-05 Stage B:** Primary accepted the Topic 117 ordinary-file flow at Worker version `4d13f217-bd80-4c7c-a6bf-8ed13669be77`: 11,272-byte `kefu.txt` upload, private R2 persistence/readback, Telegram controlled download, real download success, TTL expiry/Not Found, explicit revoke, no AI run and no duplicate topic. The historical three HTTP-409 `FAILED_FINAL / UPLOAD_INVITE_LIMIT_EXCEEDED` rows remain preserved.
+- **Duplicate evidence boundary:** command/upload-id duplicate convergence is AUTOMATED PASS. Real Staging observed no duplicate provider side effect but did not inject the same Telegram update twice.
+- **Production:** NOT DEPLOYED / NOT VALIDATED by these Crisp tasks.
 
 ## Phase 3.5 Runtime Control Plane
 - `runtime_config` stores plain overrides or AES-256-GCM encrypted secrets with optimistic versions.
@@ -122,8 +141,8 @@ subsequent documentation reconciliation.
 - The Support profile version scopes Queue/event/message/outbound identity and `(profile version, update_id)` ordering; old-generation Queue events cannot perform side effects.
 - Runtime-config store read failure fails closed for runtime-controlled providers; env fallback requires a successful D1 read proving absence.
 - Support Bot rotation requests `drop_pending_updates=true` when setting the candidate webhook.
-- The Cloudflare R2 account is enabled, but real R2 staging remains incomplete and bucket/lifecycle validation is pending.
-- Real Admin Bot, Support Bot rotation, Telegram group migration, Telegram provider, Chatwoot and Queue/D1 concurrency validation remain NOT TESTED.
+- The Cloudflare R2 account is enabled and Crisp-05 supplies bounded real private-object write/read evidence, but full R2 staging remains incomplete: max-size multipart, proxy HEAD/Range/delete, scheduled cleanup and long-lived lifecycle execution remain pending.
+- Real Admin Bot reliability operations, Support Bot rotation, Telegram group migration, remaining Telegram provider operations beyond the scoped Crisp flows, historical Chatwoot compatibility and real Queue/D1 concurrency validation remain NOT TESTED.
 - Phase 4B-2C-3 adds no `0006`, Admin reliability UI/commands, DLQ consumer, `CONFIRMED_NOT_SENT` activation or Durable Objects. Production provider/load validation remains NOT TESTED.
 
 ## Phase 4B-3 Reliability Control Plane
