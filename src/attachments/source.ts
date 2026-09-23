@@ -466,7 +466,7 @@ export async function downloadTelegramAttachment(
   const downloadStartedAt = Date.now();
   const downloaded = await fetchWithDeadline(
     `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${safePath}`,
-    { method: 'GET', redirect: 'error' },
+    { method: 'GET', redirect: 'follow' },
     deadline,
     telemetry ? { context: telemetry, stage: 'TELEGRAM_FILE_GET', startedAt: downloadStartedAt } : undefined
   );
