@@ -207,7 +207,7 @@ export async function acceptUploadItem(
     const result = await env.DB.prepare(
       "UPDATE upload_invite_items SET status = 'ACCEPTED', size_bytes = ?, lease_token = NULL, lease_until = NULL, updated_at = ? WHERE invite_id = ? AND upload_id = ? AND status = 'UPLOADING' AND lease_token = ?"
     ).bind(sizeBytes, now, inviteId, uploadId, leaseToken).run();
-    return result.meta.changes === 1 ? 'ACCEPTED' : 'LIMIT';
+    return result.meta.changes >= 1 ? 'ACCEPTED' : 'LIMIT';
   } catch (error) {
     const text = String(error);
     if (text.includes('UPLOAD_INVITE_LIMIT') || text.includes('UPLOAD_INVITE_INVALID_SIZE')) return 'LIMIT';
