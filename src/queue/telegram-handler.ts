@@ -67,8 +67,8 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     env, conv.id, supportProfileVersion, payload.updateRef, 'HUMAN_REPLY'
   );
   if (humanAction === 'STALE_PROFILE') return;
+  const destinationProvider = conv.helpdesk_provider === 'crisp' ? 'crisp' : 'chatwoot';
   if (content) {
-    const destinationProvider = conv.helpdesk_provider === 'crisp' ? 'crisp' : 'chatwoot';
     const operationId = `send_${destinationProvider}_${scopedMessageRef}`;
     await insertMessage(
       env,
@@ -119,6 +119,8 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     conv.id,
     'telegram',
     scopedMessageRef,
-    attachments
+    attachments,
+    destinationProvider,
+    destinationProvider === 'crisp' ? payload.publicOrigin : undefined
   );
 }
