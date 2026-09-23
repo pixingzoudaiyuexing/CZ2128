@@ -303,10 +303,10 @@ async function prepareAttachmentRetry(
     row.status === 'FAILED_FINAL' && row.last_error === 'ATTACHMENT_DELIVERY_AMBIGUOUS'
   );
   if (!retryableState) throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
-  if (row.destination_provider === 'crisp') {
-    // Crisp attachment delivery uses a short-lived capability token that is intentionally
-    // not persisted in plaintext. An ambiguous historical send therefore cannot be
-    // reconstructed safely for manual resend.
+  if (row.destination_provider === 'crisp' || row.source_provider === 'upload') {
+    // Capability-backed attachment messages intentionally do not persist plaintext tokens.
+    // Reconstructing them as a different payload (for example, a Telegram multipart file)
+    // would violate the original visible-send contract.
     throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
   }
   const now = Math.floor(Date.now() / 1000);

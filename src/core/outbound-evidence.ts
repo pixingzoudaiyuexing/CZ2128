@@ -7,7 +7,8 @@ export const OUTBOUND_SUBJECT_TYPES = [
   'ATTACHMENT',
   'CONVERSATION',
   'AI_RUN',
-  'CONTROL_ACK'
+  'CONTROL_ACK',
+  'UPLOAD_INVITE'
 ] as const;
 
 export type OutboundSubjectType = typeof OUTBOUND_SUBJECT_TYPES[number];

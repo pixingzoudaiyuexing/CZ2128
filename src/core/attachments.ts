@@ -1,7 +1,7 @@
 import { ATTACHMENT_TOKEN_BYTES } from '../config/attachments';
 import { SafeErrorCode } from './error-taxonomy';
 
-export type AttachmentProvider = 'telegram' | 'chatwoot' | 'crisp';
+export type AttachmentProvider = 'telegram' | 'chatwoot' | 'crisp' | 'upload';
 export type AttachmentType = 'photo' | 'document' | 'video' | 'audio' | 'voice';
 export type AttachmentStatus = 'PENDING' | 'FETCHING' | 'STORED' | 'DELIVERED' | 'FAILED_RETRYABLE' | 'FAILED_FINAL';
 
@@ -14,7 +14,8 @@ export interface AttachmentDescriptor {
   locator:
     | { provider: 'telegram'; fileId: string }
     | { provider: 'chatwoot'; dataUrl: string }
-    | { provider: 'crisp'; dataUrl: string };
+    | { provider: 'crisp'; dataUrl: string }
+    | { provider: 'upload'; inviteId: string; uploadId: string };
   rejectionCode?: 'ATTACHMENT_SOURCE_TOO_LARGE' | 'ATTACHMENT_SOURCE_INVALID';
 }
 

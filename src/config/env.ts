@@ -82,5 +82,6 @@ export interface Env {
   ADMIN_TELEGRAM_WEBHOOK_SECRET?: string;
   ADMIN_TELEGRAM_SECRET_PATH?: string;
   ADMIN_TELEGRAM_USER_IDS?: string;
+  UPLOAD_CAPABILITY_SECRET?: string;
   runtimeConfigSnapshot?: import('../runtime-config/types').RuntimeConfigSnapshot;
 }

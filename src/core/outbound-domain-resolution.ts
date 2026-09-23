@@ -396,7 +396,11 @@ export async function resolveOutboundDomainState(
     throw new SafeError('OUTBOUND_RECONCILIATION_NOT_ELIGIBLE');
   }
   if (operation.subject_type === 'AI_RUN') return resolveAiMessage(env, operation);
-  if (operation.subject_type === 'MESSAGE' || operation.subject_type === 'CONTROL_ACK') {
+  if (
+    operation.subject_type === 'MESSAGE' ||
+    operation.subject_type === 'CONTROL_ACK' ||
+    operation.subject_type === 'UPLOAD_INVITE'
+  ) {
     return { changed: false, domain: 'NONE' };
   }
   if (operation.subject_type === 'ATTACHMENT') return resolveAttachment(env, operation);

@@ -62,14 +62,15 @@ describe('real D1 outbound reconciliation persistence', () => {
 
   afterAll(() => rmSync(persistDir, { recursive: true, force: true }));
 
-  it('uses only fresh migrations 0001 through 0006', () => {
+  it('uses the current fresh migration set through 0007', () => {
     expect(readdirSync('migrations').filter(name => name.endsWith('.sql')).sort()).toEqual([
       '0001_initial_schema.sql',
       '0002_ai_handoff.sql',
       '0003_attachments.sql',
       '0004_runtime_config.sql',
       '0005_reliability.sql',
-      '0006_crisp_attachment_provider.sql'
+      '0006_crisp_attachment_provider.sql',
+      '0007_crisp_upload_invites.sql'
     ]);
   });
 
