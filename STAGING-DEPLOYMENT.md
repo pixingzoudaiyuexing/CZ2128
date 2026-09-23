@@ -1,10 +1,10 @@
 # CZ2128 4C Staging Foundation Deployment Plan
 
-Status: **ENGINEERING PREPARED / REMOTE EXECUTION NOT AUTHORIZED**
+Status: **HISTORICAL FOUNDATION PLAN / STAGING DEPLOYED / READ-ONLY RECONCILED 2026-09-23**
 
-Engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
+Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
-This plan prepares a new, provider-disconnected staging foundation. It does not authorize resource creation, remote migration, deployment, secrets, webhook changes, Provider calls, Queue mutation or cleanup.
+This document originally prepared a new, provider-disconnected staging foundation. The Gate A–F text is retained as the historical execution contract and must not be replayed merely because this document is being reconciled. The staging foundation has since been created and the Worker has progressed to provider-connected Crisp-02 validation. This document still does not authorize any new resource creation, migration, deployment, secret/webhook change, Provider call, Queue mutation or cleanup.
 
 Related documents:
 
@@ -15,16 +15,25 @@ Related documents:
 
 ## 1. Approved Resource Boundary
 
-| Resource | Exact staging name |
-| --- | --- |
-| Worker | `cz2128-4c-staging` |
-| D1 | `cz2128-4c-staging-db` |
-| Main Queue | `cz2128-4c-staging-queue` |
-| DLQ | `cz2128-4c-staging-dlq` |
-| Attachment R2 | `cz2128-4c-staging-attachments` |
-| Quarantine R2 | `cz2128-4c-staging-dlq-quarantine` |
+| Resource | Exact staging name | Current read-only evidence (2026-09-23) |
+| --- | --- | --- |
+| Worker | `cz2128-4c-staging` | Deployed version `b236cd98-1ece-4007-a641-a0139edbfe02`, message identifies main `512917eecb75df534b5cf1733f296ae06818d125`; handlers `fetch`, `queue`, `scheduled`. |
+| D1 | `cz2128-4c-staging-db` | UUID `6482f216-5357-4e93-9796-89eaf0c1299c`; migrations exactly `0001`–`0005`. |
+| Main Queue | `cz2128-4c-staging-queue` | ID `6a4ed17bccbb4d6db22fb5cd8407eeb3`; staging Worker is the one producer and one consumer. |
+| DLQ | `cz2128-4c-staging-dlq` | ID `6ec943a39dfe461ba33504593a5692f0`; staging Worker is the one consumer. |
+| Attachment R2 | `cz2128-4c-staging-attachments` | Exists; `attachments/` expires after seven days and incomplete multipart uploads abort after seven days. |
+| Quarantine R2 | `cz2128-4c-staging-dlq-quarantine` | Exists and is bound; no object-expiry lifecycle was observed in the current listing. |
 
-Before the first Gate A write, re-confirm the exact Cloudflare account and prove all six names remain absent. A later continuation after a partially completed authorized Gate A must follow the evidence requirements in that gate; a matching name alone is never proof of ownership. Stop if any identity cannot be proven inside the approved account. Do not modify, reuse, empty or delete legacy `cz2128-staging-*`, unsuffixed `cz2128*`, production or other-project resources.
+Historical Gate A required re-confirming the exact Cloudflare account and proving all six names absent before the first write. That requirement remains part of the creation record, not a current instruction: all six approved 4C resources now exist. A matching name alone is still never proof of ownership. Do not modify, reuse, empty or delete legacy `cz2128-staging-*`, unsuffixed `cz2128*`, production or other-project resources.
+
+### 1A. Current Deployment / Acceptance Snapshot
+
+- Exact current deployed Git merge SHA: `512917eecb75df534b5cf1733f296ae06818d125` (PR #27).
+- Exact current Worker version: `b236cd98-1ece-4007-a641-a0139edbfe02`.
+- Compatibility date/flag: `2024-03-20` / `nodejs_compat`.
+- Current resource bindings point to the 4C D1, main Queue and two 4C R2 buckets listed above; runtime Queue identity variables name the 4C main Queue and DLQ.
+- Provider secret **names** are now configured for Crisp and Telegram. Historical Chatwoot secret names also remain. Secret values were not read or recorded by this reconciliation.
+- Primary accepted Crisp-02 real Staging evidence only for the basic support bridge described in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md). This is not acceptance of attachments, AI, Admin recovery, fault injection, concurrency/load or Production.
 
 ## 2. Configuration Artifacts
 
@@ -42,7 +51,7 @@ The template declares:
 - exactly two non-sensitive Queue identity variables matching the staging Queue and DLQ bindings;
 - no other plaintext variables, secrets, Provider identities or webhook configuration.
 
-The generated `wrangler.staging.jsonc` is ignored by Git. After D1 creation, an authorized operator may create it locally from the template and replace only the D1 placeholder with the independently recorded D1 UUID.
+The generated `wrangler.staging.jsonc` is ignored by Git. In the historical foundation flow, after D1 creation an authorized operator could create it locally from the template and replace only the D1 placeholder with the independently recorded D1 UUID. The generated file is not present in the current checkout, so this reconciliation does not claim to have revalidated that historical local artifact.
 
 Local checks:
 
@@ -64,9 +73,9 @@ fi
 
 Passing validation proves static configuration structure only. It does not prove resource ownership, existence, migration, deployment or runtime behavior.
 
-## 3. Provider-Disconnected Startup
+## 3. Historical Provider-Disconnected Startup Gate
 
-The infrastructure-only Worker deployment must not configure Chatwoot, Telegram or AI credentials and must not register any webhook. The template contains no Provider variables or secrets.
+At the original infrastructure-only deployment gate, the Worker was required not to configure Chatwoot, Telegram or AI credentials and not to register any webhook. The template contains no Provider variables or secrets. This was a startup isolation requirement, not a permanent description of the staging Worker.
 
 Expected behavior before 4C-2:
 
@@ -78,9 +87,11 @@ Expected behavior before 4C-2:
 
 If the Worker cannot deploy or serve an inert route without Provider credentials, stop and return to Primary. Do not fill missing values with production credentials and do not modify frozen reliability behavior in the infrastructure task.
 
-## 4. Permission and Credential Boundary
+Current reconciliation note: the staging Worker has since progressed past this gate and now has provider secret names configured; real Crisp/Telegram basic-support traffic was accepted under Crisp-02. This does not retroactively change the original zero-provider-mutation Gate A–F evidence or validate the retained Chatwoot/AI settings.
 
-The current default OAuth profile has broad write permissions and is not the default deployment identity for 4C-1.
+## 4. Historical Permission and Credential Boundary
+
+At foundation-planning time, the default OAuth profile had broad write permissions and was not the intended default deployment identity for 4C-1. The least-privilege principles below remain valid for future authorized writes, but they are not a request to recreate the already-existing foundation.
 
 Before remote execution, create or designate a staging-only execution identity with:
 
@@ -92,9 +103,11 @@ Before remote execution, create or designate a staging-only execution identity w
 
 If Cloudflare cannot restrict a permission to individual resources, use a dedicated profile, exact command allowlist, reviewed config and two-person verification of account/resource identity before each write.
 
-## 5. Remote Execution Gates
+## 5. Historical Remote Execution Gates — Do Not Replay
 
-Each gate requires a separate Primary authorization. Completing one gate does not authorize the next.
+These gates preserve the original foundation creation/acceptance sequence. They are historical provenance for resources that now exist. Do not re-create resources, re-apply migrations, redeploy, or repeat Provider-disconnected acceptance merely to make the old plan read like current state.
+
+At execution time, each gate required a separate Primary authorization. Completing one gate did not authorize the next.
 The six-resource foundation is created across Gate A and Gate E: Gate A creates the five backing resources, while the first reviewed Worker deployment in Gate E creates the Worker resource.
 
 ### Gate A: Create Five Backing Resources and Reserve Worker Identity
@@ -264,8 +277,8 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 
 ## 6. Cost, Retention and Cleanup
 
-- Owner/Primary must approve a monthly Cloudflare budget before Gate A. No paid upgrade is implied by existing account access.
-- 4C-1 has a Provider/AI/message mutation budget of exactly zero.
+- Historical Gate A required Owner/Primary approval of a monthly Cloudflare budget. No paid upgrade was implied by existing account access.
+- Historical 4C-1 had a Provider/AI/message mutation budget of exactly zero.
 - Attachment R2 follows the frozen 7-day orphan lifecycle while application authorization remains 24 hours.
 - Proposed staging quarantine retention: retain sanitized evidence for 30 days, then lifecycle-expire only prefix `terminal-dlq/v1/`. This is a proposal, not authorization. Until Primary accepts a period, configure no quarantine expiry and do not start fault tests that could create quarantine objects.
 - Use synthetic identifiers only. No production customer data may be copied into D1, R2, Queue or evidence storage.
@@ -273,7 +286,7 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 
 ## 7. Isolation Proof Checklist
 
-4C-1 is ready for acceptance only when all are true:
+At the original 4C-1 foundation acceptance point, all of the following were required:
 
 - every resource name starts with `cz2128-4c-staging`;
 - D1 UUID in strict config equals independently recorded Gate A evidence;
@@ -285,4 +298,6 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 - R2 buckets are private and attachment lifecycle matches the frozen rule;
 - D1 migration metadata contains exactly `0001`–`0005`;
 - all evidence references the exact reviewed Git SHA and staging account fingerprint;
-- no matrix item requiring a real Provider is marked PASS.
+- no matrix item requiring a real Provider was marked PASS at the provider-disconnected foundation stage.
+
+That final bullet is intentionally historical. Subsequent authorized work progressed to Crisp-02 and produced Primary-accepted, scoped real Crisp/Telegram basic-support evidence. The current acceptance state is recorded in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md); it must not be projected onto unrelated rows.

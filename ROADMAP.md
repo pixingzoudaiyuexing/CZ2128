@@ -1,15 +1,55 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C in execution with Crisp-02 basic-support Staging acceptance complete**
 
 ## Crisp-01 - Basic Crisp support bridge
 
-In progress: Crisp is now the sole active helpdesk target. The first slice adds
-signed webhook admission, website/session identity isolation, Crisp text ingress,
-deterministic Crisp outbound operations, Telegram topic mapping, human handoff,
-and optional welcome/Picker menus. Crisp AI generation/outbound recovery, real Crisp
-credentials, Staging E2E, attachment delivery and production migration remain
-explicit follow-up gates.
+Status: **COMPLETE / MERGED**
+
+Crisp is now the sole active helpdesk target. PR #21 implemented signed webhook
+admission, website/session identity isolation, Crisp text ingress, deterministic
+Crisp outbound operations, Telegram topic mapping, human handoff, and optional
+welcome/Picker menus. Its exact head `40465c32d0fb1e56faab12eaf62839a2245c2c20`
+passed CI run `35679432185` (#132) and merged as
+`f5100ce1e7b4c0d476cbdc3c5475214ece103c54`.
+
+Crisp-01 deliberately deferred real Provider/Staging acceptance, attachments,
+conversation lifecycle and Crisp AI generation/outbound recovery. The basic
+Provider/Staging acceptance portion was subsequently exercised by Crisp-02; those
+remaining unrelated scopes are not implied complete.
+
+## Crisp-02 - Real Staging basic support bridge acceptance
+
+Status: **COMPLETE / REAL STAGING E2E ACCEPTED (BASIC SUPPORT SCOPE)**
+
+Crisp-02 performed the authorized real Staging troubleshooting/acceptance sequence
+without rewriting historical failures. The final outbound-correlation fix is PR #27:
+base `4c8b1b8f89afda6471f1ca4fcb1f5e8c1bf0b2f9`, exact head
+`9b0c05927e91594a43e91605e608728e976c7854`, merge
+`512917eecb75df534b5cf1733f296ae06818d125`. Exact-head CI run
+`35806188973` (#144) and main CI run `35806917583` (#145) both completed
+successfully. The retained independent Gemini 3.1 Pro review of the exact PR #27
+base/head returned `APPROVE` and required real Provider validation before closure;
+that Provider validation was then completed in WCX12/WCX13.
+
+Accepted real Staging behavior:
+
+- Crisp customer ingress -> Telegram topic/message.
+- Telegram operator reply -> Crisp.
+- Welcome and native main Picker.
+- Standard deterministic numeric Crisp fingerprint correlation and durable
+  self-echo suppression without the rejected custom `properties` marker.
+- Multi-level Picker transition, preset response and leaf response.
+- Picker-driven human handoff with durable `PAUSED_OPERATOR` state/audit and one
+  Telegram handoff notification.
+
+Historical WCX7-WCX11 `FAILED_FINAL / HTTP 400` Welcome/Picker operations remain
+preserved as evidence. WCX12/WCX13 produced no new Crisp HTTP-400 diagnostic.
+
+This acceptance does **not** close Crisp attachments, close/reopen lifecycle,
+Crisp AI generation/durable AI recovery, real R2 data-plane testing, Queue/D1
+concurrency/fault acceptance, Admin recovery, load/multi-region, monitoring,
+rollback drills or Production.
 
 ## Phase 0 — Architecture Freeze
 
@@ -144,7 +184,11 @@ Scope:
 - confirmed support-group migration with topic-mapping invalidation
 - versioned CAS, restore-env and safe history rollback
 
-The Cloudflare R2 account is now enabled, but Phase 3 real R2 staging has not yet been rerun. The staging bucket/lifecycle and dedicated Telegram/Chatwoot environments remain pending validation.
+The 4C staging attachment and DLQ-quarantine R2 buckets now exist. Read-only
+metadata verifies the attachment bucket's seven-day `attachments/` expiry and
+seven-day incomplete-multipart abort rules. Real R2 write/multipart/read/Range/delete,
+20 MiB memory behavior and scheduled-cleanup behavior remain **NOT VALIDATED**;
+metadata existence/lifecycle listing is not a data-plane acceptance result.
 
 ## Phase 4 — Reliability Hardening
 
@@ -167,7 +211,7 @@ Current status:
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **ACCEPTED / COMPLETE / FROZEN / MERGED**
-- Phase 4C: **NOT STARTED / PREPARATION ONLY**
+- Phase 4C: **IN EXECUTION** — isolated staging foundation exists; Crisp-02 real Staging basic-support acceptance is complete and scoped
 - Phase 4C concurrency/load validation: **NOT STARTED**
 
 Scope:
@@ -199,7 +243,7 @@ Phase 4B-4B adds explicit durable-state recovery only for eligible `internal / a
 
 Final SENT hardening requires bounded provider-delivery identity in both initial and CAS-lost convergence checks. Malformed SENT remains untouched and keeps the DLQ OPEN; internal domain repair cannot substitute for external delivery evidence.
 
-Phase 4B-5 is a documentation-only closure for reliability operations, migration/recovery boundaries and the Phase 4C acceptance matrix. It was accepted, completed, frozen and merged by PR #15 as `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`; `62c7c51120ad4d44fcdc4cff089173258b719c28` is the historical pre-PR #15 implementation base. It introduces no runtime behavior, schema, migration or resource change. Phase 4C execution and production readiness remain outside this phase.
+Phase 4B-5 is a documentation-only closure for reliability operations, migration/recovery boundaries and the Phase 4C acceptance matrix. It was accepted, completed, frozen and merged by PR #15 as `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`; `62c7c51120ad4d44fcdc4cff089173258b719c28` is the historical pre-PR #15 implementation base. It introduces no runtime behavior, schema, migration or resource change. Phase 4C execution was outside Phase 4B-5 and is now underway under separate authorizations; production readiness remains unproven.
 
 ## Phase 5 — Knowledge / RAG
 

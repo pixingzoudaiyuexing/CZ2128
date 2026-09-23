@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged / Phase 4C In Execution — Crisp-02 Basic-Support Staging Accepted**
 
 ## Purpose
 
@@ -103,7 +103,7 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**.
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **ACCEPTED / COMPLETE / FROZEN / MERGED**.
-- Phase 4C: **NOT STARTED / PREPARATION ONLY**.
+- Phase 4C: **IN EXECUTION** — isolated staging foundation deployed; Crisp-02 real Staging basic-support scope accepted; remaining matrix areas and Production are not implied validated.
 
 Phase 4B-2C-2 uses the existing `0005` parent linkage and reconciliation state. An explicit operator decision creates one deterministic child operation, preserves the parent's historical ambiguity, reconstructs supported message/attachment/conversation payloads from durable state, blocks target drift, and applies idempotent attachment/topic domain repair after effective delivery. It adds no `0006`, Admin UI or command, DLQ consumption, `CONFIRMED_NOT_SENT` activation or AI durable-state behavior.
 
