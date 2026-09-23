@@ -100,6 +100,55 @@ describe('upload invite repository ordering and leases', () => {
     });
   });
 
+  it('accepts trigger-inclusive D1 change counts after the item transition commits', async () => {
+    await createOrGetUploadInvite(env, input('250'));
+    await db.prepare(
+      `INSERT INTO attachments
+       (id, conversation_id, source_provider, source_message_ref, source_attachment_ref,
+        attachment_type, original_filename, safe_filename, mime_type, storage_key,
+        access_token_hash, status, destination_provider, created_at, updated_at)
+       VALUES ('att-trigger-count', 'conv', 'upload', 'inv-250', 'upload-trigger-count', 'document',
+               'trigger.txt', 'trigger.txt', 'text/plain', 'attachments/att-trigger-count', 'h-trigger-count',
+               'FETCHING', 'telegram', 1, 1)`
+    ).run();
+
+    const claim = await claimUploadItem(
+      env, 'inv-250', 'upload-trigger-count', 'att-trigger-count', 120
+    );
+    if (claim.outcome !== 'CLAIMED') throw new Error('expected claim');
+
+    const baseDb = env.DB;
+    env.DB = {
+      prepare(query: string) {
+        const statement = baseDb.prepare(query);
+        if (!query.startsWith("UPDATE upload_invite_items SET status = 'ACCEPTED'")) return statement;
+        return {
+          bind(...values: unknown[]) {
+            const bound = statement.bind(...values);
+            return {
+              async run() {
+                const result = await bound.run();
+                return {
+                  ...result,
+                  meta: { ...result.meta, changes: result.meta.changes + 1 }
+                };
+              }
+            };
+          }
+        };
+      }
+    };
+
+    expect(
+      await acceptUploadItem(env, 'inv-250', 'upload-trigger-count', claim.leaseToken, 4)
+    ).toBe('ACCEPTED');
+    expect(await getUploadInviteById(env, 'inv-250')).toMatchObject({
+      consumed_files: 1,
+      consumed_bytes: 4,
+      status: 'ACTIVE'
+    });
+  });
+
   it('uses the trigger as the final atomic byte-limit fence', async () => {
     await createOrGetUploadInvite(env, input('300'));
     for (const [id, suffix] of [['att-a', 'a'], ['att-b', 'b']] as const) {
