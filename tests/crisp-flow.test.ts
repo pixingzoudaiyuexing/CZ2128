@@ -4,12 +4,14 @@ import { processTelegramEvent } from '../src/queue/telegram-handler';
 import * as conversationService from '../src/core/conversation-service';
 import * as outbound from '../src/core/outbound-operations';
 import * as aiState from '../src/core/ai-state';
+import * as attachmentRepository from '../src/core/attachment-repository';
 import { crispFingerprintForOperation } from '../src/adapters/crisp/fingerprint';
 
 vi.mock('../src/core/conversation-service', () => ({
   getOrCreateConversation: vi.fn(), insertMessage: vi.fn(), updateOperatorThreadRef: vi.fn()
 }));
 vi.mock('../src/core/outbound-operations', () => ({ executeOutboundOperation: vi.fn(), getOutboundOperation: vi.fn() }));
+vi.mock('../src/core/attachment-repository', () => ({ enqueueAttachmentJobs: vi.fn() }));
 vi.mock('../src/core/ai-state', () => ({
   checkAutoResume: vi.fn(),
   pauseOperator: vi.fn(),
@@ -258,6 +260,40 @@ describe('Crisp basic bridge orchestration', () => {
         `send_tg_crisp_${payload.messageRef}`, expect.any(Object)
       );
     }
+  });
+
+  it('queues a Crisp customer image for Telegram without creating text or AI work', async () => {
+    const attachment = {
+      sourceAttachmentRef: 'file', attachmentType: 'photo' as const, originalFilename: 'x.png',
+      mimeType: 'image/png', locator: { provider: 'crisp' as const, dataUrl: 'https://storage.crisp.chat/x.png' }
+    };
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:image',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'image-1', actorRole: 'CUSTOMER', attachments: [attachment]
+      }
+    }, env);
+    expect(conversationService.insertMessage).not.toHaveBeenCalled();
+    expect(attachmentRepository.enqueueAttachmentJobs).toHaveBeenCalledWith(
+      env, expect.any(Object), 'conv-crisp', 'crisp', 'image-1', [attachment], 'telegram'
+    );
+    expect(env.QUEUE.send).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a Crisp SEND_ATTACHMENT echo by exact durable numeric fingerprint evidence', async () => {
+    env.DB = echoDb({ id: 'attachment_crisp:att' });
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:attachment-echo',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: '777', actorRole: 'OPERATOR', automated: true,
+        content: '![Image](https://worker.example/attachments/token/inline)'
+      }
+    }, env);
+    expect(aiState.pauseOperator).not.toHaveBeenCalled();
+    expect(conversationService.insertMessage).not.toHaveBeenCalled();
+    expect(outbound.executeOutboundOperation).not.toHaveBeenCalled();
   });
 
   it('uses Crisp as the Telegram reply destination for Crisp conversations', async () => {
