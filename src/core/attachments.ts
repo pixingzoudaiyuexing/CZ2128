@@ -1,7 +1,7 @@
 import { ATTACHMENT_TOKEN_BYTES } from '../config/attachments';
 import { SafeErrorCode } from './error-taxonomy';
 
-export type AttachmentProvider = 'telegram' | 'chatwoot';
+export type AttachmentProvider = 'telegram' | 'chatwoot' | 'crisp';
 export type AttachmentType = 'photo' | 'document' | 'video' | 'audio' | 'voice';
 export type AttachmentStatus = 'PENDING' | 'FETCHING' | 'STORED' | 'DELIVERED' | 'FAILED_RETRYABLE' | 'FAILED_FINAL';
 
@@ -11,7 +11,10 @@ export interface AttachmentDescriptor {
   originalFilename?: string;
   mimeType?: string;
   sizeBytes?: number;
-  locator: { provider: 'telegram'; fileId: string } | { provider: 'chatwoot'; dataUrl: string };
+  locator:
+    | { provider: 'telegram'; fileId: string }
+    | { provider: 'chatwoot'; dataUrl: string }
+    | { provider: 'crisp'; dataUrl: string };
   rejectionCode?: 'ATTACHMENT_SOURCE_TOO_LARGE' | 'ATTACHMENT_SOURCE_INVALID';
 }
 
@@ -89,10 +92,23 @@ export function normalizeMime(value: string | undefined): string {
     : 'application/octet-stream';
 }
 
-export function contentDisposition(filename: string): string {
+const SAFE_INLINE_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif'
+]);
+
+export function isSafeInlineImageMime(value: string | undefined): boolean {
+  const mime = value?.split(';', 1)[0].trim().toLowerCase();
+  return !!mime && SAFE_INLINE_IMAGE_MIME_TYPES.has(mime);
+}
+
+export function contentDisposition(filename: string, mode: 'attachment' | 'inline' = 'attachment'): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'attachment.bin';
   const encoded = Array.from(new TextEncoder().encode(filename), byte => `%${byte.toString(16).padStart(2, '0').toUpperCase()}`).join('');
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+  return `${mode}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 export interface ParsedRange {
