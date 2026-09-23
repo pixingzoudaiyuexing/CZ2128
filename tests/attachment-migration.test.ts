@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const migration = readFileSync(new URL('../migrations/0003_attachments.sql', import.meta.url), 'utf8');
+const crispMigration = readFileSync(new URL('../migrations/0006_crisp_attachment_provider.sql', import.meta.url), 'utf8');
 
 describe('attachment migration contract', () => {
   it('defines the canonical attachment state and conversation FK', () => {
@@ -17,6 +18,14 @@ describe('attachment migration contract', () => {
     expect(migration).toContain('UNIQUE(source_provider, source_message_ref, source_attachment_ref)');
     expect(migration).toMatch(/storage_key TEXT NOT NULL UNIQUE/);
     expect(migration).toMatch(/access_token_hash TEXT NOT NULL UNIQUE/);
+  });
+
+  it('extends only the attachment provider domain for Crisp', () => {
+    expect(crispMigration).toContain("source_provider IN ('telegram', 'chatwoot', 'crisp')");
+    expect(crispMigration).toContain("destination_provider IN ('telegram', 'chatwoot', 'crisp')");
+    expect(crispMigration).toContain('INSERT INTO attachments_v2');
+    expect(crispMigration).toContain('FROM attachments');
+    expect(crispMigration).not.toContain('DELETE FROM outbound_operations');
   });
 
   it('indexes expiry cleanup and conversation history', () => {
