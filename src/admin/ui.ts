@@ -5,12 +5,14 @@ import { maskSecret, runtimeSource } from '../runtime-config/resolver';
 import { RuntimeConfigKey } from '../runtime-config/types';
 import { sendAdminMessage } from './telegram';
 import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
+import { showKeywordRulesPage } from './crisp-keywords';
+import { parseCrispKeywordRules } from '../config/crisp-keywords';
 
 const mainKeyboard: AdminKeyboard = [
   [{ text: '🤖 AI', callback_data: 'p:ai' }, { text: '💬 Telegram', callback_data: 'p:tg' }],
   [{ text: '🟦 Chatwoot', callback_data: 'p:cw' }, { text: '📎 Attachments', callback_data: 'p:att' }],
-  [{ text: '⚙️ System', callback_data: 'p:sys' }, { text: '📜 History', callback_data: 'p:hist' }],
-  [{ text: '🛡 Reliability', callback_data: 'p:rel' }]
+  [{ text: '💡 关键词回复', callback_data: 'p:kw' }, { text: '🛡 Reliability', callback_data: 'p:rel' }],
+  [{ text: '⚙️ System', callback_data: 'p:sys' }, { text: '📜 History', callback_data: 'p:hist' }]
 ];
 
 export async function reply(
@@ -44,6 +46,10 @@ export async function showPage(
   const edit = (text: string, code: string) => ({ text, callback_data: `e:${code}` });
   if (page === 'rel') {
     await showReliabilityMain(env, bootstrap, ctx);
+    return;
+  }
+  if (page === 'kw') {
+    await showKeywordRulesPage(env, bootstrap, ctx);
     return;
   }
   if (page === 'ai') {
@@ -140,7 +146,13 @@ export async function showPage(
   if (page === 'hist') {
     const history = await listRuntimeHistory(env, 10);
     const lines = history.map(row => {
-      const value = row.value_kind === 'SECRET' ? 'SECRET UPDATED' : row.is_deleted ? 'ENV RESTORED' : row.value_text;
+      const value = row.value_kind === 'SECRET'
+        ? 'SECRET UPDATED'
+        : row.is_deleted
+          ? 'ENV RESTORED'
+          : row.key === 'CRISP_KEYWORD_RULES'
+            ? `关键词规则：${parseCrispKeywordRules(row.value_text || '')?.rules.length ?? 'INVALID'} 条`
+            : row.value_text;
       return `#${row.id} ${new Date(row.created_at * 1000).toISOString()}\n${row.key} ${row.action} v${row.version}\nactor ${row.actor_user_id}\n${value}`;
     });
     const buttons = history.filter(row => !row.is_deleted && getRuntimeConfigDefinition(row.key).rollback === 'GENERIC')

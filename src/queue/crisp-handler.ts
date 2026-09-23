@@ -18,6 +18,7 @@ import {
   reconcileCrispLifecycle,
   reconcileCrispLifecycleIdentity
 } from './crisp-lifecycle';
+import { processCrispKeywordReply } from './crisp-keyword-reply';
 
 export interface CrispMenuOption {
   pickerId: string;
@@ -286,8 +287,9 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     );
   }
 
+  const keywordHandled = await processCrispKeywordReply(event, env, conv);
   const menu = parseCrispMenu(env.CRISP_MENU_JSON);
-  if (!isOperator && wasNewConversation && (menu || env.CRISP_WELCOME_TEXT)) {
+  if (!keywordHandled && !isOperator && wasNewConversation && (menu || env.CRISP_WELCOME_TEXT)) {
     if (menu?.welcome || env.CRISP_WELCOME_TEXT) {
       await sendCrispTextOperation(
         env, conv.id, payload.websiteRef, payload.sessionRef,
@@ -347,6 +349,7 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
 
   const aiConfigured = !env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG && getAIConfig(env).enabled;
   if (
+    !keywordHandled &&
     !isOperator &&
     content &&
     !payload.selection &&

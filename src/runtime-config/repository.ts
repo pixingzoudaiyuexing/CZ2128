@@ -144,6 +144,17 @@ export async function getRuntimeHistory(env: Env, id: number): Promise<RuntimeCo
   return env.DB.prepare('SELECT * FROM runtime_config_history WHERE id = ?').bind(id).first<RuntimeConfigHistoryRow>();
 }
 
+export async function getRuntimeHistoryVersion(
+  env: Env,
+  key: RuntimeConfigKey,
+  version: number
+): Promise<RuntimeConfigHistoryRow | null> {
+  if (!Number.isSafeInteger(version) || version < 1) return null;
+  return env.DB.prepare(
+    'SELECT * FROM runtime_config_history WHERE key = ? AND version = ? AND is_deleted = 0'
+  ).bind(key, version).first<RuntimeConfigHistoryRow>();
+}
+
 export async function rollbackRuntimeConfig(
   env: Env,
   history: RuntimeConfigHistoryRow,

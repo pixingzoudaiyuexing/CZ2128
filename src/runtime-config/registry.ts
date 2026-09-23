@@ -1,4 +1,5 @@
 import { ATTACHMENT_HARD_MAX_BYTES, ATTACHMENT_HARD_MAX_COUNT } from '../config/attachments';
+import { canonicalizeCrispKeywordRules } from '../config/crisp-keywords';
 import { SafeErrorCode } from '../core/error-taxonomy';
 import { SafeError } from '../core/errors';
 import { RuntimeConfigKey, RuntimeValueKind, TelegramSupportProfile } from './types';
@@ -111,6 +112,11 @@ const definitions: RuntimeConfigDefinition[] = [
   { key: 'AI_CONTEXT_MAX_CHARS', kind: 'PLAIN', label: 'AI 上下文字符数', shortCode: 'acc', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1000, 100000, 'INVALID_AI_CONTEXT_CHARS') },
   { key: 'AI_GENERATION_LEASE_SECONDS', kind: 'PLAIN', label: 'AI Generation Lease', shortCode: 'agl', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 10, 300, 'INVALID_AI_LEASE') },
   { key: 'AI_OPERATOR_PAUSE_TIMEOUT_SECONDS', kind: 'PLAIN', label: 'AI 人工暂停超时', shortCode: 'aop', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 60, 86400 * 30, 'INVALID_AI_PAUSE_TIMEOUT') },
+  { key: 'CRISP_KEYWORD_RULES', kind: 'PLAIN', label: 'Crisp 关键词回复', shortCode: 'kw', rollback: 'DEDICATED', highImpact: false, validate: value => {
+    const normalized = canonicalizeCrispKeywordRules(value);
+    if (!normalized) throw new RuntimeConfigValidationError('RUNTIME_CONFIG_VALUE_INVALID');
+    return normalized;
+  } },
   { key: 'TELEGRAM_SUPPORT_PROFILE', kind: 'SECRET', label: '客服 Telegram Bot', shortCode: 'tb', rollback: 'DEDICATED', highImpact: true, validate: supportProfile },
   { key: 'BOT_GROUP_ID', kind: 'PLAIN', label: '客服 Telegram 群', shortCode: 'tg', rollback: 'DEDICATED', highImpact: true, validate: value => {
     const normalized = value.trim();

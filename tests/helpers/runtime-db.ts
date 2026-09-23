@@ -47,6 +47,11 @@ export class RuntimeDb {
     if (query.includes('FROM runtime_config_history WHERE id')) {
       return structuredClone(this.history.find(row => row.id === params[0]) || null);
     }
+    if (query.includes('FROM runtime_config_history WHERE key = ? AND version = ?')) {
+      return structuredClone(this.history.find(
+        row => row.key === params[0] && row.version === params[1] && row.is_deleted === 0
+      ) || null);
+    }
     if (query.includes('FROM runtime_config WHERE key')) {
       return structuredClone(this.runtime.find(row => row.key === params[0]) || null);
     }
