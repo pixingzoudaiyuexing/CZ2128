@@ -5,6 +5,7 @@ import { AiRun, Conversation, EventReceipt, OutboundOperation } from './domain';
 import { AiTriggerEvent } from './events';
 import {
   buildChatwootTargetEvidence,
+  buildCrispTargetEvidence,
   buildTelegramTargetEvidence,
   parseTargetEvidence,
   targetEvidenceMatches
@@ -113,12 +114,14 @@ function reconstructMessageId(eventId: string, conversationId: string): string |
 function validateAbandonedOperationIdentity(
   operation: OutboundOperation,
   event: AiTriggerEvent,
-  kind: 'CHATWOOT' | 'TELEGRAM'
+  conversation: Conversation,
+  kind: 'HELPDESK' | 'TELEGRAM'
 ): boolean {
-  const expectedId = kind === 'CHATWOOT'
+  const expectedId = kind === 'HELPDESK'
     ? `ai_reply:${event.eventId}`
     : `ai_tg_mirror:${event.eventId}`;
-  const expectedProvider = kind === 'CHATWOOT' ? 'chatwoot' : 'telegram';
+  const expectedProvider = kind === 'HELPDESK' ? conversation.helpdesk_provider : 'telegram';
+  if (kind === 'HELPDESK' && !['chatwoot', 'crisp'].includes(expectedProvider)) return false;
   if (
     operation.id !== expectedId ||
     operation.conversation_id !== event.payload.convId ||
@@ -130,7 +133,12 @@ function validateAbandonedOperationIdentity(
   ) return false;
   try {
     const evidence = parseTargetEvidence(operation.target_evidence_json);
-    if (kind === 'CHATWOOT') {
+    if (kind === 'HELPDESK') {
+      if (expectedProvider === 'crisp') {
+        return evidence.provider === 'crisp' &&
+          boundedIdentity(evidence.websiteRef) &&
+          boundedIdentity(evidence.sessionRef);
+      }
       return evidence.provider === 'chatwoot' &&
         boundedIdentity(evidence.accountRef) &&
         boundedIdentity(evidence.conversationRef) &&
@@ -224,25 +232,25 @@ export async function convergeAbandonedAiOutboundOperations(
   const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
     .bind(event.payload.convId).first<Conversation>();
   if (!conversation) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
-  const chatwootId = `ai_reply:${event.eventId}`;
+  const helpdeskId = `ai_reply:${event.eventId}`;
   const telegramId = `ai_tg_mirror:${event.eventId}`;
   const result = await env.DB.prepare(
     'SELECT * FROM outbound_operations WHERE id IN (?, ?)'
-  ).bind(chatwootId, telegramId).all<OutboundOperation>();
+  ).bind(helpdeskId, telegramId).all<OutboundOperation>();
   const operations = result.results || [];
-  if (!operations.some(operation => operation.id === chatwootId)) {
+  if (!operations.some(operation => operation.id === helpdeskId)) {
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
   }
   const plans: AbandonedOutboundPlan[] = [];
   const now = Math.floor(Date.now() / 1000);
 
   for (const operation of operations) {
-    const kind = operation.id === chatwootId
-      ? 'CHATWOOT'
+    const kind = operation.id === helpdeskId
+      ? 'HELPDESK'
       : operation.id === telegramId
         ? 'TELEGRAM'
         : null;
-    if (!kind || !validateAbandonedOperationIdentity(operation, event, kind)) {
+    if (!kind || !validateAbandonedOperationIdentity(operation, event, conversation, kind)) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
     if (operation.status === 'SENT') {
@@ -305,7 +313,8 @@ export async function convergeAbandonedAiOutboundOperations(
     if (!current || !validateAbandonedOperationIdentity(
       current,
       event,
-      current.id === chatwootId ? 'CHATWOOT' : 'TELEGRAM'
+      conversation,
+      current.id === helpdeskId ? 'HELPDESK' : 'TELEGRAM'
     )) {
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
@@ -350,12 +359,15 @@ async function validateOutboundOperation(
   operation: OutboundOperation,
   conversation: Conversation,
   eventId: string,
-  kind: 'CHATWOOT' | 'TELEGRAM',
+  kind: 'HELPDESK' | 'TELEGRAM',
   now: number,
   allowTargetDriftAsSafeSkip = false
 ): Promise<DlqAiRedriveIneligibleReason | null> {
-  const expectedId = kind === 'CHATWOOT' ? `ai_reply:${eventId}` : `ai_tg_mirror:${eventId}`;
-  const expectedProvider = kind === 'CHATWOOT' ? 'chatwoot' : 'telegram';
+  const expectedId = kind === 'HELPDESK' ? `ai_reply:${eventId}` : `ai_tg_mirror:${eventId}`;
+  const expectedProvider = kind === 'HELPDESK' ? conversation.helpdesk_provider : 'telegram';
+  if (kind === 'HELPDESK' && !['chatwoot', 'crisp'].includes(expectedProvider)) {
+    return 'OUTBOUND_INCONSISTENT';
+  }
   if (
     operation.id !== expectedId ||
     operation.conversation_id !== conversation.id ||
@@ -374,8 +386,14 @@ async function validateOutboundOperation(
 
   try {
     const storedEvidence = parseTargetEvidence(operation.target_evidence_json);
-    if (kind === 'CHATWOOT') {
-      if (
+    if (kind === 'HELPDESK') {
+      if (expectedProvider === 'crisp') {
+        if (
+          storedEvidence.provider !== 'crisp' ||
+          storedEvidence.websiteRef !== conversation.helpdesk_account_ref ||
+          storedEvidence.sessionRef !== conversation.helpdesk_conversation_ref
+        ) return 'OUTBOUND_INCONSISTENT';
+      } else if (
         storedEvidence.provider !== 'chatwoot' ||
         storedEvidence.accountRef !== conversation.helpdesk_account_ref ||
         storedEvidence.conversationRef !== conversation.helpdesk_conversation_ref ||
@@ -403,13 +421,18 @@ async function validateOutboundOperation(
   }
 
   try {
-    const expectedEvidence = kind === 'CHATWOOT'
-      ? await buildChatwootTargetEvidence(
-        env,
-        conversation.helpdesk_account_ref,
-        conversation.helpdesk_conversation_ref,
-        expectedId
-      )
+    const expectedEvidence = kind === 'HELPDESK'
+      ? expectedProvider === 'crisp'
+        ? buildCrispTargetEvidence(
+          conversation.helpdesk_account_ref,
+          conversation.helpdesk_conversation_ref
+        )
+        : await buildChatwootTargetEvidence(
+          env,
+          conversation.helpdesk_account_ref,
+          conversation.helpdesk_conversation_ref,
+          expectedId
+        )
       : buildTelegramTargetEvidence(
         env,
         env.BOT_GROUP_ID,
@@ -430,33 +453,33 @@ async function outboundEligibility(
   aiRunStatus: AiRun['status'],
   now: number
 ): Promise<DlqAiRedriveIneligibleReason | null> {
-  const chatwootId = `ai_reply:${eventId}`;
+  const helpdeskId = `ai_reply:${eventId}`;
   const telegramId = `ai_tg_mirror:${eventId}`;
   const rows = await env.DB.prepare(
     'SELECT * FROM outbound_operations WHERE id IN (?, ?)'
-  ).bind(chatwootId, telegramId).all<OutboundOperation>();
-  const chatwoot = rows.results.find(row => row.id === chatwootId);
+  ).bind(helpdeskId, telegramId).all<OutboundOperation>();
+  const helpdesk = rows.results.find(row => row.id === helpdeskId);
   const telegram = rows.results.find(row => row.id === telegramId);
 
-  if (!chatwoot) return 'OUTBOUND_EVIDENCE_MISSING';
-  const chatwootReason = await validateOutboundOperation(
+  if (!helpdesk) return 'OUTBOUND_EVIDENCE_MISSING';
+  const helpdeskReason = await validateOutboundOperation(
     env,
-    chatwoot,
+    helpdesk,
     conversation,
     eventId,
-    'CHATWOOT',
+    'HELPDESK',
     now
   );
-  if (chatwootReason) return chatwootReason;
+  if (helpdeskReason) return helpdeskReason;
 
-  if (aiRunStatus === 'FAILED_RETRYABLE' && chatwoot.status !== 'PENDING') {
+  if (aiRunStatus === 'FAILED_RETRYABLE' && helpdesk.status !== 'PENDING') {
     return 'OUTBOUND_INCONSISTENT';
   }
   if (telegram) {
     if (aiRunStatus === 'FAILED_RETRYABLE' && telegram.status !== 'PENDING') {
       return 'OUTBOUND_INCONSISTENT';
     }
-    if (telegram.status === 'SENT' && chatwoot.status !== 'SENT') return 'OUTBOUND_INCONSISTENT';
+    if (telegram.status === 'SENT' && helpdesk.status !== 'SENT') return 'OUTBOUND_INCONSISTENT';
     const reason = await validateOutboundOperation(
       env,
       telegram,
@@ -464,14 +487,14 @@ async function outboundEligibility(
       eventId,
       'TELEGRAM',
       now,
-      chatwoot.status === 'SENT'
+      helpdesk.status === 'SENT'
     );
     if (reason) return reason;
   }
   return null;
 }
 
-export async function hasConfirmedChatwootAiDelivery(
+export async function hasConfirmedAiDelivery(
   env: Env,
   event: AiTriggerEvent,
   conversation?: Conversation,
@@ -503,10 +526,12 @@ export async function hasConfirmedChatwootAiDelivery(
     operation,
     canonicalConversation,
     event.eventId,
-    'CHATWOOT',
+    'HELPDESK',
     now
   ) === null;
 }
+
+export const hasConfirmedChatwootAiDelivery = hasConfirmedAiDelivery;
 
 export async function isOpenDlqAiRecoveryEvent(
   env: Pick<Env, 'DB' | 'EXPECTED_MAIN_QUEUE_NAME' | 'EXPECTED_DLQ_QUEUE_NAME'>,
@@ -563,7 +588,7 @@ export async function getDlqAiRedriveEligibility(
   };
   if (
     !scopeAllowed &&
-    !await hasConfirmedChatwootAiDelivery(env, event, conversation, undefined, now)
+    !await hasConfirmedAiDelivery(env, event, conversation, undefined, now)
   ) return ineligible('AI_SCOPE_DENIED');
 
   const generationReason = activeGenerationReason(
@@ -576,10 +601,10 @@ export async function getDlqAiRedriveEligibility(
   const targetMessage = await env.DB.prepare(
     `SELECT rowid AS durable_rowid, id, provider_message_ref
      FROM messages
-     WHERE conversation_id = ? AND provider = 'chatwoot' AND provider_message_ref = ?
+     WHERE conversation_id = ? AND provider = ? AND provider_message_ref = ?
        AND direction = 'INBOUND' AND actor_role = 'CUSTOMER'
        AND message_type = 'TEXT' AND text_content IS NOT NULL`
-  ).bind(conversationId, messageId).first<DurableMessageRow>();
+  ).bind(conversationId, conversation.helpdesk_provider, messageId).first<DurableMessageRow>();
   if (!targetMessage) return ineligible('MESSAGE_MISSING');
 
   const latestMessage = await env.DB.prepare(

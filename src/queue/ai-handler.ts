@@ -1,5 +1,6 @@
 import { generateChatCompletion } from '../adapters/ai/openai-compatible';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
+import { createCrispMessage } from '../adapters/crisp/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { isAiConversationAllowed } from '../config/ai-test-scope';
@@ -33,13 +34,20 @@ import { AiRun, Conversation } from '../core/domain';
 import {
   AiScopeDeniedBeforeDeliveryError,
   CancelledBeforeDeliveryError,
+  ProviderDeliveryError,
   RetryableProcessingError,
   SafeError,
   StaleAiTriggerBeforeDeliveryError
 } from '../core/errors';
 import { AiTriggerEvent } from '../core/events';
 import { resolveOutboundDomainState } from '../core/outbound-domain-resolution';
-import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import {
+  buildChatwootTargetEvidence,
+  buildCrispTargetEvidence,
+  buildTelegramTargetEvidence,
+  serializeTargetEvidence,
+  targetEvidenceMatches
+} from '../core/outbound-evidence';
 import {
   executeOutboundOperation,
   getOutboundOperation,
@@ -49,7 +57,7 @@ import {
   AiOutboundAbandonmentReason,
   convergeAbandonedAiOutboundOperations,
   convergeStaleAiOutboundOperations,
-  hasConfirmedChatwootAiDelivery,
+  hasConfirmedAiDelivery,
   isOpenDlqAiRecoveryEvent
 } from '../core/dlq-ai-redrive';
 import { logger } from '../observability/logger';
@@ -58,31 +66,53 @@ async function loadConversation(env: Env, convId: string): Promise<Conversation 
   return env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first<Conversation>();
 }
 
+function aiHelpdeskProvider(conv: Conversation): 'chatwoot' | 'crisp' {
+  if (conv.helpdesk_provider === 'chatwoot' || conv.helpdesk_provider === 'crisp') {
+    return conv.helpdesk_provider;
+  }
+  throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+}
+
+async function buildAiHelpdeskTargetEvidence(
+  env: Env,
+  conv: Conversation,
+  operationId: string
+) {
+  return aiHelpdeskProvider(conv) === 'crisp'
+    ? buildCrispTargetEvidence(conv.helpdesk_account_ref, conv.helpdesk_conversation_ref)
+    : buildChatwootTargetEvidence(
+      env,
+      conv.helpdesk_account_ref,
+      conv.helpdesk_conversation_ref,
+      operationId
+    );
+}
+
 async function convergeAbandonedAiWork(
   env: Env,
   event: AiTriggerEvent,
   reason: AiOutboundAbandonmentReason,
   requirePreparedOperation = true
 ): Promise<void> {
-  const chatwootOperationId = `ai_reply:${event.eventId}`;
-  const prepared = await getOutboundOperation(env, chatwootOperationId);
+  const helpdeskOperationId = `ai_reply:${event.eventId}`;
+  const prepared = await getOutboundOperation(env, helpdeskOperationId);
   if (!prepared) {
     if (requirePreparedOperation) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     return;
   }
   await convergeAbandonedAiOutboundOperations(env, event, reason);
-  const chatwoot = await getOutboundOperation(env, chatwootOperationId);
-  if (chatwoot?.status === 'SENT') {
-    await resolveOutboundDomainState(env, chatwootOperationId);
+  const helpdesk = await getOutboundOperation(env, helpdeskOperationId);
+  if (helpdesk?.status === 'SENT') {
+    await resolveOutboundDomainState(env, helpdeskOperationId);
   }
 }
 
 async function convergeStaleAiRecovery(env: Env, event: AiTriggerEvent): Promise<void> {
   await convergeStaleAiOutboundOperations(env, event);
-  const chatwootOperationId = `ai_reply:${event.eventId}`;
-  const chatwoot = await getOutboundOperation(env, chatwootOperationId);
-  if (chatwoot?.status === 'SENT') {
-    await resolveOutboundDomainState(env, chatwootOperationId);
+  const helpdeskOperationId = `ai_reply:${event.eventId}`;
+  const helpdesk = await getOutboundOperation(env, helpdeskOperationId);
+  if (helpdesk?.status === 'SENT') {
+    await resolveOutboundDomainState(env, helpdeskOperationId);
   }
 }
 
@@ -208,7 +238,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   }
   if (
     !isAiConversationAllowed(env, convId) &&
-    !await hasConfirmedChatwootAiDelivery(env, event, conv, existingRun || undefined)
+    !await hasConfirmedAiDelivery(env, event, conv, existingRun || undefined)
   ) {
     await cancelAiWorkOutsideScope(env, event);
     return;
@@ -364,25 +394,21 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
       const currentConv = await loadConversation(env, convId);
       if (!currentConv) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
-      const chatwootOperationId = `ai_reply:${stableAiJobId}`;
-      const preparedChatwoot = await prepareOutboundOperation(
+      const helpdeskOperationId = `ai_reply:${stableAiJobId}`;
+      const helpdeskProvider = aiHelpdeskProvider(currentConv);
+      const preparedHelpdesk = await prepareOutboundOperation(
         env,
         convId,
-        'chatwoot',
+        helpdeskProvider,
         'SEND_MESSAGE',
-        chatwootOperationId,
+        helpdeskOperationId,
         {
           allowCreate: !isDlqRecovery,
           subject: { type: 'AI_RUN', ref: stableAiJobId },
-          targetEvidence: await buildChatwootTargetEvidence(
-            env,
-            currentConv.helpdesk_account_ref,
-            currentConv.helpdesk_conversation_ref,
-            chatwootOperationId
-          )
+          targetEvidence: await buildAiHelpdeskTargetEvidence(env, currentConv, helpdeskOperationId)
         }
       );
-      if (!preparedChatwoot || preparedChatwoot.status !== 'PENDING') {
+      if (!preparedHelpdesk || preparedHelpdesk.status !== 'PENDING') {
         throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
       }
 
@@ -511,7 +537,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
   if (
     !isAiConversationAllowed(env, convId) &&
-    !await hasConfirmedChatwootAiDelivery(env, event, conv, existingRun || undefined)
+    !await hasConfirmedAiDelivery(env, event, conv, existingRun || undefined)
   ) {
     await cancelAiWorkOutsideScope(env, event);
     return;
@@ -526,11 +552,19 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     return;
   }
 
-  const chatwootOperationId = `ai_reply:${stableAiJobId}`;
-  const chatwootDelivery = await executeOutboundOperation(
+  const helpdeskOperationId = `ai_reply:${stableAiJobId}`;
+  const deliveryConv = await loadConversation(env, convId);
+  if (!deliveryConv) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  const helpdeskProvider = aiHelpdeskProvider(deliveryConv);
+  const helpdeskTargetEvidence = await buildAiHelpdeskTargetEvidence(
+    env,
+    deliveryConv,
+    helpdeskOperationId
+  );
+  const helpdeskDelivery = await executeOutboundOperation(
     env,
     convId,
-    'chatwoot',
+    helpdeskProvider,
     'SEND_MESSAGE',
     async (opId, lifecycle) => {
       if (env.hooks?.beforeAiDispatchPreflight) {
@@ -556,6 +590,19 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
 
       const currentConv = await loadConversation(env, convId);
       if (!currentConv) throw new CancelledBeforeDeliveryError();
+      const currentTargetEvidence = await buildAiHelpdeskTargetEvidence(
+        env,
+        currentConv,
+        String(opId)
+      );
+      if (!targetEvidenceMatches(
+        serializeTargetEvidence(helpdeskTargetEvidence),
+        currentTargetEvidence
+      )) {
+        throw new ProviderDeliveryError('FINAL', 'TARGET_IDENTITY_CHANGED', {
+          provider: helpdeskProvider === 'crisp' ? 'CRISP' : 'CHATWOOT'
+        });
+      }
       const res = env.hooks?.beforeVisibleSend
         ? await env.hooks.beforeVisibleSend(
           env,
@@ -565,37 +612,41 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
           String(opId),
           lifecycle
         )
-        : await createChatwootMessage(
-          env,
-          currentConv.helpdesk_account_ref,
-          currentConv.helpdesk_conversation_ref,
-          aiContent,
-          String(opId),
-          lifecycle
-        );
+        : helpdeskProvider === 'crisp'
+          ? await createCrispMessage(
+            env,
+            currentConv.helpdesk_account_ref,
+            currentConv.helpdesk_conversation_ref,
+            aiContent,
+            String(opId),
+            lifecycle
+          )
+          : await createChatwootMessage(
+            env,
+            currentConv.helpdesk_account_ref,
+            currentConv.helpdesk_conversation_ref,
+            aiContent,
+            String(opId),
+            lifecycle
+          );
       return { providerMessageRef: String((res as any).messageId || (res as any).message_id || (res as any).id) };
     },
-    chatwootOperationId,
+    helpdeskOperationId,
     {
       allowCreate: !isDlqRecovery,
       subject: { type: 'AI_RUN', ref: stableAiJobId },
-      targetEvidence: await buildChatwootTargetEvidence(
-        env,
-        conv.helpdesk_account_ref,
-        conv.helpdesk_conversation_ref,
-        chatwootOperationId
-      )
+      targetEvidence: helpdeskTargetEvidence
     }
   );
 
-  if (chatwootDelivery.status !== 'SENT') {
-    logger.info('Skipping Telegram AI mirror because Chatwoot delivery is not confirmed SENT', {
+  if (helpdeskDelivery.status !== 'SENT') {
+    logger.info('Skipping Telegram AI mirror because helpdesk delivery is not confirmed SENT', {
       conversation_id: convId,
       operation_id: stableAiJobId,
-      result: chatwootDelivery.status
+      result: helpdeskDelivery.status
     });
     if (isDlqRecovery) {
-      const currentOperation = await getOutboundOperation(env, chatwootOperationId);
+      const currentOperation = await getOutboundOperation(env, helpdeskOperationId);
       if (currentOperation?.last_error === 'DISCARDED_STALE') {
         await convergeStaleAiRecovery(env, event);
         return;
@@ -606,13 +657,13 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       }
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
-    const currentOperation = await getOutboundOperation(env, chatwootOperationId);
+    const currentOperation = await getOutboundOperation(env, helpdeskOperationId);
     if (currentOperation?.last_error === 'CANCELLED_BY_HANDOFF') {
       await convergeAbandonedAiWork(env, event, 'CANCELLED_BY_HANDOFF');
     }
     return;
   }
-  await resolveOutboundDomainState(env, chatwootOperationId);
+  await resolveOutboundDomainState(env, helpdeskOperationId);
 
   conv = await loadConversation(env, convId);
   if (!conv?.operator_thread_ref) return;
@@ -640,7 +691,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         await env.hooks.beforeAiTelegramDispatchPreflight(env, convId);
       }
       if (!isAiConversationAllowed(env, convId)) {
-        logger.info('Completing Telegram AI mirror after confirmed Chatwoot delivery despite scope change', {
+        logger.info('Completing Telegram AI mirror after confirmed helpdesk delivery despite scope change', {
           conversation_id: convId,
           operation_id: stableAiJobId
         });

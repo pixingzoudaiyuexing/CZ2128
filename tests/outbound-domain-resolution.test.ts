@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Env } from '../src/config/env';
-import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../src/core/outbound-evidence';
+import {
+  buildChatwootTargetEvidence,
+  buildCrispTargetEvidence,
+  buildTelegramTargetEvidence
+} from '../src/core/outbound-evidence';
 import { resolveOutboundDomainState } from '../src/core/outbound-domain-resolution';
 import { manualCancel, manualMarkDelivered, reconcileOutboundOperation } from '../src/core/outbound-reconciliation';
 import { manualRetryOutboundOperation } from '../src/core/outbound-manual-retry';
@@ -345,6 +349,33 @@ describe('resolved outbound domain state', () => {
     });
     await expect(resolveOutboundDomainState(env, 'op-1')).resolves.toEqual({
       changed: false, domain: 'MESSAGE'
+    });
+    expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
+      .first<{ count: number }>()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('repairs a confirmed Crisp AI message provider-free even after the current session mapping drifts', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      "UPDATE conversations SET helpdesk_provider = 'crisp', helpdesk_account_ref = 'website-current', helpdesk_conversation_ref = 'session-current' WHERE id = 'conv'"
+    ).run();
+    await seedAiRun(db);
+    const env = makeEnv(db);
+    await seedOperation(
+      db,
+      buildCrispTargetEvidence('website-historical', 'session-historical'),
+      {
+        provider: 'crisp', operationType: 'SEND_MESSAGE', status: 'SENT',
+        providerRef: '123456789', reconciliation: 'NOT_REQUIRED',
+        subjectType: 'AI_RUN', subjectRef: 'ai-run-1'
+      }
+    );
+
+    await expect(resolveOutboundDomainState(env, 'op-1')).resolves.toEqual({
+      changed: true, domain: 'MESSAGE'
     });
     expect(await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE actor_role = 'AI'")
       .first<{ count: number }>()).toEqual({ count: 1 });

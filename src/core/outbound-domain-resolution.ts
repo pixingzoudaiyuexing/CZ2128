@@ -315,11 +315,21 @@ async function resolveAiMessage(
   operation: OutboundOperation
 ): Promise<DomainResolutionResult> {
   if (
-    operation.destination_provider !== 'chatwoot' ||
+    !['chatwoot', 'crisp'].includes(operation.destination_provider) ||
     operation.operation_type !== 'SEND_MESSAGE' ||
     !operation.subject_ref
   ) {
     return { changed: false, domain: 'NONE' };
+  }
+  try {
+    const evidence = operation.target_evidence_json
+      ? parseTargetEvidence(operation.target_evidence_json)
+      : null;
+    if (!evidence || evidence.provider !== operation.destination_provider) {
+      return auditConflict(env, operation, 'AI_MESSAGE_TARGET_EVIDENCE_INVALID');
+    }
+  } catch {
+    return auditConflict(env, operation, 'AI_MESSAGE_TARGET_EVIDENCE_INVALID');
   }
   let run = await env.DB.prepare('SELECT * FROM ai_runs WHERE trigger_event_ref = ?')
     .bind(operation.subject_ref).first<AiRun>();

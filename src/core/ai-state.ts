@@ -708,7 +708,8 @@ export async function saveGeneratedAiResultForLatestTrigger(
        )
        AND EXISTS (
          SELECT 1 FROM messages AS target
-         WHERE target.conversation_id = ? AND target.provider = 'chatwoot'
+         WHERE target.conversation_id = ?
+           AND target.provider = (SELECT helpdesk_provider FROM conversations WHERE id = ?)
            AND target.provider_message_ref = ? AND target.direction = 'INBOUND'
            AND target.actor_role = 'CUSTOMER' AND target.message_type = 'TEXT'
            AND target.text_content IS NOT NULL
@@ -731,6 +732,7 @@ export async function saveGeneratedAiResultForLatestTrigger(
     handoffEpoch,
     leaseExpiryThreshold,
     convId,
+    convId,
     triggerMessageRef,
     convId
   ).run();
@@ -743,17 +745,21 @@ export async function isLatestCustomerTextMessage(
   triggerMessageRef: string
 ): Promise<boolean> {
   const latest = await env.DB.prepare(
-    `SELECT provider, provider_message_ref, direction
+    `SELECT messages.provider, messages.provider_message_ref, messages.direction,
+            conversations.helpdesk_provider
      FROM messages
-     WHERE conversation_id = ? AND actor_role = 'CUSTOMER'
-       AND message_type = 'TEXT' AND text_content IS NOT NULL
-     ORDER BY created_at DESC, rowid DESC LIMIT 1`
+     JOIN conversations ON conversations.id = messages.conversation_id
+     WHERE messages.conversation_id = ? AND messages.actor_role = 'CUSTOMER'
+       AND messages.message_type = 'TEXT' AND messages.text_content IS NOT NULL
+     ORDER BY messages.created_at DESC, messages.rowid DESC LIMIT 1`
   ).bind(convId).first<{
     provider: string;
     provider_message_ref: string | null;
     direction: string;
+    helpdesk_provider: string;
   }>();
-  return latest?.provider === 'chatwoot' &&
+  if (!latest) return false;
+  return latest.provider === latest.helpdesk_provider &&
     latest.provider_message_ref === triggerMessageRef &&
     latest.direction === 'INBOUND';
 }
