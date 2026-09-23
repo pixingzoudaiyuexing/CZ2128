@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { discoverChatwootAttachments, discoverTelegramAttachments } from '../src/attachments/discovery';
+import { discoverChatwootAttachments, discoverCrispAttachments, discoverTelegramAttachments } from '../src/attachments/discovery';
 import { getAttachmentConfig } from '../src/config/attachments';
 import { discoverAttachment, enqueueAttachmentJobs } from '../src/core/attachment-repository';
 
@@ -84,6 +84,47 @@ describe('attachment discovery', () => {
       sourceAttachmentRef: `${type}-unique`, attachmentType: type,
       locator: { provider: 'telegram', fileId: `${type}-id` }
     })]);
+  });
+
+  it('discovers only Crisp visitor image files from the signed provider shape', () => {
+    const image = discoverCrispAttachments({
+      event: 'message:send',
+      data: {
+        fingerprint: 55, type: 'file', from: 'user',
+        content: { name: 'shot.png', url: 'https://storage.crisp.chat/users/upload/session/shot.png', type: 'image/png' }
+      }
+    }, config);
+    expect(image).toEqual([expect.objectContaining({
+      sourceAttachmentRef: 'file', attachmentType: 'photo',
+      originalFilename: 'shot.png', mimeType: 'image/png',
+      locator: { provider: 'crisp', dataUrl: 'https://storage.crisp.chat/users/upload/session/shot.png' }
+    })]);
+
+    expect(discoverCrispAttachments({
+      event: 'message:send',
+      data: { fingerprint: 56, type: 'file', from: 'user', content: { name: 'a.pdf', url: 'https://storage.crisp.chat/a.pdf', type: 'application/pdf' } }
+    }, config)).toEqual([]);
+    expect(discoverCrispAttachments({
+      event: 'message:send',
+      data: { fingerprint: 58, type: 'file', from: 'user', content: { name: 'x.svg', url: 'https://storage.crisp.chat/x.svg', type: 'image/svg+xml' } }
+    }, config)).toEqual([]);
+    expect(discoverCrispAttachments({
+      event: 'message:received',
+      data: { fingerprint: 57, type: 'file', from: 'operator', content: { name: 'x.png', url: 'https://storage.crisp.chat/x.png', type: 'image/png' } }
+    }, config)).toEqual([]);
+  });
+
+  it('persists explicit Crisp attachment destinations without changing stable source identity', async () => {
+    const db = new DiscoveryDb();
+    const descriptor = discoverTelegramAttachments({ document: {
+      file_id: 'tg-file', file_unique_id: 'tg-unique', file_name: 'report.pdf',
+      mime_type: 'application/pdf', file_size: 10
+    } }, config)[0];
+    const discovered = await discoverAttachment(
+      { DB: db } as any, config, 'conv', 'telegram', 'msg', descriptor, 'crisp', 'https://worker.example'
+    );
+    expect(discovered.row).toMatchObject({ source_provider: 'telegram', destination_provider: 'crisp' });
+    expect(discovered.job?.payload).toMatchObject({ publicOrigin: 'https://worker.example' });
   });
 
   it('discovers one and multiple Chatwoot attachments with stable attachment IDs', async () => {
