@@ -87,7 +87,8 @@ describe('Telegram attachment source telemetry', () => {
     expect(fetchMock.mock.calls[1][0]).toBe(
       `https://api.telegram.org/file/bot${PRIVATE_TOKEN}/private/path-sentinel.bin`
     );
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'GET', redirect: 'error' });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'GET', redirect: 'follow' });
+    expect(Array.from(new Headers(fetchMock.mock.calls[1][1]?.headers).entries())).toHaveLength(0);
     expect(parsedTelemetry(entries)).toEqual([
       expect.objectContaining({
         attachment_id: 'att_telemetry', attempt: 2, source: 'TELEGRAM',
