@@ -1,4 +1,5 @@
 import { createCrispMessage, createCrispPicker, CrispPickerChoice } from '../adapters/crisp/api';
+import { crispFingerprintForOperation } from '../adapters/crisp/fingerprint';
 import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
 import { Env } from '../config/env';
 import { pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
@@ -161,15 +162,40 @@ async function isOwnCrispEcho(
   conversationId: string,
   payload: CrispMessageEvent['payload']
 ): Promise<boolean> {
-  if (payload.actorRole !== 'OPERATOR' || payload.automated !== true || !payload.operationMarker) return false;
-  const operation = await getOutboundOperation(env, payload.operationMarker);
-  if (!operation || operation.conversation_id !== conversationId ||
-      operation.destination_provider !== 'crisp' || operation.operation_type !== 'SEND_MESSAGE') {
-    return false;
+  if (payload.actorRole !== 'OPERATOR' || payload.automated !== true) return false;
+
+  if (payload.operationMarker) {
+    const operation = await getOutboundOperation(env, payload.operationMarker);
+    if (operation && operation.conversation_id === conversationId &&
+        operation.destination_provider === 'crisp' && operation.operation_type === 'SEND_MESSAGE') {
+      if (operation.provider_message_ref) {
+        if (operation.provider_message_ref === payload.messageRef) return true;
+      } else if ((operation.status === 'SENDING' || operation.status === 'AMBIGUOUS') &&
+                 operation.request_started_at !== null) {
+        return true;
+      }
+    }
   }
-  if (operation.provider_message_ref) return operation.provider_message_ref === payload.messageRef;
-  return (operation.status === 'SENDING' || operation.status === 'AMBIGUOUS') &&
-    operation.request_started_at !== null;
+
+  const sent = await env.DB.prepare(
+    `SELECT id FROM outbound_operations
+     WHERE conversation_id = ? AND destination_provider = 'crisp' AND operation_type = 'SEND_MESSAGE'
+       AND status = 'SENT' AND provider_message_ref = ?
+     LIMIT 1`
+  ).bind(conversationId, payload.messageRef).first<{ id: string }>();
+  if (sent) return true;
+
+  const inFlight = await env.DB.prepare(
+    `SELECT id FROM outbound_operations
+     WHERE conversation_id = ? AND destination_provider = 'crisp' AND operation_type = 'SEND_MESSAGE'
+       AND status IN ('SENDING', 'AMBIGUOUS') AND request_started_at IS NOT NULL
+     ORDER BY updated_at DESC
+     LIMIT 16`
+  ).bind(conversationId).all<{ id: string }>();
+  for (const operation of inFlight.results || []) {
+    if (String(await crispFingerprintForOperation(operation.id)) === payload.messageRef) return true;
+  }
+  return false;
 }
 
 export async function processCrispEvent(event: CrispMessageEvent, env: Env): Promise<void> {

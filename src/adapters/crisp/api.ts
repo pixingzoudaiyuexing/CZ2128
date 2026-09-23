@@ -8,6 +8,7 @@ import {
 import { OutboundAttemptLifecycle } from '../../core/outbound-operations';
 import { insertReliabilityAuditOnce } from '../../core/reliability-audit';
 import { logger } from '../../observability/logger';
+import { crispFingerprintForOperation } from './fingerprint';
 
 const CRISP_API_BASE = 'https://api.crisp.chat/v1';
 const CRISP_AUTOMATED_USER = { nickname: 'CZ2128' };
@@ -60,11 +61,8 @@ function crispRequestType(body: Record<string, unknown>): CrispRequestType {
   return body.type === 'picker' ? 'picker' : body.type === 'text' ? 'text' : 'unknown';
 }
 
-function crispOperationId(body: Record<string, unknown>): string | null {
-  const properties = body.properties;
-  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return null;
-  const operationId = (properties as { cz2128_operation_id?: unknown }).cz2128_operation_id;
-  return typeof operationId === 'string' && CRISP_OPERATION_ID_PATTERN.test(operationId) ? operationId : null;
+function safeCrispOperationId(operationId: string): string | null {
+  return CRISP_OPERATION_ID_PATTERN.test(operationId) ? operationId : null;
 }
 
 function crispProviderErrorState(providerError: boolean | undefined): CrispProviderErrorState {
@@ -119,10 +117,11 @@ function safeCrispSchemaIssue(message: unknown): CrispSchemaIssueCode {
 
 async function persistCrispHttp400Diagnostic(
   env: Env,
+  operationIdInput: string,
   body: Record<string, unknown>,
   diagnostic: CrispProviderDiagnostic
 ): Promise<void> {
-  const operationId = crispOperationId(body);
+  const operationId = safeCrispOperationId(operationIdInput);
   if (!operationId) return;
   await insertReliabilityAuditOnce(env, {
     id: `crisp-http400-diagnostic:v2:${operationId}`,
@@ -201,6 +200,7 @@ async function readBoundedCrispError(response: Response): Promise<CrispProviderD
 
 async function recordCrispHttp400Diagnostic(
   env: Env,
+  operationId: string,
   response: Response,
   body: Record<string, unknown>
 ): Promise<void> {
@@ -210,7 +210,7 @@ async function recordCrispHttp400Diagnostic(
     schemaField: 'FIELD_UNKNOWN',
     schemaIssue: 'ISSUE_UNKNOWN'
   }));
-  await persistCrispHttp400Diagnostic(env, body, diagnostic).catch(() => undefined);
+  await persistCrispHttp400Diagnostic(env, operationId, body, diagnostic).catch(() => undefined);
   logger.warn('Crisp outbound provider rejected request', {
     source: 'crisp',
     provider: 'CRISP',
@@ -235,6 +235,7 @@ async function sendCrispMessage(
   websiteRef: string,
   sessionRef: string,
   body: Record<string, unknown>,
+  operationId: string,
   lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ fingerprint: string }> {
   const url = `${CRISP_API_BASE}/website/${encodeURIComponent(websiteRef)}/conversation/${encodeURIComponent(sessionRef)}/message`;
@@ -255,7 +256,9 @@ async function sendCrispMessage(
   }
   if (lifecycle) await lifecycle.responseObserved(response.status);
   if (!response.ok) {
-    if (response.status === 400) await recordCrispHttp400Diagnostic(env, response, body).catch(() => undefined);
+    if (response.status === 400) {
+      await recordCrispHttp400Diagnostic(env, operationId, response, body).catch(() => undefined);
+    }
     throw visibleHttpDeliveryError('CRISP', response.status);
   }
   try {
@@ -279,15 +282,16 @@ export async function createCrispMessage(
   outboundOperationId: string,
   lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ messageId: string }> {
+  const fingerprint = await crispFingerprintForOperation(outboundOperationId);
   const result = await sendCrispMessage(env, websiteRef, sessionRef, {
     type: 'text',
     from: 'operator',
     origin: 'chat',
     content,
+    fingerprint,
     user: CRISP_AUTOMATED_USER,
-    automated: true,
-    properties: { cz2128_operation_id: outboundOperationId }
-  }, lifecycle);
+    automated: true
+  }, outboundOperationId, lifecycle);
   return { messageId: result.fingerprint };
 }
 
@@ -307,14 +311,15 @@ export async function createCrispPicker(
   outboundOperationId: string,
   lifecycle?: OutboundAttemptLifecycle
 ): Promise<{ messageId: string }> {
+  const fingerprint = await crispFingerprintForOperation(outboundOperationId);
   const result = await sendCrispMessage(env, websiteRef, sessionRef, {
     type: 'picker',
     from: 'operator',
     origin: 'chat',
     content: { id, text, choices: choices.map(choice => ({ ...choice, selected: choice.selected ?? false })) },
+    fingerprint,
     user: CRISP_AUTOMATED_USER,
-    automated: true,
-    properties: { cz2128_operation_id: outboundOperationId }
-  }, lifecycle);
+    automated: true
+  }, outboundOperationId, lifecycle);
   return { messageId: result.fingerprint };
 }

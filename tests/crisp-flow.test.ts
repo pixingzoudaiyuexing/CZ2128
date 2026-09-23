@@ -4,6 +4,7 @@ import { processTelegramEvent } from '../src/queue/telegram-handler';
 import * as conversationService from '../src/core/conversation-service';
 import * as outbound from '../src/core/outbound-operations';
 import * as aiState from '../src/core/ai-state';
+import { crispFingerprintForOperation } from '../src/adapters/crisp/fingerprint';
 
 vi.mock('../src/core/conversation-service', () => ({
   getOrCreateConversation: vi.fn(), insertMessage: vi.fn(), updateOperatorThreadRef: vi.fn()
@@ -24,16 +25,35 @@ vi.mock('../src/adapters/crisp/api', () => ({
 describe('Crisp basic bridge orchestration', () => {
   let env: any;
 
+  function echoDb(sent: { id: string } | null = null, inFlight: Array<{ id: string }> = []) {
+    return {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => {
+            if (sql.includes('provider_message_ref = ?')) return sent;
+            if (sql.includes('FROM conversations WHERE operator_channel = ? AND operator_thread_ref = ?')) {
+              return {
+                id: 'conv-crisp',
+                operator_thread_ref: '77',
+                helpdesk_provider: 'crisp',
+                helpdesk_account_ref: 'website-1',
+                helpdesk_conversation_ref: 'session-1'
+              };
+            }
+            return null;
+          },
+          all: async () => ({ results: sql.includes("status IN ('SENDING', 'AMBIGUOUS')") ? inFlight : [] })
+        })
+      })
+    };
+  }
+
   beforeEach(() => {
     vi.resetAllMocks();
     env = {
       BOT_GROUP_ID: '-100',
       QUEUE: { send: vi.fn() },
-      DB: { prepare: () => ({ bind: () => ({ first: async () => ({
-        id: 'conv-crisp',
-        operator_thread_ref: '77', helpdesk_provider: 'crisp',
-        helpdesk_account_ref: 'website-1', helpdesk_conversation_ref: 'session-1'
-      }) }) }) },
+      DB: echoDb(),
       CRISP_API_IDENTIFIER: 'identifier',
       CRISP_API_KEY: 'key'
     };
@@ -107,6 +127,49 @@ describe('Crisp basic bridge orchestration', () => {
     expect(aiState.pauseOperator).not.toHaveBeenCalled();
     expect(conversationService.insertMessage).not.toHaveBeenCalled();
     expect(outbound.executeOutboundOperation).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a sent Crisp echo by exact durable provider fingerprint without custom properties', async () => {
+    env.DB = echoDb({ id: 'send_crisp_0:9' });
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:fingerprint-sent',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'provider-99', actorRole: 'OPERATOR', content: 'Reply', automated: true
+      }
+    }, env);
+    expect(aiState.pauseOperator).not.toHaveBeenCalled();
+    expect(conversationService.insertMessage).not.toHaveBeenCalled();
+    expect(outbound.executeOutboundOperation).not.toHaveBeenCalled();
+  });
+
+  it('suppresses an in-flight Crisp echo by deterministic request fingerprint before result persistence', async () => {
+    const operationId = 'send_crisp_0:9';
+    const fingerprint = String(await crispFingerprintForOperation(operationId));
+    env.DB = echoDb(null, [{ id: operationId }]);
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:fingerprint-race',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: fingerprint, actorRole: 'OPERATOR', content: 'Reply', automated: true
+      }
+    }, env);
+    expect(aiState.pauseOperator).not.toHaveBeenCalled();
+    expect(conversationService.insertMessage).not.toHaveBeenCalled();
+    expect(outbound.executeOutboundOperation).not.toHaveBeenCalled();
+  });
+
+  it('does not suppress an automated operator message when deterministic fingerprint evidence does not match', async () => {
+    env.DB = echoDb(null, [{ id: 'different-operation' }]);
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:fingerprint-no-match',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: '12345', actorRole: 'OPERATOR', content: 'Third party automation', automated: true
+      }
+    }, env);
+    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
+    expect(conversationService.insertMessage).toHaveBeenCalled();
   });
 
   it('does not suppress third-party automation or human operator messages without matching durable evidence', async () => {
