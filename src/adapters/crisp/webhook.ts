@@ -4,6 +4,7 @@ const MILLISECOND_EPOCH_THRESHOLD = 100_000_000_000;
 export interface CrispWebhookPayload {
   event: string;
   data: Record<string, any>;
+  timestamp?: unknown;
 }
 
 export interface CrispPickerSelection {
@@ -13,6 +14,13 @@ export interface CrispPickerSelection {
   pickerMessageRef: string;
   value: string;
   label: string;
+}
+
+export interface CrispLifecycleSignal {
+  websiteRef: string;
+  sessionRef: string;
+  state: 'pending' | 'unresolved' | 'resolved';
+  providerTimestamp: number;
 }
 
 export type CrispWebhookFailure =
@@ -64,6 +72,24 @@ export function readCrispPickerSelection(payload: CrispWebhookPayload): CrispPic
     value: choice.value,
     label: choice.label
   };
+}
+
+export function readCrispLifecycleSignal(payload: CrispWebhookPayload): CrispLifecycleSignal | null {
+  if (payload.event !== 'session:set_state') return null;
+  const data = payload.data;
+  if (!boundedIdentity(data.website_id) || !boundedIdentity(data.session_id)) return null;
+  if (data.state !== 'pending' && data.state !== 'unresolved' && data.state !== 'resolved') return null;
+  if (!Number.isSafeInteger(payload.timestamp) || Number(payload.timestamp) <= 0) return null;
+  return {
+    websiteRef: data.website_id,
+    sessionRef: data.session_id,
+    state: data.state,
+    providerTimestamp: Number(payload.timestamp)
+  };
+}
+
+export function crispLifecycleEventId(signal: CrispLifecycleSignal): string {
+  return `crisp:${signal.websiteRef}:${signal.sessionRef}:session:set_state:${signal.providerTimestamp}:${signal.state}`;
 }
 
 async function sha256Hex(value: string): Promise<string> {

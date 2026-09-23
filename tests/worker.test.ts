@@ -152,6 +152,41 @@ describe('Worker Integration', () => {
     });
   });
 
+  it('uses Crisp session:set_state provider identity without hashing lifecycle payloads', async () => {
+    const requestTimestamp = Math.floor(Date.now() / 1000);
+    const providerTimestamp = requestTimestamp * 1000 + 123;
+    const payload = {
+      event: 'session:set_state',
+      timestamp: providerTimestamp,
+      data: { website_id: 'website-1', session_id: 'session-lifecycle', state: 'resolved' }
+    };
+    const req = new Request('http://localhost/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(requestTimestamp),
+        'X-Crisp-Signature': await signCrisp(payload, requestTimestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const res = await Worker.fetch(req, env, ctx);
+
+    expect(res.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toEqual({
+      version: 1,
+      source: 'crisp',
+      type: 'conversation_state_changed',
+      eventId: `crisp:website-1:session-lifecycle:session:set_state:${providerTimestamp}:resolved`,
+      payload: {
+        websiteRef: 'website-1',
+        sessionRef: 'session-lifecycle',
+        state: 'resolved',
+        providerTimestamp
+      }
+    });
+  });
+
   it('accepts raw-body Crisp wire signatures with millisecond timestamps before enqueue', async () => {
     const rawBody = '{\n  "event": "message:send",\n  "data": { "website_id": "website-1", "session_id": "session-ms", "fingerprint": 109, "type": "text", "from": "user", "content": "Wire payload", "user": { "user_id": "visitor-ms" } }\n}';
     const timestamp = String(Date.now());

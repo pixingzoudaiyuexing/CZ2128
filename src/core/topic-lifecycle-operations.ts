@@ -134,7 +134,8 @@ export function lifecycleOperationCanBeSuperseded(operation: OutboundOperation):
 
 export async function supersedeLifecycleOperationBeforeSend(
   env: DatabaseEnv,
-  operation: OutboundOperation
+  operation: OutboundOperation,
+  actorRef = 'system:chatwoot-lifecycle'
 ): Promise<boolean> {
   if (!lifecycleOperationCanBeSuperseded(operation)) return false;
   const now = Math.floor(Date.now() / 1000);
@@ -160,7 +161,7 @@ export async function supersedeLifecycleOperationBeforeSend(
       entityId: operation.id,
       action: 'TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND',
       actorType: 'SYSTEM',
-      actorRef: 'system:chatwoot-lifecycle',
+      actorRef,
       oldState: operation.status,
       newState: 'FAILED_FINAL',
       reasonCode: 'TOPIC_LIFECYCLE_SUPERSEDED_BEFORE_SEND',
@@ -175,7 +176,8 @@ export async function supersedeLifecycleOperationBeforeSend(
 
 export async function markExpiredStartedLifecycleAmbiguous(
   env: DatabaseEnv,
-  operation: OutboundOperation
+  operation: OutboundOperation,
+  actorRef = 'system:chatwoot-lifecycle'
 ): Promise<boolean> {
   if (
     operation.status !== 'SENDING' || operation.request_started_at === null ||
@@ -199,7 +201,7 @@ export async function markExpiredStartedLifecycleAmbiguous(
       entityId: operation.id,
       action: 'TOPIC_LIFECYCLE_STARTED_REQUEST_EXPIRED',
       actorType: 'SYSTEM',
-      actorRef: 'system:chatwoot-lifecycle',
+      actorRef,
       oldState: 'SENDING',
       newState: 'AMBIGUOUS',
       reasonCode: 'OUTBOUND_MANUAL_RECONCILIATION_REQUIRED',
