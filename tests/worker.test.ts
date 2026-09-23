@@ -152,6 +152,80 @@ describe('Worker Integration', () => {
     });
   });
 
+  it('accepts a signed Crisp customer image file and queues provider-qualified attachment metadata only', async () => {
+    const payload = {
+      event: 'message:send',
+      data: {
+        website_id: 'website-1', session_id: 'session-image', fingerprint: 201,
+        type: 'file', from: 'user',
+        content: {
+          name: 'customer.png',
+          url: 'https://storage.crisp.chat/users/upload/session/customer.png',
+          type: 'image/png'
+        },
+        user: { user_id: 'visitor-image' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('https://worker.example/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({
+      source: 'crisp', type: 'message_created',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-image', customerRef: 'visitor-image',
+        messageRef: '201', actorRole: 'CUSTOMER',
+        attachments: [{
+          sourceAttachmentRef: 'file', attachmentType: 'photo',
+          originalFilename: 'customer.png', mimeType: 'image/png',
+          locator: {
+            provider: 'crisp',
+            dataUrl: 'https://storage.crisp.chat/users/upload/session/customer.png'
+          }
+        }]
+      }
+    });
+    expect(env.QUEUE.messages[0].payload.content).toBeUndefined();
+  });
+
+  it('ignores a signed Crisp ordinary file because Stage B owns the ordinary customer-file entry point', async () => {
+    const payload = {
+      event: 'message:send',
+      data: {
+        website_id: 'website-1', session_id: 'session-file', fingerprint: 202,
+        type: 'file', from: 'user',
+        content: {
+          name: 'report.pdf',
+          url: 'https://storage.crisp.chat/users/upload/session/report.pdf',
+          type: 'application/pdf'
+        },
+        user: { user_id: 'visitor-file' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('https://worker.example/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(0);
+  });
+
   it('uses Crisp session:set_state provider identity without hashing lifecycle payloads', async () => {
     const requestTimestamp = Math.floor(Date.now() / 1000);
     const providerTimestamp = requestTimestamp * 1000 + 123;
@@ -384,7 +458,7 @@ describe('Worker Integration', () => {
       source: 'telegram',
       type: 'message_created',
       eventId: 'tg:0:456',
-      payload: { supportProfileVersion: 0, updateRef: '456', messageRef: '9', threadRef: '8', content: 'Reply' }
+      payload: { supportProfileVersion: 0, updateRef: '456', messageRef: '9', threadRef: '8', publicOrigin: 'http://localhost', content: 'Reply' }
     });
   });
 
