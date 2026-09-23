@@ -303,6 +303,12 @@ async function prepareAttachmentRetry(
     row.status === 'FAILED_FINAL' && row.last_error === 'ATTACHMENT_DELIVERY_AMBIGUOUS'
   );
   if (!retryableState) throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
+  if (row.destination_provider === 'crisp') {
+    // Crisp attachment delivery uses a short-lived capability token that is intentionally
+    // not persisted in plaintext. An ambiguous historical send therefore cannot be
+    // reconstructed safely for manual resend.
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
+  }
   const now = Math.floor(Date.now() / 1000);
   if (row.expires_at === null || row.expires_at <= now) {
     throw new SafeError('ATTACHMENT_EXPIRED');
