@@ -11,6 +11,7 @@ class MockPreparedStatement {
   bind(...params: any[]) { this.boundParams = params; return this; }
   async first<T = any>(): Promise<T | null> {
     const conversation = (row: any) => row ? {
+      helpdesk_provider: 'chatwoot',
       helpdesk_account_ref: 'account',
       helpdesk_conversation_ref: row.id,
       ...row

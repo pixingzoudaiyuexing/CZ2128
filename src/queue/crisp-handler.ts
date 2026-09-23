@@ -1,6 +1,7 @@
 import { createCrispMessage, createCrispPicker, CrispPickerChoice } from '../adapters/crisp/api';
 import { crispFingerprintForOperation } from '../adapters/crisp/fingerprint';
 import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
+import { getAIConfig } from '../config/ai';
 import { Env } from '../config/env';
 import { pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
@@ -304,12 +305,14 @@ export async function processCrispEvent(event: CrispMessageEvent, env: Env): Pro
     }
   }
 
-  if (!isOperator && content && conv.helpdesk_provider === 'crisp' && isAiConversationAllowed(env, conv.id)) {
-    logger.info('Crisp AI trigger deferred until Crisp AI outbound contract is implemented', {
-      conversation_id: conv.id,
-      source_event_ref: event.eventId
-    });
-  } else if (!isOperator && content && isAiConversationAllowed(env, conv.id)) {
+  const aiConfigured = !env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG && getAIConfig(env).enabled;
+  if (
+    !isOperator &&
+    content &&
+    !payload.selection &&
+    aiConfigured &&
+    isAiConversationAllowed(env, conv.id)
+  ) {
     await env.QUEUE.send({
       version: 1,
       source: 'internal',

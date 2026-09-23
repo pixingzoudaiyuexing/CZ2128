@@ -93,6 +93,28 @@ describe('Crisp basic bridge orchestration', () => {
     expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
   });
 
+  it('enqueues one stable AI trigger for configured ordinary Crisp customer text', async () => {
+    env.AI_BASE_URL = 'https://ai.example/v1';
+    env.AI_API_KEY = 'ai-key';
+    env.AI_MODEL = 'model';
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:ai-customer',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'ai-message-1', actorRole: 'CUSTOMER', content: 'Question for AI'
+      }
+    }, env);
+
+    expect(env.QUEUE.send).toHaveBeenCalledTimes(1);
+    expect(env.QUEUE.send).toHaveBeenCalledWith({
+      version: 1,
+      source: 'internal',
+      type: 'ai_trigger',
+      eventId: 'ai_trigger:conv-crisp:ai-message-1',
+      payload: { convId: 'conv-crisp', messageId: 'ai-message-1' }
+    });
+  });
+
   it('suppresses a Crisp operator echo only when durable outbound evidence matches', async () => {
     vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
       id: 'send_crisp_0:9', conversation_id: 'conv-crisp', destination_provider: 'crisp',
@@ -246,6 +268,9 @@ describe('Crisp basic bridge orchestration', () => {
   });
 
   it('pauses AI and notifies the mapped topic for a human handoff option', async () => {
+    env.AI_BASE_URL = 'https://ai.example/v1';
+    env.AI_API_KEY = 'ai-key';
+    env.AI_MODEL = 'model';
     env.CRISP_MENU_JSON = JSON.stringify({
       options: [{ pickerId: 'main', value: 'human', label: 'Contact human', handoff: true }]
     });
@@ -260,6 +285,7 @@ describe('Crisp basic bridge orchestration', () => {
     expect(aiState.pauseOperatorForCrispSelection).toHaveBeenCalledWith(env, 'conv-crisp', 'crisp:handoff');
     expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]))
       .toContain('crisp_handoff_tg:crisp:handoff');
+    expect(env.QUEUE.send).not.toHaveBeenCalled();
   });
 
   it('sends a preset response and next Picker for a matching option', async () => {
