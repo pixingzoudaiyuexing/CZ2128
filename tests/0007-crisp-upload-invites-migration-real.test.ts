@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -8,6 +8,8 @@ describe('Real 0007 Crisp upload invite migration', () => {
   const tmpDir = join(tmpdir(), `d1-crisp-upload-migration-${Date.now()}`);
   let queryId = 0;
   let beforeRows: any[] = [];
+
+  const migrationText = readFileSync(new URL('../migrations/0007_crisp_upload_invites.sql', import.meta.url), 'utf8');
 
   const runSql = (sql: string) => {
     queryId += 1;
@@ -72,6 +74,11 @@ describe('Real 0007 Crisp upload invite migration', () => {
   }, 90_000);
 
   afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('uses the D1 remote-safe parenthesized CASE form inside the trigger', () => {
+    expect(migrationText).toContain('SELECT (CASE');
+    expect(migrationText).not.toContain('SELECT CASE');
+  });
 
   it('preserves every pre-0007 attachment field exactly', () => {
     expect(attachmentRows()).toEqual(beforeRows);

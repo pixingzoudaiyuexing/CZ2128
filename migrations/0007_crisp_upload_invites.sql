@@ -90,7 +90,7 @@ CREATE TRIGGER trg_upload_invite_item_accept
 BEFORE UPDATE OF status ON upload_invite_items
 WHEN OLD.status != 'ACCEPTED' AND NEW.status = 'ACCEPTED'
 BEGIN
-    SELECT CASE
+    SELECT (CASE
         WHEN NEW.size_bytes IS NULL OR NEW.size_bytes < 1 THEN RAISE(ABORT, 'UPLOAD_INVITE_INVALID_SIZE')
         WHEN NOT EXISTS (
             SELECT 1
@@ -101,7 +101,7 @@ BEGIN
               AND ui.consumed_files + 1 <= ui.max_files
               AND ui.consumed_bytes + NEW.size_bytes <= ui.max_total_bytes
         ) THEN RAISE(ABORT, 'UPLOAD_INVITE_LIMIT')
-    END;
+    END);
 
     UPDATE upload_invites
     SET consumed_files = consumed_files + 1,
