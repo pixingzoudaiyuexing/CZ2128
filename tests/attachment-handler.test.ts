@@ -7,7 +7,7 @@ import { AttachmentTransferEvent } from '../src/core/events';
 class HandlerDb {
   attachments: any[] = [];
   conversations = [{
-    id: 'conv', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
+    id: 'conv', helpdesk_provider: 'chatwoot', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2',
     operator_thread_ref: '7'
   }];
   outbound: any[] = [];
@@ -100,7 +100,7 @@ class HandlerDb {
     if (query.includes('SET status = ?, last_error = ?, lease_until = NULL')) {
       const row = this.outbound.find(item => item.id === params[6]);
       if (row?.status === 'SENDING' && row.lease_token === params[7]) {
-        row.status = params[0]; row.last_error = params[1]; row.lease_until = null; row.lease_token = null; 
+        row.status = params[0]; row.last_error = params[1]; row.reconciliation_status = params[2]; row.lease_until = null; row.lease_token = null;
         return { meta: { changes: 1 } };
       }
       return { meta: { changes: 0 } };
@@ -184,11 +184,12 @@ class HandlerDb {
 function bucket() {
   const bytes = new Uint8Array([1, 2, 3]);
   return {
+    head: async () => ({ size: bytes.byteLength }),
     get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
   };
 }
 
-async function setup(sourceProvider: 'telegram' | 'chatwoot', status = 'STORED') {
+async function setup(sourceProvider: 'telegram' | 'chatwoot' | 'crisp', status = 'STORED') {
   const token = generateAttachmentToken();
   const db = new HandlerDb();
   db.attachments.push({
@@ -206,13 +207,34 @@ async function setup(sourceProvider: 'telegram' | 'chatwoot', status = 'STORED')
       attachmentId: 'att', accessToken: token,
       locator: sourceProvider === 'telegram'
         ? { provider: 'telegram', fileId: 'file' }
-        : { provider: 'chatwoot', dataUrl: 'https://chatwoot.example/a' }
+        : sourceProvider === 'crisp'
+          ? { provider: 'crisp', dataUrl: 'https://storage.crisp.chat/users/upload/session/a.png' }
+          : { provider: 'chatwoot', dataUrl: 'https://chatwoot.example/a' }
     }
   };
   return { db, event, env: {
     DB: db, ATTACHMENTS_BUCKET: bucket(), CHATWOOT_API_URL: 'https://chatwoot.example',
     CHATWOOT_API_TOKEN: 'token', TELEGRAM_BOT_TOKEN: 'bot', BOT_GROUP_ID: '-100'
   } as any };
+}
+
+async function setupCrispDestination(
+  attachmentType: 'photo' | 'document' = 'photo',
+  mimeType = attachmentType === 'photo' ? 'image/png' : 'application/pdf'
+) {
+  const fixture = await setup('telegram');
+  fixture.db.conversations[0].helpdesk_provider = 'crisp';
+  fixture.db.conversations[0].helpdesk_account_ref = 'website-1';
+  fixture.db.conversations[0].helpdesk_conversation_ref = 'session-1';
+  fixture.db.attachments[0].destination_provider = 'crisp';
+  fixture.db.attachments[0].attachment_type = attachmentType;
+  fixture.db.attachments[0].mime_type = mimeType;
+  fixture.db.attachments[0].safe_filename = attachmentType === 'photo' ? 'image.png' : 'report.pdf';
+  fixture.db.attachments[0].original_filename = fixture.db.attachments[0].safe_filename;
+  fixture.event.payload.publicOrigin = 'https://worker.example';
+  fixture.env.CRISP_API_IDENTIFIER = 'identifier';
+  fixture.env.CRISP_API_KEY = 'key';
+  return fixture;
 }
 
 describe('attachment transfer ledger', () => {
@@ -230,6 +252,91 @@ describe('attachment transfer ledger', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fixture.db.attachments[0].status).toBe('DELIVERED');
     expect(fixture.db.outbound[0].status).toBe('SENT');
+  });
+
+  it('delivers a Telegram image to Crisp as one controlled Markdown image operation', async () => {
+    const fixture = await setupCrispDestination('photo');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.type).toBe('text');
+      expect(body.automated).toBe(true);
+      expect(body.content).toBe(
+        `![Image](https://worker.example/attachments/${fixture.event.payload.accessToken}/inline)`
+      );
+      expect(body.content).not.toContain('api.telegram.org/file/bot');
+      expect(String(init?.headers)).not.toContain('telegram');
+      return new Response(JSON.stringify({ data: { fingerprint: body.fingerprint } }), { status: 202 });
+    });
+
+    await processAttachmentTransfer(fixture.event, fixture.env);
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fixture.db.attachments[0]).toMatchObject({
+      status: 'DELIVERED', destination_provider: 'crisp'
+    });
+    expect(fixture.db.outbound[0]).toMatchObject({
+      destination_provider: 'crisp', operation_type: 'SEND_ATTACHMENT', status: 'SENT'
+    });
+    expect(fixture.db.outbound[0].target_evidence_json).not.toContain(fixture.event.payload.accessToken);
+  });
+
+  it('delivers a Telegram ordinary file to Crisp as a controlled download link', async () => {
+    const fixture = await setupCrispDestination('document');
+    fixture.db.attachments[0].safe_filename = 'report.pdf';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.content).toBe(
+        `File: report.pdf\nhttps://worker.example/attachments/${fixture.event.payload.accessToken}/download`
+      );
+      return new Response(JSON.stringify({ data: { fingerprint: body.fingerprint } }), { status: 202 });
+    });
+
+    await processAttachmentTransfer(fixture.event, fixture.env);
+    expect(fixture.db.attachments[0].status).toBe('DELIVERED');
+  });
+
+  it('fails closed before any Crisp request when the controlled capability origin is not HTTPS', async () => {
+    const fixture = await setupCrispDestination('photo');
+    fixture.event.payload.publicOrigin = 'http://worker.example';
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fixture.db.attachments[0]).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'OUTBOUND_PRECONDITION_FAILED'
+    });
+    expect(fixture.db.outbound).toHaveLength(0);
+  });
+
+  it('retries only Crisp delivery after 429 without re-downloading a STORED Telegram attachment', async () => {
+    const fixture = await setupCrispDestination('photo');
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { fingerprint: 44 } }), { status: 202 }));
+
+    await expect(processAttachmentTransfer(fixture.event, fixture.env)).rejects.toBeInstanceOf(RetryableProcessingError);
+    expect(fixture.db.attachments[0].status).toBe('STORED');
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fixture.db.attachments[0].status).toBe('DELIVERED');
+    expect(fixture.db.outbound[0].attempt_count).toBe(2);
+  });
+
+  it('preserves an ambiguous Crisp attachment delivery and never blindly resends it', async () => {
+    const fixture = await setupCrispDestination('document');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('response lost'));
+
+    await processAttachmentTransfer(fixture.event, fixture.env);
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fixture.db.outbound[0]).toMatchObject({ status: 'AMBIGUOUS', reconciliation_status: 'PENDING' });
+    expect(fixture.db.attachments[0]).toMatchObject({
+      status: 'FAILED_FINAL', last_error: 'ATTACHMENT_DELIVERY_AMBIGUOUS'
+    });
   });
 
   it.each([
@@ -315,6 +422,48 @@ describe('attachment transfer ledger', () => {
       ['TELEGRAM_FILE_GET', 'SUCCESS', 1],
       ['SOURCE_STREAM', 'SUCCESS', 1]
     ]);
+  });
+
+  it('stores one Crisp customer image privately before sending it to the existing Telegram topic', async () => {
+    const fixture = await setup('crisp', 'PENDING');
+    fixture.db.attachments[0].attachment_type = 'photo';
+    fixture.db.attachments[0].mime_type = 'image/png';
+    fixture.db.attachments[0].safe_filename = 'customer.png';
+    const bytes = new Uint8Array([1, 2, 3]);
+    const storedParts: Uint8Array[] = [];
+    fixture.env.ATTACHMENTS_BUCKET = {
+      createMultipartUpload: async () => ({
+        uploadPart: async (partNumber: number, value: Uint8Array) => {
+          storedParts.push(value.slice());
+          return { partNumber, etag: `part-${partNumber}` };
+        },
+        complete: async () => undefined,
+        abort: async () => undefined
+      }),
+      get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.startsWith('https://storage.crisp.chat/')) {
+        return new Response(new Blob([bytes]).stream(), {
+          status: 200, headers: { 'Content-Type': 'image/png', 'Content-Length': '3' }
+        });
+      }
+      expect(url).toContain('/sendPhoto');
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 91 } }), { status: 200 });
+    });
+
+    await processAttachmentTransfer(fixture.event, fixture.env);
+    await processAttachmentTransfer(fixture.event, fixture.env);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(storedParts.reduce((sum, part) => sum + part.byteLength, 0)).toBe(3);
+    expect(fixture.db.attachments[0]).toMatchObject({
+      source_provider: 'crisp', destination_provider: 'telegram', status: 'DELIVERED'
+    });
+    expect(fixture.db.outbound[0]).toMatchObject({
+      destination_provider: 'telegram', operation_type: 'SEND_ATTACHMENT', status: 'SENT'
+    });
   });
 
   it('marks R2 multipart failure retryable without persisting private details', async () => {
