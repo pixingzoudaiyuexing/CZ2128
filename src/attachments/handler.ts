@@ -14,18 +14,21 @@ import { AttachmentTransferEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
 import {
   deliverAttachmentToChatwoot,
+  deliverAttachmentToCrisp,
   deliverAttachmentToTelegram,
   loadAttachmentBuffer,
+  prepareCrispAttachmentContent,
   telegramAttachmentMethod
 } from './delivery';
 import {
   AttachmentProcessingError,
   AttachmentSourceTelemetryContext,
   downloadChatwootAttachment,
+  downloadCrispAttachment,
   downloadTelegramAttachment,
   storeAttachmentStream
 } from './source';
-import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 
 export async function processAttachmentTransfer(event: AttachmentTransferEvent, env: Env): Promise<void> {
   const config = getAttachmentConfig(env);
@@ -83,6 +86,8 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         if (sourceTelemetry) {
           sourceTelemetry = { ...sourceTelemetry, didTimeout: telegramSource.didTimeout };
         }
+      } else if (event.payload.locator.provider === 'crisp') {
+        source = await downloadCrispAttachment(event.payload.locator.dataUrl, config);
       } else {
         source = await downloadChatwootAttachment(env, event.payload.locator.dataUrl, config);
       }
@@ -110,12 +115,20 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     }
     if (
-      row.destination_provider === 'chatwoot' &&
-      (!conversation.helpdesk_account_ref || !conversation.helpdesk_conversation_ref)
+      (row.destination_provider === 'chatwoot' || row.destination_provider === 'crisp') &&
+      (conversation.helpdesk_provider !== row.destination_provider ||
+       !conversation.helpdesk_account_ref || !conversation.helpdesk_conversation_ref)
     ) {
       throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     }
-    const bytes = await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
+    const bytes = row.destination_provider === 'crisp'
+      ? undefined
+      : await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
+    const crispContent = row.destination_provider === 'crisp'
+      ? await prepareCrispAttachmentContent(
+          env, row, event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
+        )
+      : undefined;
     const operationId = `attachment_${row.destination_provider}:${row.id}`;
     const targetEvidence = row.destination_provider === 'chatwoot'
       ? await buildChatwootTargetEvidence(
@@ -124,12 +137,17 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
           conversation.helpdesk_conversation_ref,
           operationId
         )
-      : buildTelegramTargetEvidence(
-          env,
-          env.BOT_GROUP_ID,
-          conversation.operator_thread_ref,
-          telegramAttachmentMethod(row).method
-        );
+      : row.destination_provider === 'crisp'
+        ? buildCrispTargetEvidence(
+            conversation.helpdesk_account_ref,
+            conversation.helpdesk_conversation_ref
+          )
+        : buildTelegramTargetEvidence(
+            env,
+            env.BOT_GROUP_ID,
+            conversation.operator_thread_ref,
+            telegramAttachmentMethod(row).method
+          );
     const result = await executeOutboundOperation(
       env,
       row.conversation_id,
@@ -138,9 +156,16 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       async (opId, lifecycle) => row.destination_provider === 'chatwoot'
         ? deliverAttachmentToChatwoot(
             env, config, row, conversation.helpdesk_account_ref,
-            conversation.helpdesk_conversation_ref, opId, bytes, lifecycle
+            conversation.helpdesk_conversation_ref, opId, bytes!, lifecycle
           )
-        : deliverAttachmentToTelegram(env, config, row, conversation.operator_thread_ref, bytes, lifecycle),
+        : row.destination_provider === 'crisp'
+          ? deliverAttachmentToCrisp(
+              env, conversation.helpdesk_account_ref, conversation.helpdesk_conversation_ref,
+              opId, crispContent!, lifecycle
+            )
+          : deliverAttachmentToTelegram(
+              env, config, row, conversation.operator_thread_ref, bytes!, lifecycle
+            ),
       operationId,
       {
         leaseSeconds: config.outboundLeaseSeconds,
