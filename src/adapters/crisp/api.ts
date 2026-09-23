@@ -16,11 +16,41 @@ const CRISP_OPERATION_ID_PATTERN = /^[A-Za-z0-9:_-]{1,512}$/;
 
 type CrispProviderReasonCode = 'invalid_data' | 'invalid_session' | 'UNKNOWN_PROVIDER_REASON';
 type CrispProviderResponseState = 'JSON_OBJECT' | 'EMPTY' | 'NON_JSON' | 'TOO_LARGE' | 'READ_ERROR';
+type CrispSchemaFieldCode =
+  | 'FIELD_TYPE'
+  | 'FIELD_FROM'
+  | 'FIELD_ORIGIN'
+  | 'FIELD_CONTENT'
+  | 'FIELD_USER'
+  | 'FIELD_USER_TYPE'
+  | 'FIELD_USER_ID'
+  | 'FIELD_USER_NICKNAME'
+  | 'FIELD_USER_AVATAR'
+  | 'FIELD_PROPERTIES'
+  | 'FIELD_AUTOMATED'
+  | 'FIELD_PICKER_ID'
+  | 'FIELD_PICKER_TEXT'
+  | 'FIELD_PICKER_CHOICES'
+  | 'FIELD_CHOICE_VALUE'
+  | 'FIELD_CHOICE_LABEL'
+  | 'FIELD_CHOICE_SELECTED'
+  | 'FIELD_UNKNOWN';
+type CrispSchemaIssueCode =
+  | 'ISSUE_REQUIRED'
+  | 'ISSUE_TYPE'
+  | 'ISSUE_ENUM'
+  | 'ISSUE_PATTERN'
+  | 'ISSUE_LENGTH'
+  | 'ISSUE_UNKNOWN_FIELD'
+  | 'ISSUE_INVALID'
+  | 'ISSUE_UNKNOWN';
 
 interface CrispProviderDiagnostic {
   providerError?: boolean;
   reasonCode: CrispProviderReasonCode;
   responseState: CrispProviderResponseState;
+  schemaField: CrispSchemaFieldCode;
+  schemaIssue: CrispSchemaIssueCode;
 }
 
 type CrispRequestType = 'text' | 'picker' | 'unknown';
@@ -41,6 +71,52 @@ function crispProviderErrorState(providerError: boolean | undefined): CrispProvi
   return providerError === true ? 'ERROR_TRUE' : providerError === false ? 'ERROR_FALSE' : 'ERROR_UNKNOWN';
 }
 
+function safeCrispSchemaField(message: unknown): CrispSchemaFieldCode {
+  if (typeof message !== 'string' || message.length === 0 || message.length > CRISP_ERROR_DIAGNOSTIC_MAX_BYTES) {
+    return 'FIELD_UNKNOWN';
+  }
+  const value = message.toLowerCase();
+  const checks: Array<[RegExp, CrispSchemaFieldCode]> = [
+    [/\b(?:choice|choices)[._\[\]0-9 -]*selected\b|\bselected\b/, 'FIELD_CHOICE_SELECTED'],
+    [/\b(?:choice|choices)[._\[\]0-9 -]*label\b|\blabel\b/, 'FIELD_CHOICE_LABEL'],
+    [/\b(?:choice|choices)[._\[\]0-9 -]*value\b/, 'FIELD_CHOICE_VALUE'],
+    [/\bchoices\b/, 'FIELD_PICKER_CHOICES'],
+    [/\bcontent[._ ]+id\b|\bpicker[._ ]+id\b/, 'FIELD_PICKER_ID'],
+    [/\bcontent[._ ]+text\b|\bpicker[._ ]+text\b/, 'FIELD_PICKER_TEXT'],
+    [/\buser[._ ]+nickname\b|\bnickname\b/, 'FIELD_USER_NICKNAME'],
+    [/\buser[._ ]+avatar\b|\bavatar\b/, 'FIELD_USER_AVATAR'],
+    [/\buser[._ ]+user_id\b|\buser_id\b/, 'FIELD_USER_ID'],
+    [/\buser[._ ]+type\b/, 'FIELD_USER_TYPE'],
+    [/\bproperties\b/, 'FIELD_PROPERTIES'],
+    [/\bautomated\b/, 'FIELD_AUTOMATED'],
+    [/\bcontent\b/, 'FIELD_CONTENT'],
+    [/\borigin\b/, 'FIELD_ORIGIN'],
+    [/\bfrom\b/, 'FIELD_FROM'],
+    [/\btype\b/, 'FIELD_TYPE'],
+    [/\buser\b/, 'FIELD_USER']
+  ];
+  return checks.find(([pattern]) => pattern.test(value))?.[1] ?? 'FIELD_UNKNOWN';
+}
+
+function safeCrispSchemaIssue(message: unknown): CrispSchemaIssueCode {
+  if (typeof message !== 'string' || message.length === 0 || message.length > CRISP_ERROR_DIAGNOSTIC_MAX_BYTES) {
+    return 'ISSUE_UNKNOWN';
+  }
+  const value = message.toLowerCase();
+  if (/\brequired\b|\bmissing\b/.test(value)) return 'ISSUE_REQUIRED';
+  if (/\bunknown field\b|\bunrecognized\b|\bnot allowed\b|\badditional propert/.test(value)) {
+    return 'ISSUE_UNKNOWN_FIELD';
+  }
+  if (/\bmust be (?:a |an )?(?:string|boolean|number|object|array|integer)\b|\bexpected (?:a |an )?(?:string|boolean|number|object|array|integer)\b/.test(value)) {
+    return 'ISSUE_TYPE';
+  }
+  if (/\benum\b|\bone of\b|\ballowed value/.test(value)) return 'ISSUE_ENUM';
+  if (/\bpattern\b|\bformat\b/.test(value)) return 'ISSUE_PATTERN';
+  if (/\btoo long\b|\btoo short\b|\bmaximum\b|\bminimum\b|\blength\b/.test(value)) return 'ISSUE_LENGTH';
+  if (/\binvalid\b|\brejected\b/.test(value)) return 'ISSUE_INVALID';
+  return 'ISSUE_UNKNOWN';
+}
+
 async function persistCrispHttp400Diagnostic(
   env: Env,
   body: Record<string, unknown>,
@@ -49,14 +125,14 @@ async function persistCrispHttp400Diagnostic(
   const operationId = crispOperationId(body);
   if (!operationId) return;
   await insertReliabilityAuditOnce(env, {
-    id: `crisp-http400-diagnostic:v1:${operationId}`,
+    id: `crisp-http400-diagnostic:v2:${operationId}`,
     entityType: 'OUTBOUND_OPERATION',
     entityId: operationId,
     action: 'CRISP_HTTP_400_DIAGNOSTIC',
     actorType: 'SYSTEM',
     actorRef: 'system:crisp-adapter',
     oldState: 'HTTP_400',
-    newState: `${crispRequestType(body)}:${diagnostic.responseState}:${crispProviderErrorState(diagnostic.providerError)}`,
+    newState: `${crispRequestType(body)}:${diagnostic.responseState}:${crispProviderErrorState(diagnostic.providerError)}:${diagnostic.schemaField}:${diagnostic.schemaIssue}`,
     reasonCode: diagnostic.reasonCode,
     createdAt: Math.floor(Date.now() / 1000)
   });
@@ -69,7 +145,7 @@ function safeCrispReason(reason: unknown): CrispProviderReasonCode {
 
 async function readBoundedCrispError(response: Response): Promise<CrispProviderDiagnostic> {
   if (!response.body) {
-    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'EMPTY' };
+    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'EMPTY', schemaField: 'FIELD_UNKNOWN', schemaIssue: 'ISSUE_UNKNOWN' };
   }
 
   const reader = response.body.getReader();
@@ -82,16 +158,16 @@ async function readBoundedCrispError(response: Response): Promise<CrispProviderD
       total += value.byteLength;
       if (total > CRISP_ERROR_DIAGNOSTIC_MAX_BYTES) {
         await reader.cancel().catch(() => undefined);
-        return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'TOO_LARGE' };
+        return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'TOO_LARGE', schemaField: 'FIELD_UNKNOWN', schemaIssue: 'ISSUE_UNKNOWN' };
       }
       chunks.push(value);
     }
   } catch {
-    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'READ_ERROR' };
+    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'READ_ERROR', schemaField: 'FIELD_UNKNOWN', schemaIssue: 'ISSUE_UNKNOWN' };
   }
 
   if (total === 0) {
-    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'EMPTY' };
+    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'EMPTY', schemaField: 'FIELD_UNKNOWN', schemaIssue: 'ISSUE_UNKNOWN' };
   }
 
   const bytes = new Uint8Array(total);
@@ -104,16 +180,22 @@ async function readBoundedCrispError(response: Response): Promise<CrispProviderD
   try {
     const payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'NON_JSON' };
+      return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'NON_JSON', schemaField: 'FIELD_UNKNOWN', schemaIssue: 'ISSUE_UNKNOWN' };
     }
-    const record = payload as { error?: unknown; reason?: unknown };
+    const record = payload as { error?: unknown; reason?: unknown; data?: unknown };
+    const data = record.data && typeof record.data === 'object' && !Array.isArray(record.data)
+      ? record.data as { message?: unknown }
+      : undefined;
+    const message = record.reason === 'invalid_data' ? data?.message : undefined;
     return {
       ...(typeof record.error === 'boolean' ? { providerError: record.error } : {}),
       reasonCode: safeCrispReason(record.reason),
-      responseState: 'JSON_OBJECT'
+      responseState: 'JSON_OBJECT',
+      schemaField: safeCrispSchemaField(message),
+      schemaIssue: safeCrispSchemaIssue(message)
     };
   } catch {
-    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'NON_JSON' };
+    return { reasonCode: 'UNKNOWN_PROVIDER_REASON', responseState: 'NON_JSON', schemaField: 'FIELD_UNKNOWN', schemaIssue: 'ISSUE_UNKNOWN' };
   }
 }
 
@@ -124,7 +206,9 @@ async function recordCrispHttp400Diagnostic(
 ): Promise<void> {
   const diagnostic = await readBoundedCrispError(response).catch((): CrispProviderDiagnostic => ({
     reasonCode: 'UNKNOWN_PROVIDER_REASON',
-    responseState: 'READ_ERROR'
+    responseState: 'READ_ERROR',
+    schemaField: 'FIELD_UNKNOWN',
+    schemaIssue: 'ISSUE_UNKNOWN'
   }));
   await persistCrispHttp400Diagnostic(env, body, diagnostic).catch(() => undefined);
   logger.warn('Crisp outbound provider rejected request', {

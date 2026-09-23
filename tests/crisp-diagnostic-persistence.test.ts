@@ -51,14 +51,14 @@ describe('Crisp durable HTTP 400 diagnostics', () => {
 
     expect(captures).toHaveLength(1);
     expect(captures[0].args).toEqual([
-      'crisp-http400-diagnostic:v1:op-400',
+      'crisp-http400-diagnostic:v2:op-400',
       'OUTBOUND_OPERATION',
       'op-400',
       'CRISP_HTTP_400_DIAGNOSTIC',
       'SYSTEM',
       'system:crisp-adapter',
       'HTTP_400',
-      'text:JSON_OBJECT:ERROR_TRUE',
+      'text:JSON_OBJECT:ERROR_TRUE:FIELD_UNKNOWN:ISSUE_UNKNOWN',
       'invalid_data',
       expect.any(Number)
     ]);
@@ -88,10 +88,44 @@ describe('Crisp durable HTTP 400 diagnostics', () => {
     });
 
     expect(captures).toHaveLength(1);
-    expect(captures[0].args[7]).toBe('picker:JSON_OBJECT:ERROR_TRUE');
+    expect(captures[0].args[7]).toBe('picker:JSON_OBJECT:ERROR_TRUE:FIELD_UNKNOWN:ISSUE_UNKNOWN');
     expect(captures[0].args[8]).toBe('UNKNOWN_PROVIDER_REASON');
     expect(JSON.stringify(captures[0])).not.toContain(privateReason);
     expect(JSON.stringify(captures[0])).not.toContain('Contact human');
+  });
+
+
+
+  it.each([
+    ['properties is not allowed', 'FIELD_PROPERTIES', 'ISSUE_UNKNOWN_FIELD'],
+    ['automated must be a boolean', 'FIELD_AUTOMATED', 'ISSUE_TYPE'],
+    ['content.choices[0].selected must be a boolean', 'FIELD_CHOICE_SELECTED', 'ISSUE_TYPE'],
+    ['type must be one of text, picker', 'FIELD_TYPE', 'ISSUE_ENUM'],
+    ['content is required', 'FIELD_CONTENT', 'ISSUE_REQUIRED'],
+    ['user.nickname exceeds maximum length', 'FIELD_USER_NICKNAME', 'ISSUE_LENGTH']
+  ])('persists only safe schema enums for invalid_data detail: %s', async (message, field, issue) => {
+    const captures: AuditCapture[] = [];
+    const env = diagnosticEnv(captures);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: true,
+      reason: 'invalid_data',
+      data: { message: `${message}; private@example.com token-SECRET session-SECRET` }
+    }), { status: 400 }));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(createCrispMessage(env, 'website-1', 'session-1', 'private reply', 'detail-op-400'))
+      .rejects.toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400 });
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0].args[0]).toBe('crisp-http400-diagnostic:v2:detail-op-400');
+    expect(captures[0].args[7]).toBe(`text:JSON_OBJECT:ERROR_TRUE:${field}:${issue}`);
+    expect(captures[0].args[8]).toBe('invalid_data');
+    const persisted = JSON.stringify(captures[0]);
+    expect(persisted).not.toContain(message);
+    expect(persisted).not.toContain('private@example.com');
+    expect(persisted).not.toContain('token-SECRET');
+    expect(persisted).not.toContain('session-SECRET');
+    expect(persisted).not.toContain('private reply');
   });
 
   it('persists the whitelisted invalid_session reason', async () => {
@@ -106,7 +140,7 @@ describe('Crisp durable HTTP 400 diagnostics', () => {
       .rejects.toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400 });
 
     expect(captures).toHaveLength(1);
-    expect(captures[0].args[7]).toBe('text:JSON_OBJECT:ERROR_TRUE');
+    expect(captures[0].args[7]).toBe('text:JSON_OBJECT:ERROR_TRUE:FIELD_UNKNOWN:ISSUE_UNKNOWN');
     expect(captures[0].args[8]).toBe('invalid_session');
   });
 
@@ -124,7 +158,7 @@ describe('Crisp durable HTTP 400 diagnostics', () => {
       .rejects.toMatchObject({ outcome: 'FINAL', code: 'OUTBOUND_PROVIDER_4XX_FINAL', httpStatus: 400 });
 
     expect(captures).toHaveLength(1);
-    expect(captures[0].args[7]).toBe(`text:${expectedState}:ERROR_UNKNOWN`);
+    expect(captures[0].args[7]).toBe(`text:${expectedState}:ERROR_UNKNOWN:FIELD_UNKNOWN:ISSUE_UNKNOWN`);
     expect(captures[0].args[8]).toBe('UNKNOWN_PROVIDER_REASON');
     if (responseBody) expect(JSON.stringify(captures[0])).not.toContain(responseBody.slice(0, 64));
   });
