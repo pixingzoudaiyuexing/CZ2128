@@ -1,30 +1,44 @@
 import { Env } from '../config/env';
-import { AttachmentRow, contentDisposition, hashAttachmentToken, isValidAttachmentToken, parseSingleRange } from '../core/attachments';
+import { AttachmentRow, contentDisposition, hashAttachmentToken, isSafeInlineImageMime, isValidAttachmentToken, parseSingleRange } from '../core/attachments';
+
+export type AttachmentProxyMode = 'download' | 'inline';
 
 function notFound(): Response {
   return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
 }
 
-function proxyHeaders(row: AttachmentRow, contentLength: number): Headers {
+function proxyHeaders(row: AttachmentRow, contentLength: number, mode: AttachmentProxyMode): Headers {
   return new Headers({
     'Content-Type': row.mime_type,
     'Content-Length': String(contentLength),
-    'Content-Disposition': contentDisposition(row.safe_filename),
+    'Content-Disposition': contentDisposition(row.safe_filename, mode === 'inline' ? 'inline' : 'attachment'),
     'Cache-Control': 'private, no-store',
     'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
     'Accept-Ranges': 'bytes'
   });
 }
 
-export async function handleAttachmentProxy(request: Request, env: Env, token: string): Promise<Response> {
+export async function handleAttachmentProxy(
+  request: Request,
+  env: Env,
+  token: string,
+  mode: AttachmentProxyMode = 'download'
+): Promise<Response> {
   if (!isValidAttachmentToken(token)) return notFound();
   const tokenHash = await hashAttachmentToken(token);
   const now = Math.floor(Date.now() / 1000);
   const row = await env.DB.prepare(
     `SELECT * FROM attachments
-     WHERE access_token_hash = ? AND expires_at > ? AND status IN ('STORED', 'DELIVERED')`
+     WHERE access_token_hash = ? AND expires_at > ?
+       AND (
+         status IN ('STORED', 'DELIVERED') OR
+         (status = 'FAILED_FINAL' AND last_error = 'ATTACHMENT_DELIVERY_AMBIGUOUS')
+       )`
   ).bind(tokenHash, now).first<AttachmentRow>();
   if (!row) return notFound();
+  if (mode === 'inline' && !isSafeInlineImageMime(row.mime_type)) return notFound();
 
   let metadata: R2Object | null;
   try {
@@ -48,7 +62,7 @@ export async function handleAttachmentProxy(request: Request, env: Env, token: s
   }
 
   const contentLength = range?.length ?? metadata.size;
-  const headers = proxyHeaders(row, contentLength);
+  const headers = proxyHeaders(row, contentLength, mode);
   if (range) headers.set('Content-Range', range.contentRange);
   const status = range ? 206 : 200;
   if (request.method === 'HEAD') return new Response(null, { status, headers });
