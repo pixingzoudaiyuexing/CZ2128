@@ -442,7 +442,7 @@ Gateway behavior:
 
 R2 lifecycle rules physically remove expired objects later; they are cleanup, not authorization.
 
-The secure proxy is implemented infrastructure for explicit temporary-download consumers. It is not the primary provider transport, and the current Telegram/Chatwoot channel flow does not surface proxy URLs.
+The secure proxy is implemented infrastructure for explicit temporary-download consumers rather than the default provider transport. Direct Telegram/Chatwoot binary bridging remains multipart. Crisp-05 Stage A uses proxy capabilities only where Crisp needs a customer-visible inline/download URL, and Stage B uses a forced-download capability only for an accepted customer upload surfaced to the original Telegram Topic.
 
 ## 11. Telegram Topic Lifecycle
 
@@ -615,6 +615,10 @@ Phase 3 introduced one reusable attachment core for Telegram and Chatwoot. Crisp
 - If a Crisp attachment send becomes `AMBIGUOUS`, the operation is preserved and not resent. Its capability may remain readable until TTL because the provider may already have accepted the message; duplicate-risk manual retry is disabled because the plaintext capability token is deliberately non-durable.
 
 Attachment-only customer messages do not create AI triggers. Captions remain ordinary text messages and are not duplicated in attachment delivery. Telegram operator attachments participate in the existing Telegram `update_id` state-order fence.
+
+Crisp-05 Stage B extends this attachment core with an explicit temporary customer-upload capability rather than trusting Crisp ordinary-file webhook URLs or exposing a general public upload endpoint. Only a Telegram user already present in the bootstrap-only `ADMIN_TELEGRAM_USER_IDS` allowlist may run `/upload` or `/upload_revoke`, and only inside the existing mapped Crisp conversation Topic. The invite is bound in D1 to that Conversation, Crisp website/session, Telegram group/topic, Support Bot generation and creating Telegram update. A newer ordered command revokes older active invitations; stale delayed commands cannot replace or revoke newer state.
+
+`UPLOAD_CAPABILITY_SECRET` is a bootstrap-only Cloudflare secret. Invite and per-file download capabilities are domain-separated HMAC values; D1 stores only their hashes. The invite expires after 15 minutes, is limited to three ordinary files and the configured attachment byte ceiling, and uses D1 item leases plus an atomic SQLite trigger to enforce aggregate file/byte counters under concurrency. The browser never supplies Conversation, Crisp Session or Telegram Topic identity. POST handling rechecks the persisted binding, current Support Bot generation, OPEN mapped Topic and authoritative Crisp conversation state before accepting bytes. Images and active-content file types are rejected from this ordinary-file path. Accepted files stream into the existing private R2 bucket and are surfaced only to the original Telegram Topic as forced-download `/attachments/:token/download` capabilities. `UPLOAD_INVITE` ambiguity is preserved and is not eligible for generic duplicate-risk manual retry.
 
 ## 18. Phase 3.5 Runtime Configuration and Admin Control Plane
 

@@ -28,6 +28,7 @@ import { boundedQueueRetryDelay } from './core/retry';
 import { captureDlqMessage } from './queue/dlq-consumer';
 import { persistDlqQuarantine } from './queue/dlq-quarantine';
 import { resolveQueueIdentities } from './config/queue-identities';
+import { handleUploadCapabilityRequest } from './uploads/handler';
 
 export type { Env } from './config/env';
 
@@ -197,6 +198,18 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname.startsWith('/uploads/')) {
+      const token = url.pathname.slice('/uploads/'.length);
+      if (!token || token.includes('/')) {
+        return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
+      }
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        return new Response('Method Not Allowed', { status: 405, headers: { 'Cache-Control': 'private, no-store' } });
+      }
+      const effectiveEnv = await resolveEffectiveEnv(env);
+      return handleUploadCapabilityRequest(request, effectiveEnv, token);
+    }
+
     if (url.pathname.startsWith('/attachments/')) {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         return new Response('Method Not Allowed', { status: 405 });
@@ -323,6 +336,10 @@ export default {
         return new Response('Accepted', { status: 200 });
       }
 
+      if (!Number.isSafeInteger(telegramMessage.from.id) || telegramMessage.from.id <= 0) {
+        return new Response('Malformed update', { status: 400 });
+      }
+
       if (telegramMessage.message_thread_id === undefined || telegramMessage.message_thread_id === null) {
         return new Response('Ignored', { status: 200 });
       }
@@ -352,6 +369,7 @@ export default {
           updateRef: updateId,
           messageRef: String(telegramMessage.message_id),
           threadRef: String(telegramMessage.message_thread_id),
+          operatorRef: String(telegramMessage.from.id),
           publicOrigin: url.origin,
           ...(typeof content === 'string' && content.length > 0 ? { content } : {}),
           ...(attachments.length > 0 ? { attachments } : {})

@@ -18,6 +18,8 @@ import {
   deliverAttachmentToTelegram,
   loadAttachmentBuffer,
   prepareCrispAttachmentContent,
+  prepareTelegramUploadNotification,
+  deliverUploadNotificationToTelegram,
   telegramAttachmentMethod
 } from './delivery';
 import {
@@ -88,8 +90,10 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         }
       } else if (event.payload.locator.provider === 'crisp') {
         source = await downloadCrispAttachment(event.payload.locator.dataUrl, config);
-      } else {
+      } else if (event.payload.locator.provider === 'chatwoot') {
         source = await downloadChatwootAttachment(env, event.payload.locator.dataUrl, config);
+      } else {
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
       }
       let size: number;
       try {
@@ -121,11 +125,17 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
     ) {
       throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     }
-    const bytes = row.destination_provider === 'crisp'
+    const uploadNotification = row.source_provider === 'upload' && row.destination_provider === 'telegram';
+    const bytes = row.destination_provider === 'crisp' || uploadNotification
       ? undefined
       : await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
     const crispContent = row.destination_provider === 'crisp'
       ? await prepareCrispAttachmentContent(
+          env, row, event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
+        )
+      : undefined;
+    const telegramUploadContent = uploadNotification
+      ? await prepareTelegramUploadNotification(
           env, row, event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
         )
       : undefined;
@@ -146,7 +156,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
             env,
             env.BOT_GROUP_ID,
             conversation.operator_thread_ref,
-            telegramAttachmentMethod(row).method
+            uploadNotification ? 'sendMessage' : telegramAttachmentMethod(row).method
           );
     const result = await executeOutboundOperation(
       env,
@@ -163,9 +173,13 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
               env, conversation.helpdesk_account_ref, conversation.helpdesk_conversation_ref,
               opId, crispContent!, lifecycle
             )
-          : deliverAttachmentToTelegram(
-              env, config, row, conversation.operator_thread_ref, bytes!, lifecycle
-            ),
+          : uploadNotification
+            ? deliverUploadNotificationToTelegram(
+                env, conversation.operator_thread_ref, telegramUploadContent!, lifecycle
+              )
+            : deliverAttachmentToTelegram(
+                env, config, row, conversation.operator_thread_ref, bytes!, lifecycle
+              ),
       operationId,
       {
         leaseSeconds: config.outboundLeaseSeconds,

@@ -96,7 +96,7 @@ export interface OutboundOperation {
   resolved_at: number | null;
   resolution_reason: string | null;
   parent_operation_id: string | null;
-  subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN' | 'CONTROL_ACK' | null;
+  subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN' | 'CONTROL_ACK' | 'UPLOAD_INVITE' | null;
   subject_ref: string | null;
   target_evidence_json: string | null;
 }

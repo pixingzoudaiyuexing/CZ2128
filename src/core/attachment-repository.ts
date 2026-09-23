@@ -35,10 +35,11 @@ export async function discoverAttachment(
   sourceMessageRef: string,
   descriptor: AttachmentDescriptor,
   destinationProvider?: AttachmentProvider,
-  publicOrigin?: string
+  publicOrigin?: string,
+  accessTokenOverride?: string
 ): Promise<DiscoveredAttachment> {
   const id = await stableAttachmentId(sourceProvider, sourceMessageRef, descriptor.sourceAttachmentRef);
-  const token = generateAttachmentToken();
+  const token = accessTokenOverride || generateAttachmentToken();
   const tokenHash = await hashAttachmentToken(token);
   const filename = sanitizeFilename(descriptor.originalFilename, descriptor.attachmentType);
   const now = Math.floor(Date.now() / 1000);

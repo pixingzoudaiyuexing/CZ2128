@@ -13,6 +13,7 @@ import { OutboundAttemptLifecycle } from '../core/outbound-operations';
 import { TelegramMethod } from '../core/outbound-evidence';
 import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
 import { createCrispMessage } from '../adapters/crisp/api';
+import { sendTelegramMessage } from '../adapters/telegram/api';
 import { isSafeInlineImageMime, isValidAttachmentToken } from '../core/attachments';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
@@ -66,9 +67,12 @@ export async function loadAttachmentBuffer(
   return value;
 }
 
-function controlledAttachmentOrigin(publicOrigin: string | undefined): string {
+function controlledAttachmentOrigin(
+  publicOrigin: string | undefined,
+  provider: 'CRISP' | 'TELEGRAM' = 'CRISP'
+): string {
   if (!publicOrigin) {
-    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP', stage: 'PREPARE' });
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider, stage: 'PREPARE' });
   }
   try {
     const url = new URL(publicOrigin);
@@ -78,7 +82,7 @@ function controlledAttachmentOrigin(publicOrigin: string | undefined): string {
     ) throw new Error('invalid origin');
     return url.origin;
   } catch {
-    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP', stage: 'PREPARE' });
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider, stage: 'PREPARE' });
   }
 }
 
@@ -111,6 +115,39 @@ export async function prepareCrispAttachmentContent(
   return isImage
     ? `![Image](${accessUrl})`
     : `File: ${safeDisplayFilename(row.safe_filename)}\n${accessUrl}`;
+}
+
+export async function prepareTelegramUploadNotification(
+  env: Env,
+  row: AttachmentRow,
+  accessToken: string,
+  publicOrigin: string | undefined,
+  maxBytes: number
+): Promise<string> {
+  if (row.source_provider !== 'upload' || !isValidAttachmentToken(accessToken)) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM', stage: 'PREPARE' });
+  }
+  let metadata: R2Object | null;
+  try {
+    metadata = await env.ATTACHMENTS_BUCKET.head(row.storage_key);
+  } catch {
+    throw new SafeError('R2_READ_TRANSIENT');
+  }
+  if (!metadata) throw new SafeError('R2_OBJECT_MISSING');
+  if (metadata.size > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
+  const origin = controlledAttachmentOrigin(publicOrigin, 'TELEGRAM');
+  const accessUrl = `${origin}/attachments/${accessToken}/download`;
+  return `Customer uploaded file / 客户上传文件: ${safeDisplayFilename(row.safe_filename)}\n${accessUrl}`;
+}
+
+export async function deliverUploadNotificationToTelegram(
+  env: Env,
+  threadRef: string,
+  content: string,
+  lifecycle?: OutboundAttemptLifecycle
+): Promise<{ providerMessageRef: string }> {
+  const response = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle);
+  return { providerMessageRef: response.messageId };
 }
 
 export async function deliverAttachmentToCrisp(

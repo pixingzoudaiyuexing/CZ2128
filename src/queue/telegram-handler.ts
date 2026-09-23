@@ -10,6 +10,16 @@ import { TelegramMessageEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { createAndSendUploadInvite, revokeUploadInviteFromTelegram } from '../uploads/service';
+
+function isAuthorizedUploadOperator(env: Env, operatorRef: string | undefined): operatorRef is string {
+  if (!operatorRef || !/^[1-9]\d{0,19}$/.test(operatorRef)) return false;
+  const allowed = (env.ADMIN_TELEGRAM_USER_IDS || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(value => /^[1-9]\d{0,19}$/.test(value));
+  return allowed.includes(operatorRef);
+}
 
 export async function processTelegramEvent(event: TelegramMessageEvent, env: Env): Promise<void> {
   const payload = event.payload;
@@ -60,6 +70,31 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
         )
       }
     );
+    return;
+  }
+
+  if (attachments.length === 0 && (command === '/upload' || command === '/upload_revoke')) {
+    if (
+      conv.helpdesk_provider !== 'crisp' ||
+      !isAuthorizedUploadOperator(env, payload.operatorRef) ||
+      !payload.publicOrigin
+    ) return;
+    const commandState = await applyTelegramOperatorAction(
+      env, conv.id, supportProfileVersion, payload.updateRef, 'HUMAN_REPLY'
+    );
+    if (commandState === 'STALE' || commandState === 'STALE_PROFILE') return;
+    const uploadCommand = {
+      supportProfileVersion,
+      updateRef: payload.updateRef,
+      operatorRef: payload.operatorRef,
+      publicOrigin: payload.publicOrigin,
+      threadRef: payload.threadRef
+    };
+    if (command === '/upload') {
+      await createAndSendUploadInvite(env, conv, uploadCommand);
+    } else {
+      await revokeUploadInviteFromTelegram(env, conv, uploadCommand);
+    }
     return;
   }
 

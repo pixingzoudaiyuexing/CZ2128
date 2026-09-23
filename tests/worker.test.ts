@@ -458,7 +458,7 @@ describe('Worker Integration', () => {
       source: 'telegram',
       type: 'message_created',
       eventId: 'tg:0:456',
-      payload: { supportProfileVersion: 0, updateRef: '456', messageRef: '9', threadRef: '8', publicOrigin: 'http://localhost', content: 'Reply' }
+      payload: { supportProfileVersion: 0, updateRef: '456', messageRef: '9', threadRef: '8', operatorRef: '7', publicOrigin: 'http://localhost', content: 'Reply' }
     });
   });
 

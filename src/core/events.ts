@@ -72,6 +72,7 @@ export interface TelegramMessageEvent extends QueueEventBase {
     updateRef: string;
     messageRef: string;
     threadRef: string;
+    operatorRef?: string;
     content?: string;
     attachments?: AttachmentDescriptor[];
     publicOrigin?: string;
