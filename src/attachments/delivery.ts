@@ -12,6 +12,8 @@ import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adap
 import { OutboundAttemptLifecycle } from '../core/outbound-operations';
 import { TelegramMethod } from '../core/outbound-evidence';
 import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
+import { createCrispMessage } from '../adapters/crisp/api';
+import { isSafeInlineImageMime, isValidAttachmentToken } from '../core/attachments';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -62,6 +64,67 @@ export async function loadAttachmentBuffer(
   }
   if (value.byteLength > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
   return value;
+}
+
+function controlledAttachmentOrigin(publicOrigin: string | undefined): string {
+  if (!publicOrigin) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP', stage: 'PREPARE' });
+  }
+  try {
+    const url = new URL(publicOrigin);
+    if (
+      url.protocol !== 'https:' || url.username || url.password ||
+      url.pathname !== '/' || url.search || url.hash || url.origin !== publicOrigin
+    ) throw new Error('invalid origin');
+    return url.origin;
+  } catch {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP', stage: 'PREPARE' });
+  }
+}
+
+function safeDisplayFilename(value: string): string {
+  return value.replace(/[\r\n<>\u202a-\u202e\u2066-\u2069]/g, '_').slice(0, 180) || 'attachment.bin';
+}
+
+export async function prepareCrispAttachmentContent(
+  env: Env,
+  row: AttachmentRow,
+  accessToken: string,
+  publicOrigin: string | undefined,
+  maxBytes: number
+): Promise<string> {
+  if (!isValidAttachmentToken(accessToken)) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP', stage: 'PREPARE' });
+  }
+  let metadata: R2Object | null;
+  try {
+    metadata = await env.ATTACHMENTS_BUCKET.head(row.storage_key);
+  } catch {
+    throw new SafeError('R2_READ_TRANSIENT');
+  }
+  if (!metadata) throw new SafeError('R2_OBJECT_MISSING');
+  if (metadata.size > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
+  const origin = controlledAttachmentOrigin(publicOrigin);
+  const isImage = row.attachment_type === 'photo' && isSafeInlineImageMime(row.mime_type);
+  const mode = isImage ? 'inline' : 'download';
+  const accessUrl = `${origin}/attachments/${accessToken}/${mode}`;
+  return isImage
+    ? `![Image](${accessUrl})`
+    : `File: ${safeDisplayFilename(row.safe_filename)}\n${accessUrl}`;
+}
+
+export async function deliverAttachmentToCrisp(
+  env: Env,
+  websiteRef: string,
+  sessionRef: string,
+  operationId: string,
+  content: string,
+  lifecycle?: OutboundAttemptLifecycle
+): Promise<{ providerMessageRef: string }> {
+  const result = await createCrispMessage(
+    env, websiteRef, sessionRef, content, operationId, lifecycle
+  );
+  return { providerMessageRef: result.messageId };
 }
 
 export async function deliverAttachmentToChatwoot(

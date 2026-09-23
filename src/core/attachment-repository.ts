@@ -33,7 +33,9 @@ export async function discoverAttachment(
   conversationId: string,
   sourceProvider: AttachmentProvider,
   sourceMessageRef: string,
-  descriptor: AttachmentDescriptor
+  descriptor: AttachmentDescriptor,
+  destinationProvider?: AttachmentProvider,
+  publicOrigin?: string
 ): Promise<DiscoveredAttachment> {
   const id = await stableAttachmentId(sourceProvider, sourceMessageRef, descriptor.sourceAttachmentRef);
   const token = generateAttachmentToken();
@@ -41,7 +43,8 @@ export async function discoverAttachment(
   const filename = sanitizeFilename(descriptor.originalFilename, descriptor.attachmentType);
   const now = Math.floor(Date.now() / 1000);
   const status: AttachmentStatus = descriptor.rejectionCode ? 'FAILED_FINAL' : 'PENDING';
-  const destinationProvider: AttachmentProvider = sourceProvider === 'telegram' ? 'chatwoot' : 'telegram';
+  const resolvedDestinationProvider: AttachmentProvider = destinationProvider
+    ?? (sourceProvider === 'telegram' ? 'chatwoot' : 'telegram');
   const storageKey = `attachments/${id}`;
 
   await env.DB.prepare(
@@ -55,7 +58,7 @@ export async function discoverAttachment(
   ).bind(
     id, conversationId, sourceProvider, sourceMessageRef, descriptor.sourceAttachmentRef,
     descriptor.attachmentType, filename.original, filename.safe, normalizeMime(descriptor.mimeType),
-    descriptor.sizeBytes ?? null, storageKey, tokenHash, status, destinationProvider,
+    descriptor.sizeBytes ?? null, storageKey, tokenHash, status, resolvedDestinationProvider,
     now + config.ttlSeconds, descriptor.rejectionCode || null, now, now
   ).run();
 
@@ -78,7 +81,12 @@ export async function discoverAttachment(
         source: 'internal' as const,
         type: 'attachment_transfer' as const,
         eventId: `attachment:${row.id}`,
-        payload: { attachmentId: row.id, accessToken: token, locator: descriptor.locator }
+        payload: {
+          attachmentId: row.id,
+          accessToken: token,
+          locator: descriptor.locator,
+          ...(publicOrigin ? { publicOrigin } : {})
+        }
       }
     : undefined;
   return { row, job };
@@ -90,7 +98,9 @@ export async function enqueueAttachmentJobs(
   conversationId: string,
   sourceProvider: AttachmentProvider,
   sourceMessageRef: string,
-  descriptors: AttachmentDescriptor[]
+  descriptors: AttachmentDescriptor[],
+  destinationProvider?: AttachmentProvider,
+  publicOrigin?: string
 ): Promise<void> {
   if (descriptors.length > config.maxCountPerMessage) {
     logger.warn('Attachment count exceeds configured limit', {
@@ -103,7 +113,8 @@ export async function enqueueAttachmentJobs(
   }
   for (const descriptor of descriptors.slice(0, config.maxCountPerMessage)) {
     const discovered = await discoverAttachment(
-      env, config, conversationId, sourceProvider, sourceMessageRef, descriptor
+      env, config, conversationId, sourceProvider, sourceMessageRef, descriptor,
+      destinationProvider, publicOrigin
     );
     if (discovered.job) await env.QUEUE.send(discovered.job);
   }

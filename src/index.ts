@@ -14,7 +14,11 @@ import { SupportEvent } from './core/events';
 import { logger } from './observability/logger';
 import { handleQueueEvent } from './queue/consumer';
 import { getAttachmentConfig } from './config/attachments';
-import { discoverChatwootAttachments, discoverTelegramAttachments } from './attachments/discovery';
+import {
+  discoverChatwootAttachments,
+  discoverCrispAttachments,
+  discoverTelegramAttachments
+} from './attachments/discovery';
 import { handleAttachmentProxy } from './attachments/proxy';
 import { cleanupExpiredAttachments } from './attachments/cleanup';
 import { AttachmentDescriptor } from './core/attachments';
@@ -40,7 +44,7 @@ function hasProviderId(value: unknown): boolean {
 function boundedAttachments(
   attachments: AttachmentDescriptor[],
   maxCount: number,
-  source: 'chatwoot' | 'telegram'
+  source: 'chatwoot' | 'crisp' | 'telegram'
 ): AttachmentDescriptor[] {
   if (attachments.length > maxCount) {
     logger.warn('Attachment count exceeds configured limit', {
@@ -116,7 +120,8 @@ function normalizeChatwootEvent(
 export function normalizeCrispEvent(
   payload: Record<string, any>,
   eventId: string,
-  expectedWebsiteId?: string
+  expectedWebsiteId?: string,
+  attachmentConfig?: ReturnType<typeof getAttachmentConfig>
 ): SupportEvent | null {
   if (expectedWebsiteId && String(payload.data?.website_id) !== expectedWebsiteId) return null;
   if (payload.event === 'session:set_state') {
@@ -140,9 +145,16 @@ export function normalizeCrispEvent(
 
   const selection = readCrispPickerSelection(payload as CrispWebhookPayload);
   if (payload.event === 'message:updated' && !selection) return null;
-  if (payload.event !== 'message:updated' && data.type !== 'text') return null;
+  const attachments = payload.event === 'message:send' && data.type === 'file' && attachmentConfig
+    ? boundedAttachments(
+        discoverCrispAttachments(payload, attachmentConfig),
+        attachmentConfig.maxCountPerMessage,
+        'crisp'
+      )
+    : [];
+  if (payload.event !== 'message:updated' && data.type !== 'text' && attachments.length === 0) return null;
   const content = selection?.label || (typeof data.content === 'string' ? data.content : undefined);
-  if (!content) return null;
+  if (!content && attachments.length === 0) return null;
   const isOperator = payload.event === 'message:received';
   const customerRef = typeof data.user?.user_id === 'string' && data.user.user_id
     ? data.user.user_id
@@ -165,7 +177,8 @@ export function normalizeCrispEvent(
       ...(customerName ? { customerName } : {}),
       messageRef,
       actorRole: isOperator ? 'OPERATOR' : 'CUSTOMER',
-      content,
+      ...(content ? { content } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(data.automated === true ? { automated: true } : {}),
       ...(operationMarker ? { operationMarker } : {}),
       ...(selection ? {
@@ -188,8 +201,15 @@ export default {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         return new Response('Method Not Allowed', { status: 405 });
       }
-      const token = url.pathname.slice('/attachments/'.length);
-      return handleAttachmentProxy(request, env, token);
+      const parts = url.pathname.slice('/attachments/'.length).split('/');
+      if (parts.length > 2 || parts.length === 0 || !parts[0]) {
+        return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
+      }
+      const mode = parts[1] || 'download';
+      if (mode !== 'download' && mode !== 'inline') {
+        return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
+      }
+      return handleAttachmentProxy(request, env, parts[0], mode);
     }
 
     if (url.pathname.startsWith('/webhooks/admin-telegram/')) {
@@ -256,10 +276,12 @@ export default {
       const eventId = lifecycleSignal
         ? crispLifecycleEventId(lifecycleSignal)
         : await crispMessageEventId(verified.payload, verified.rawBody);
+      const effectiveEnv = await resolveEffectiveEnv(env);
       const event = normalizeCrispEvent(
         verified.payload,
         eventId,
-        env.CRISP_WEBSITE_ID
+        env.CRISP_WEBSITE_ID,
+        getAttachmentConfig(effectiveEnv)
       );
       if (!event) return new Response('Ignored', { status: 200 });
       await env.QUEUE.send(event);
@@ -330,6 +352,7 @@ export default {
           updateRef: updateId,
           messageRef: String(telegramMessage.message_id),
           threadRef: String(telegramMessage.message_thread_id),
+          publicOrigin: url.origin,
           ...(typeof content === 'string' && content.length > 0 ? { content } : {}),
           ...(attachments.length > 0 ? { attachments } : {})
         }

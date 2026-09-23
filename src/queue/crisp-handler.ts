@@ -2,9 +2,11 @@ import { createCrispMessage, createCrispPicker, CrispPickerChoice } from '../ada
 import { crispFingerprintForOperation } from '../adapters/crisp/fingerprint';
 import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
+import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
 import { checkAutoResume, pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
+import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { RetryableProcessingError } from '../core/errors';
 import { CrispEvent, CrispMessageEvent } from '../core/events';
 import { executeOutboundOperation, getOutboundOperation } from '../core/outbound-operations';
@@ -174,7 +176,8 @@ async function isOwnCrispEcho(
   if (payload.operationMarker) {
     const operation = await getOutboundOperation(env, payload.operationMarker);
     if (operation && operation.conversation_id === conversationId &&
-        operation.destination_provider === 'crisp' && operation.operation_type === 'SEND_MESSAGE') {
+        operation.destination_provider === 'crisp' &&
+        (operation.operation_type === 'SEND_MESSAGE' || operation.operation_type === 'SEND_ATTACHMENT')) {
       if (operation.provider_message_ref) {
         if (operation.provider_message_ref === payload.messageRef) return true;
       } else if ((operation.status === 'SENDING' || operation.status === 'AMBIGUOUS') &&
@@ -186,7 +189,8 @@ async function isOwnCrispEcho(
 
   const sent = await env.DB.prepare(
     `SELECT id FROM outbound_operations
-     WHERE conversation_id = ? AND destination_provider = 'crisp' AND operation_type = 'SEND_MESSAGE'
+     WHERE conversation_id = ? AND destination_provider = 'crisp'
+       AND operation_type IN ('SEND_MESSAGE', 'SEND_ATTACHMENT')
        AND status = 'SENT' AND provider_message_ref = ?
      LIMIT 1`
   ).bind(conversationId, payload.messageRef).first<{ id: string }>();
@@ -194,7 +198,8 @@ async function isOwnCrispEcho(
 
   const inFlight = await env.DB.prepare(
     `SELECT id FROM outbound_operations
-     WHERE conversation_id = ? AND destination_provider = 'crisp' AND operation_type = 'SEND_MESSAGE'
+     WHERE conversation_id = ? AND destination_provider = 'crisp'
+       AND operation_type IN ('SEND_MESSAGE', 'SEND_ATTACHMENT')
        AND status IN ('SENDING', 'AMBIGUOUS') AND request_started_at IS NOT NULL
      ORDER BY updated_at DESC
      LIMIT 16`
@@ -252,6 +257,16 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     env, conv.id, payload.customerName, payload.sessionRef, conv.operator_thread_ref
   );
   if (!threadRef) return;
+
+  await enqueueAttachmentJobs(
+    env,
+    getAttachmentConfig(env),
+    conv.id,
+    'crisp',
+    payload.messageRef,
+    payload.attachments || [],
+    'telegram'
+  );
 
   if (content) {
     await executeOutboundOperation(

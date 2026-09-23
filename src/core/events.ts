@@ -43,6 +43,7 @@ export interface CrispMessageEvent extends QueueEventBase {
     content?: string;
     automated?: boolean;
     operationMarker?: string;
+    attachments?: AttachmentDescriptor[];
     selection?: {
       pickerId: string;
       pickerMessageRef: string;
@@ -73,6 +74,7 @@ export interface TelegramMessageEvent extends QueueEventBase {
     threadRef: string;
     content?: string;
     attachments?: AttachmentDescriptor[];
+    publicOrigin?: string;
   };
 }
 
@@ -92,6 +94,7 @@ export interface AttachmentTransferEvent extends QueueEventBase {
     attachmentId: string;
     accessToken: string;
     locator: AttachmentDescriptor['locator'];
+    publicOrigin?: string;
   };
 }
 

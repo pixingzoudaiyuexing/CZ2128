@@ -600,17 +600,19 @@ With these decisions frozen, Phase 1 implementation may begin.
 
 ## 17. Phase 3 Temporary Attachment Transport
 
-Phase 3 implements one reusable attachment core for Telegram and Chatwoot sources:
+Phase 3 introduced one reusable attachment core for Telegram and Chatwoot. Crisp-05 Stage A extends the same core to Crisp without a second storage or reliability subsystem:
 
 - one source message maps to zero-to-ten durable attachment rows and one stable Queue job per row;
 - source identity is `(source_provider, source_message_ref, source_attachment_ref)`;
 - R2 object keys are anonymous `attachments/<attachment-id>` values and the bucket remains private;
-- Telegram source downloads use `getFile`; Chatwoot source downloads accept only verified webhook locators, exact HTTPS hosts, manual redirects and stripped credentials after an origin change;
+- Telegram source downloads use `getFile`; Chatwoot source downloads retain their verified-locator/allowlisted-host policy; Crisp customer image sources must come from a verified Crisp webhook, use a safe raster MIME type and stay on exact HTTPS `storage.crisp.chat` across at most three manual redirects;
 - source bodies are counted while streaming into bounded 5 MiB R2 multipart chunks, with a hard 20 MiB ceiling;
-- destination multipart sends process one attachment at a time with a bounded 20 MiB single-file buffer and use the existing outbound operation ledger;
+- binary Telegram/Chatwoot destination sends retain their existing behavior; Crisp destinations use the same durable `SEND_ATTACHMENT` ledger but expose a controlled short-lived R2 capability as text Markdown/download content rather than a native Crisp file upload;
 - bearer download URLs use 32 random bytes, while D1 stores only SHA-256 of the raw token;
-- `/attachments/:token` supports GET, HEAD and one byte range, returns private no-store downloads, and uses uniform 404 responses for invalid access;
+- `/attachments/:token[/download|/inline]` supports GET, HEAD and one byte range, always enforces D1 expiry, uses uniform 404 responses for invalid access, forces ordinary files to download, and permits repeated inline reads only for safe raster images while the capability is valid;
 - stored data has a 24-hour business TTL, hourly logical cleanup is bounded to 100 rows, and a seven-day R2 lifecycle rule is the orphan safety net.
+- Telegram Bot API token-bearing source URLs never leave the Worker. Crisp source URLs are not persisted as R2 metadata or outbound target evidence. Crisp numeric fingerprints and durable `SEND_ATTACHMENT` evidence suppress gateway echoes.
+- If a Crisp attachment send becomes `AMBIGUOUS`, the operation is preserved and not resent. Its capability may remain readable until TTL because the provider may already have accepted the message; duplicate-risk manual retry is disabled because the plaintext capability token is deliberately non-durable.
 
 Attachment-only customer messages do not create AI triggers. Captions remain ordinary text messages and are not duplicated in attachment delivery. Telegram operator attachments participate in the existing Telegram `update_id` state-order fence.
 

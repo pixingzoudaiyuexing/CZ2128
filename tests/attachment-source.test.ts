@@ -5,6 +5,7 @@ import {
   AttachmentProcessingError,
   classifyAttachmentSourceHttpFailure,
   downloadChatwootAttachment,
+  downloadCrispAttachment,
   downloadTelegramAttachment,
   storeAttachmentStream
 } from '../src/attachments/source';
@@ -256,6 +257,66 @@ describe('attachment source security', () => {
     expect(error.code).toBe('ATTACHMENT_SOURCE_TOO_LARGE');
     expect(String(error)).not.toContain('telegram-secret');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('downloads a Crisp image only from the exact official storage host with manual redirects', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302, headers: { Location: 'https://storage.crisp.chat/users/upload/session/final.png' }
+      }))
+      .mockResolvedValueOnce(new Response(stream([1, 2, 3]), {
+        status: 200, headers: { 'Content-Type': 'image/png', 'Content-Length': '3' }
+      }));
+    const result = await downloadCrispAttachment(
+      'https://storage.crisp.chat/users/upload/session/start.png', getAttachmentConfig(env)
+    );
+    expect(result.contentLength).toBe(3);
+    result.finish();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe('manual');
+    expect(fetchMock.mock.calls[1][1]?.redirect).toBe('manual');
+  });
+
+  it.each([
+    'http://storage.crisp.chat/a.png',
+    'https://evil.example/a.png',
+    'https://storage.crisp.chat.evil.example/a.png',
+    'https://user:pass@storage.crisp.chat/a.png',
+    'https://storage.crisp.chat:444/a.png'
+  ])('rejects untrusted Crisp image source %s before fetching', async url => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    await expect(downloadCrispAttachment(url, getAttachmentConfig(env))).rejects.toMatchObject({
+      code: 'ATTACHMENT_SOURCE_INVALID', retryable: false
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Crisp redirect off the official storage host', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, {
+      status: 302, headers: { Location: 'https://evil.example/image.png' }
+    }));
+    await expect(downloadCrispAttachment(
+      'https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env)
+    )).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_INVALID' });
+  });
+
+  it('rejects an active SVG Crisp response even when the webhook claimed an image', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream([1]), {
+      status: 200, headers: { 'Content-Type': 'image/svg+xml', 'Content-Length': '1' }
+    }));
+    await expect(downloadCrispAttachment(
+      'https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env)
+    )).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_INVALID' });
+  });
+
+  it('rejects an oversized Crisp image from Content-Length before streaming', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream([1]), {
+      status: 200,
+      headers: { 'Content-Type': 'image/png', 'Content-Length': String(20 * 1024 * 1024 + 1) }
+    }));
+    await expect(downloadCrispAttachment(
+      'https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env)
+    )).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_TOO_LARGE' });
   });
 
   it('accepts the exact stream boundary using bounded multipart chunks', async () => {

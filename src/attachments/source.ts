@@ -1,6 +1,6 @@
 import { AttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
-import { AttachmentRow } from '../core/attachments';
+import { AttachmentRow, isSafeInlineImageMime } from '../core/attachments';
 import { ErrorProvider, SafeErrorCode, getSafeErrorDefinition } from '../core/error-taxonomy';
 import { SafeError, SafeErrorOptions } from '../core/errors';
 import { resolveRetryAfterSeconds, retryAfterHeader } from '../core/retry';
@@ -9,6 +9,7 @@ import { logger } from '../observability/logger';
 
 const R2_PART_BYTES = 5 * 1024 * 1024;
 const MAX_CHATWOOT_REDIRECTS = 3;
+const MAX_CRISP_REDIRECTS = 3;
 const MAX_SOURCE_TELEMETRY_DURATION_MS = 3_600_000;
 
 export type AttachmentSourceStage = 'TELEGRAM_GET_FILE' | 'TELEGRAM_FILE_GET' | 'SOURCE_STREAM';
@@ -73,7 +74,7 @@ export class AttachmentProcessingError extends SafeError {
 export function classifyAttachmentSourceHttpFailure(
   status: number,
   options: {
-    provider?: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT'>;
+    provider?: Extract<ErrorProvider, 'TELEGRAM' | 'CHATWOOT' | 'CRISP'>;
     telegramRetryAfter?: unknown;
     httpRetryAfter?: string | null;
   } = {}
@@ -185,6 +186,19 @@ function validateChatwootUrl(url: URL, config: AttachmentConfig, initial: boolea
   }
 }
 
+function validateCrispUrl(url: URL): void {
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname.toLowerCase() !== 'storage.crisp.chat' ||
+    (url.port !== '' && url.port !== '443') ||
+    url.username ||
+    url.password ||
+    url.hash
+  ) {
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
+  }
+}
+
 async function fetchWithDeadline(
   url: string,
   init: RequestInit,
@@ -288,6 +302,73 @@ export async function downloadChatwootAttachment(
     }
   }
   throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CHATWOOT' });
+}
+
+export async function downloadCrispAttachment(
+  dataUrl: string,
+  config: AttachmentConfig
+): Promise<{ body: ReadableStream<Uint8Array>; contentLength?: number; finish: () => void }> {
+  let current: URL;
+  try {
+    current = new URL(dataUrl);
+  } catch {
+    throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
+  }
+  validateCrispUrl(current);
+  const deadline = Date.now() + config.sourceTimeoutMs;
+
+  for (let redirects = 0; redirects <= MAX_CRISP_REDIRECTS; redirects++) {
+    const fetched = await fetchWithDeadline(
+      current.toString(),
+      { method: 'GET', redirect: 'manual' },
+      deadline
+    );
+    const response = fetched.response;
+    if (response.status >= 300 && response.status < 400) {
+      fetched.finish();
+      if (redirects === MAX_CRISP_REDIRECTS) {
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
+      }
+      const location = response.headers.get('Location');
+      if (!location) {
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
+      }
+      try {
+        current = new URL(location, current);
+      } catch {
+        throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
+      }
+      validateCrispUrl(current);
+      continue;
+    }
+    if (!response.ok) {
+      fetched.finish();
+      throw classifyAttachmentSourceHttpFailure(response.status, {
+        provider: 'CRISP',
+        httpRetryAfter: retryAfterHeader(response)
+      });
+    }
+    const contentType = (response.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase();
+    if (!isSafeInlineImageMime(contentType)) {
+      fetched.finish();
+      throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
+    }
+    if (!response.body) {
+      fetched.finish();
+      throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'CRISP' });
+    }
+    try {
+      return {
+        body: response.body,
+        contentLength: parseContentLength(response, config.maxBytes),
+        finish: fetched.finish
+      };
+    } catch (error) {
+      fetched.finish();
+      throw error;
+    }
+  }
+  throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
 }
 
 export async function downloadTelegramAttachment(

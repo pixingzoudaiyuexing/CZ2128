@@ -66,7 +66,8 @@ export class SqliteD1 {
       '0002_ai_handoff.sql',
       '0003_attachments.sql',
       '0004_runtime_config.sql',
-      '0005_reliability.sql'
+      '0005_reliability.sql',
+      '0006_crisp_attachment_provider.sql'
     ]) {
       this.exec(readFileSync(`migrations/${migration}`, 'utf8'));
     }

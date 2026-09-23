@@ -14,7 +14,8 @@ class ProxyDb {
         if (!query.includes('FROM attachments')) return null;
         return this.attachments.find(row =>
           row.access_token_hash === params[0] && row.expires_at > params[1] &&
-          ['STORED', 'DELIVERED'].includes(row.status)) || null;
+          (['STORED', 'DELIVERED'].includes(row.status) ||
+           (row.status === 'FAILED_FINAL' && row.last_error === 'ATTACHMENT_DELIVERY_AMBIGUOUS'))) || null;
       },
       all: async () => ({
         results: this.attachments
@@ -67,7 +68,7 @@ async function fixture(status = 'STORED', expiresOffset = 3600) {
     row: {
       id: 'att_proxy', access_token_hash: await hashAttachmentToken(token),
       storage_key: 'attachments/att_proxy', safe_filename: 'safe_文件.txt',
-      mime_type: 'application/octet-stream', status,
+      mime_type: 'application/octet-stream', status, last_error: null as string | null,
       expires_at: Math.floor(Date.now() / 1000) + expiresOffset
     }
   };
@@ -178,6 +179,54 @@ describe('secure attachment proxy', () => {
     db.attachments.push(valid.row);
     bucket.missing = true;
     expect((await handleAttachmentProxy(new Request(`https://worker.example/attachments/${valid.token}`), { DB: db, ATTACHMENTS_BUCKET: bucket } as any, valid.token)).status).toBe(404);
+  });
+  it('serves image mode inline repeatedly until expiry without consuming the token', async () => {
+    const db = new ProxyDb();
+    const bucket = new ProxyBucket();
+    const item = await fixture();
+    item.row.mime_type = 'image/png';
+    item.row.safe_filename = 'image.png';
+    db.attachments.push(item.row);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await handleAttachmentProxy(
+        new Request(`https://worker.example/attachments/${item.token}/inline`),
+        { DB: db, ATTACHMENTS_BUCKET: bucket } as any, item.token, 'inline'
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Content-Disposition')).toMatch(/^inline;/);
+      expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+      expect(response.headers.get('Cross-Origin-Resource-Policy')).toBe('cross-origin');
+      await response.arrayBuffer();
+    }
+    expect(bucket.getCalls).toHaveLength(2);
+  });
+
+  it('never serves ordinary files through inline mode', async () => {
+    const db = new ProxyDb();
+    const bucket = new ProxyBucket();
+    const item = await fixture();
+    item.row.mime_type = 'image/svg+xml';
+    db.attachments.push(item.row);
+    const response = await handleAttachmentProxy(
+      new Request(`https://worker.example/attachments/${item.token}/inline`),
+      { DB: db, ATTACHMENTS_BUCKET: bucket } as any, item.token, 'inline'
+    );
+    expect(response.status).toBe(404);
+    expect(bucket.getCalls).toHaveLength(0);
+  });
+
+  it('keeps a possibly delivered AMBIGUOUS Crisp capability readable until TTL', async () => {
+    const db = new ProxyDb();
+    const bucket = new ProxyBucket();
+    const item = await fixture('FAILED_FINAL');
+    item.row.last_error = 'ATTACHMENT_DELIVERY_AMBIGUOUS';
+    db.attachments.push(item.row);
+    const response = await handleAttachmentProxy(
+      new Request(`https://worker.example/attachments/${item.token}/download`),
+      { DB: db, ATTACHMENTS_BUCKET: bucket } as any, item.token, 'download'
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Disposition')).toMatch(/^attachment;/);
   });
 });
 
