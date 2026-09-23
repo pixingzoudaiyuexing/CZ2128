@@ -1,8 +1,8 @@
 # CZ2128
 
-CZ2128 connects Chatwoot and Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder.
+CZ2128 connects the current Crisp helpdesk target to Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder. Chatwoot remains a historical compatibility adapter and evidence surface.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A, Phase 4B-4B and Phase 4B-5 are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged; Phase 4C remains NOT STARTED / PREPARATION ONLY. Code completion is not production validation: real R2 staging remains incomplete, and the Admin Bot, Support Bot rotation, Telegram group migration, Telegram/Chatwoot providers and production Queue/D1 concurrency remain untested in staging.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A, Phase 4B-4B and Phase 4B-5 are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged. Phase 4C is now **IN EXECUTION**: the isolated 4C staging foundation is deployed and Crisp-02 basic-support real Staging E2E is accepted in its scoped range. This is not production validation: real R2 data-plane behavior, Queue/D1 concurrency/load/fault acceptance, Admin flows, bot/group migration, Crisp attachments/AI and Production remain unvalidated unless separately recorded.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -58,7 +58,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - [Staging Readiness](STAGING-READINESS.md)
 - [4C Staging Foundation Deployment Plan](STAGING-DEPLOYMENT.md)
 
-These Phase 4B-5 documents define operational and acceptance boundaries only. `STAGING-READINESS.md` records the non-sensitive 4C-0A inventory and owner gates. Neither authorizes deployment, resource provisioning, provider-visible actions, data restoration or Phase 4C execution.
+These documents preserve the Phase 4B-5 boundaries and the historical 4C-0A/4C-0B foundation record while also recording later authorized Phase 4C evidence. Documentation alone never authorizes a new deployment, resource mutation, provider-visible action, data restoration or acceptance run.
 
 ## Setup
 - `npm ci`

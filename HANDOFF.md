@@ -1,15 +1,17 @@
-# CZ2128 - Phase 4B-5 Complete / Phase 4C Preparation Only
+# CZ2128 - Phase 4B-5 Complete / Phase 4C In Execution
 
 ## Current Platform Direction
 
 Owner selected Crisp as the sole active helpdesk target in Crisp-01. Chatwoot
 implementation and historical state are preserved but must not receive new
-feature work or be presented as Crisp validation. The current branch adds only
-the basic Crisp text bridge and local tests; no Crisp secrets, webhook, Staging
-deployment or production migration has been performed.
+feature work or be presented as Crisp validation. Crisp-01 is merged and Crisp-02
+has completed Primary-accepted real Staging basic-support E2E. The isolated 4C
+staging Worker is deployed; Production has not been modified by Crisp-02 or the
+subsequent documentation reconciliation.
 
 ## 状态
-- **Current Main / Phase 4B-5 Documentation Merge**: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8` (PR #15 merge commit)
+- **Current Main before this documentation PR**: `512917eecb75df534b5cf1733f296ae06818d125` (PR #27 merge commit)
+- **Phase 4B-5 Documentation Merge**: `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8` (PR #15 merge commit)
 - **Phase 4B-5 Implementation Base**: `62c7c51120ad4d44fcdc4cff089173258b719c28` (historical pre-PR #15 main)
 - **Phase 1 Merge Commit / Main Base**: `61f9ad26bd2e06d0c91389434af17bdc85936e43`
 - **Phase 2 Previous Head**: `46ff0001f9df319f32145f6429d5de6c2465bb1b`
@@ -24,6 +26,8 @@ deployment or production migration has been performed.
 - **PR #13**: merged; Phase 4B-4B accepted, complete and frozen
 - **PR #14**: merged; Phase 4B-4B post-merge documentation sync accepted
 - **PR #15**: merged; Phase 4B-5 reliability runbook and readiness documentation accepted
+- **PR #21**: merged; Crisp-01 basic Crisp support bridge complete
+- **PR #27**: merged; Crisp-02 standard numeric fingerprint correlation; real Staging basic-support acceptance subsequently completed
 - **Phase 4A**: reliability architecture complete and frozen
 - **Phase 4B-1**: canonical error taxonomy and retry contracts complete
 - **Phase 4B-2A**: reliability persistence foundation complete
@@ -38,7 +42,7 @@ deployment or production migration has been performed.
 - **Phase 4B-4B**: ACCEPTED / COMPLETE / FROZEN / MERGED
 - **Phase 4B-4 overall**: COMPLETE / FROZEN / MERGED
 - **Phase 4B-5**: ACCEPTED / COMPLETE / FROZEN / MERGED
-- **Phase 4C**: NOT STARTED / PREPARATION ONLY
+- **Phase 4C**: IN EXECUTION — isolated staging foundation deployed; Crisp-02 scoped basic-support acceptance complete
 - **Final HEAD / CI**: 以最新 Merge & Freeze Return 和远端 `main` 为准，不在本文件保存自指 SHA。
 
 ## Phase 1 Reliability Baseline
@@ -78,15 +82,15 @@ deployment or production migration has been performed.
 - Human handoff and stale-generation results use generation-owned CAS so an old generation cannot overwrite or mark a newer owner stale.
 - Legacy `FAILED` remains accepted by migration `0005` for rolling deployment, but new runtime code does not emit it and lazily normalizes encountered rows.
 - Effective Chatwoot AI delivery through `SENT`, `CONFIRMED_SENT`, `MANUAL_MARK_DELIVERED` or a sent manual child repairs one durable AI message without another provider action. Telegram mirror delivery alone does not add context.
-- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5 is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4C is NOT STARTED / PREPARATION ONLY and `CONFIRMED_NOT_SENT` activation remains NOT STARTED.
+- Phase 4B-3 Admin reliability exposure is COMPLETE / FROZEN / MERGED. Phase 4B-4A DLQ capture, terminal quarantine and inspection is COMPLETE / FROZEN / MERGED. Phase 4B-4B explicit AI durable-state recovery is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4B-4 overall is COMPLETE / FROZEN / MERGED. Phase 4B-5 is ACCEPTED / COMPLETE / FROZEN / MERGED. Phase 4C is IN EXECUTION with only the scoped Crisp-02 basic-support Staging result accepted; `CONFIRMED_NOT_SENT` activation remains NOT STARTED.
 
-## Phase 4B-5 Documentation and 4C Preparation
+## Phase 4B-5 Documentation and Phase 4C Evidence
 - Operational state and incident handling: [RELIABILITY-RUNBOOK.md](RELIABILITY-RUNBOOK.md)
 - Migration, backup and recovery boundaries: [MIGRATION-RECOVERY.md](MIGRATION-RECOVERY.md)
 - Phase 4C evidence gates: [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md)
-- Non-sensitive staging inventory and owner gates: [STAGING-READINESS.md](STAGING-READINESS.md)
-- Staging configuration and future remote execution gates: [STAGING-DEPLOYMENT.md](STAGING-DEPLOYMENT.md)
-- Documentation completion and 4C-0A inventory do not authorize deployment, provisioning, provider actions or Phase 4C execution.
+- Historical inventory plus current non-sensitive staging reconciliation: [STAGING-READINESS.md](STAGING-READINESS.md)
+- Historical foundation deployment gates plus current deployment snapshot: [STAGING-DEPLOYMENT.md](STAGING-DEPLOYMENT.md)
+- Documentation records prior authorized execution; it does not itself authorize another deployment, provisioning action, Provider message or acceptance run.
 
 ## Phase 3 Attachment Contract
 - Private R2 binding: `ATTACHMENTS_BUCKET` / bucket `cz2128-attachments`.
@@ -100,7 +104,7 @@ deployment or production migration has been performed.
 ## Pre-Production Requirements
 - Real Cloudflare R2: write, multipart, read, Range and delete.
 - Real Telegram: `getFile` plus multipart `sendPhoto`, `sendDocument`, `sendVideo`, `sendAudio` and `sendVoice`.
-- Real Chatwoot: attachment `data_url` download/redirect behavior and multipart `attachments[]`.
+- Historical Chatwoot compatibility: attachment `data_url` download/redirect behavior and multipart `attachments[]` remain unvalidated. Current-target Crisp attachments require their own future acceptance scope.
 - Secure proxy: GET, HEAD, Range and response headers in staging.
 - Cleanup: hourly scheduled trigger and R2-before-D1 deletion behavior.
 - Real Queue/D1 concurrency and 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` memory/load behavior.
