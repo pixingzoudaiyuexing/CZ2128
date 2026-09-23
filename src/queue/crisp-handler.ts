@@ -3,7 +3,7 @@ import { crispFingerprintForOperation } from '../adapters/crisp/fingerprint';
 import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { Env } from '../config/env';
-import { pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
+import { checkAutoResume, pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { CrispMessageEvent } from '../core/events';
 import { executeOutboundOperation, getOutboundOperation } from '../core/outbound-operations';
@@ -311,7 +311,8 @@ export async function processCrispEvent(event: CrispMessageEvent, env: Env): Pro
     content &&
     !payload.selection &&
     aiConfigured &&
-    isAiConversationAllowed(env, conv.id)
+    isAiConversationAllowed(env, conv.id) &&
+    await checkAutoResume(env, conv)
   ) {
     await env.QUEUE.send({
       version: 1,

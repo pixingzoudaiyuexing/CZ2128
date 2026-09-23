@@ -11,6 +11,7 @@ vi.mock('../src/core/conversation-service', () => ({
 }));
 vi.mock('../src/core/outbound-operations', () => ({ executeOutboundOperation: vi.fn(), getOutboundOperation: vi.fn() }));
 vi.mock('../src/core/ai-state', () => ({
+  checkAutoResume: vi.fn(),
   pauseOperator: vi.fn(),
   pauseOperatorForCrispSelection: vi.fn(),
   applyTelegramOperatorAction: vi.fn()
@@ -65,6 +66,7 @@ describe('Crisp basic bridge orchestration', () => {
     vi.mocked(outbound.executeOutboundOperation).mockResolvedValue({ status: 'SENT', providerMessageRef: 'p1' } as any);
     vi.mocked(outbound.getOutboundOperation).mockResolvedValue(null);
     vi.mocked(aiState.applyTelegramOperatorAction).mockResolvedValue('APPLIED' as any);
+    vi.mocked(aiState.checkAutoResume).mockResolvedValue(true);
   });
 
   it('bridges one Crisp customer text and pauses on operator text without misrouting AI to Chatwoot', async () => {
@@ -113,6 +115,27 @@ describe('Crisp basic bridge orchestration', () => {
       eventId: 'ai_trigger:conv-crisp:ai-message-1',
       payload: { convId: 'conv-crisp', messageId: 'ai-message-1' }
     });
+  });
+
+  it('does not enqueue AI while the durable conversation remains operator-paused', async () => {
+    env.AI_BASE_URL = 'https://ai.example/v1';
+    env.AI_API_KEY = 'ai-key';
+    env.AI_MODEL = 'model';
+    vi.mocked(aiState.checkAutoResume).mockResolvedValue(false);
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:paused-customer',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'paused-message-1', actorRole: 'CUSTOMER', content: 'Still need help'
+      }
+    }, env);
+
+    expect(aiState.checkAutoResume).toHaveBeenCalledWith(
+      env,
+      expect.objectContaining({ id: 'conv-crisp', helpdesk_provider: 'crisp' })
+    );
+    expect(env.QUEUE.send).not.toHaveBeenCalled();
   });
 
   it('suppresses a Crisp operator echo only when durable outbound evidence matches', async () => {
