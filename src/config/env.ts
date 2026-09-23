@@ -21,6 +21,12 @@ export interface Env {
       targetStatus: 'OPEN' | 'CLOSED',
       latestOperationId: string | null
     ) => Promise<void>;
+    afterCrispLifecycleSnapshot?: (
+      env: Env,
+      eventId: string,
+      targetStatus: 'OPEN' | 'CLOSED',
+      latestOperationId: string | null
+    ) => Promise<void>;
     beforeAbandonedOutboundConvergence?: (
       env: Env,
       eventId: string,

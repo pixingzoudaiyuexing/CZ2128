@@ -1,7 +1,9 @@
 import { verifyChatwootWebhook } from './adapters/chatwoot/webhook';
 import {
   CrispWebhookPayload,
+  crispLifecycleEventId,
   crispMessageEventId,
+  readCrispLifecycleSignal,
   readCrispPickerSelection,
   verifyCrispWebhook
 } from './adapters/crisp/webhook';
@@ -117,6 +119,17 @@ export function normalizeCrispEvent(
   expectedWebsiteId?: string
 ): SupportEvent | null {
   if (expectedWebsiteId && String(payload.data?.website_id) !== expectedWebsiteId) return null;
+  if (payload.event === 'session:set_state') {
+    const lifecycle = readCrispLifecycleSignal(payload as CrispWebhookPayload);
+    if (!lifecycle) return null;
+    return {
+      version: 1,
+      source: 'crisp',
+      type: 'conversation_state_changed',
+      eventId,
+      payload: lifecycle
+    };
+  }
   if (!['message:send', 'message:received', 'message:updated'].includes(payload.event)) return null;
   const data = payload.data;
   if (typeof data?.website_id !== 'string' || typeof data?.session_id !== 'string') return null;
@@ -236,9 +249,16 @@ export default {
         });
         return new Response('Unauthorized', { status: 401 });
       }
+      const lifecycleSignal = readCrispLifecycleSignal(verified.payload);
+      if (verified.payload.event === 'session:set_state' && !lifecycleSignal) {
+        return new Response('Ignored', { status: 200 });
+      }
+      const eventId = lifecycleSignal
+        ? crispLifecycleEventId(lifecycleSignal)
+        : await crispMessageEventId(verified.payload, verified.rawBody);
       const event = normalizeCrispEvent(
         verified.payload,
-        await crispMessageEventId(verified.payload, verified.rawBody),
+        eventId,
         env.CRISP_WEBSITE_ID
       );
       if (!event) return new Response('Ignored', { status: 200 });

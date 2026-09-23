@@ -93,6 +93,9 @@ describe('Crisp AI durable delivery', () => {
           choices: [{ message: { content: 'AI answer' } }]
         }), { status: 200 });
       }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
+      }
       if (url.startsWith('https://api.crisp.chat')) {
         crispCalls += 1;
         return new Response(JSON.stringify({ data: { fingerprint: body.fingerprint } }), { status: 202 });
@@ -114,7 +117,9 @@ describe('Crisp AI durable delivery', () => {
 
     const operationId = `ai_reply:${EVENT_ID}`;
     const expectedFingerprint = await crispFingerprintForOperation(operationId);
-    const crispRequest = requests.find(request => request.url.startsWith('https://api.crisp.chat'));
+    const crispRequest = requests.find(request =>
+      request.url.startsWith('https://api.crisp.chat') && !request.url.endsWith('/state')
+    );
     expect(crispRequest?.body).toMatchObject({
       type: 'text',
       from: 'operator',
@@ -180,6 +185,9 @@ describe('Crisp AI durable delivery', () => {
           id: 'ai-response-reuse',
           choices: [{ message: { content: 'Stable answer' } }]
         }), { status: 200 });
+      }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
       }
       if (url.startsWith('https://api.crisp.chat')) {
         crispCalls += 1;
@@ -291,6 +299,9 @@ describe('Crisp AI durable delivery', () => {
       if (url.startsWith('https://ai.example')) {
         return new Response('upstream unavailable', { status: 503 });
       }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
+      }
       if (url.startsWith('https://api.crisp.chat')) {
         crispCalls += 1;
         return new Response('{}', { status: 202 });
@@ -347,6 +358,9 @@ describe('Crisp AI durable delivery', () => {
           choices: [{ message: { content: 'Too late' } }]
         }), { status: 200 });
       }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
+      }
       if (url.startsWith('https://api.crisp.chat')) {
         crispCalls += 1;
         return new Response('{}', { status: 202 });
@@ -390,6 +404,9 @@ describe('Crisp AI durable delivery', () => {
           choices: [{ message: { content: 'Generated but fenced' } }]
         }), { status: 200 });
       }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
+      }
       if (url.startsWith('https://api.crisp.chat')) {
         crispCalls += 1;
         return new Response('{}', { status: 202 });
@@ -421,6 +438,155 @@ describe('Crisp AI durable delivery', () => {
     db.close();
   });
 
+  it('keeps a generated Crisp AI result durable but permanently fences delivery when the session is resolved', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedCrispConversation(db);
+    let crispVisibleCalls = 0;
+    let telegramCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.startsWith('https://ai.example')) {
+        return new Response(JSON.stringify({
+          id: 'ai-response-resolved',
+          choices: [{ message: { content: 'Do not deliver after close' } }]
+        }), { status: 200 });
+      }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'resolved' } }), { status: 200 });
+      }
+      if (url.startsWith('https://api.crisp.chat')) {
+        crispVisibleCalls += 1;
+        return new Response('{}', { status: 202 });
+      }
+      if (url.includes('api.telegram.org')) {
+        telegramCalls += 1;
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 9001 } }), { status: 200 });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    });
+
+    const env = makeEnv(db);
+    await processAiTrigger(event(), env);
+    await processAiTrigger(event(), env);
+
+    expect(crispVisibleCalls).toBe(0);
+    expect(telegramCalls).toBe(0);
+    expect(await db.prepare(
+      'SELECT status, provider_response_ref, response_text FROM ai_runs WHERE trigger_event_ref = ?'
+    ).bind(EVENT_ID).first<any>()).toMatchObject({
+      status: 'SUCCESS',
+      provider_response_ref: 'ai-response-resolved',
+      response_text: 'Do not deliver after close'
+    });
+    expect(await db.prepare(
+      'SELECT status, last_error, attempt_count, request_started_at FROM outbound_operations WHERE id = ?'
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>()).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'CRISP_CONVERSATION_RESOLVED',
+      attempt_count: 0,
+      request_started_at: null
+    });
+    db.close();
+  });
+
+  it('retries a failed initial Crisp lifecycle preflight without creating an ambiguous send or regenerating AI', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedCrispConversation(db);
+    let aiCalls = 0;
+    let stateCalls = 0;
+    let crispVisibleCalls = 0;
+    let telegramCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.startsWith('https://ai.example')) {
+        aiCalls += 1;
+        return new Response(JSON.stringify({
+          id: 'ai-response-preflight-retry',
+          choices: [{ message: { content: 'Durable after state retry' } }]
+        }), { status: 200 });
+      }
+      if (url.endsWith('/state')) {
+        stateCalls += 1;
+        if (stateCalls === 1) throw new Error('state transport unavailable');
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
+      }
+      if (url.startsWith('https://api.crisp.chat')) {
+        crispVisibleCalls += 1;
+        return new Response(JSON.stringify({ data: { fingerprint: 12345 } }), { status: 202 });
+      }
+      if (url.includes('api.telegram.org')) {
+        telegramCalls += 1;
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 9001 } }), { status: 200 });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    });
+    const env = makeEnv(db);
+
+    await expect(processAiTrigger(event(), env)).rejects.toMatchObject({ code: 'CRISP_STATE_READ_FAILED' });
+    expect(await db.prepare(
+      'SELECT status, attempt_count, request_started_at, reconciliation_status FROM outbound_operations WHERE id = ?'
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>()).toMatchObject({
+      status: 'PENDING',
+      attempt_count: 0,
+      request_started_at: null,
+      reconciliation_status: 'NOT_REQUIRED'
+    });
+
+    await processAiTrigger(event(), env);
+
+    expect(aiCalls).toBe(1);
+    expect(crispVisibleCalls).toBe(1);
+    expect(telegramCalls).toBe(1);
+    expect(await db.prepare('SELECT status, attempt_count FROM outbound_operations WHERE id = ?')
+      .bind(`ai_reply:${EVENT_ID}`).first<any>()).toMatchObject({ status: 'SENT', attempt_count: 1 });
+    db.close();
+  });
+
+  it('fails closed without AMBIGUOUS when final Crisp state confirmation cannot be read before visible send', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedCrispConversation(db);
+    let stateCalls = 0;
+    let crispVisibleCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input);
+      if (url.startsWith('https://ai.example')) {
+        return new Response(JSON.stringify({
+          id: 'ai-response-final-state-failure',
+          choices: [{ message: { content: 'Never sent without final state proof' } }]
+        }), { status: 200 });
+      }
+      if (url.endsWith('/state')) {
+        stateCalls += 1;
+        if (stateCalls === 1) {
+          return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
+        }
+        throw new Error('final state transport unavailable');
+      }
+      if (url.startsWith('https://api.crisp.chat')) {
+        crispVisibleCalls += 1;
+        return new Response('{}', { status: 202 });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    });
+
+    await processAiTrigger(event(), makeEnv(db));
+
+    expect(crispVisibleCalls).toBe(0);
+    expect(await db.prepare(
+      'SELECT status, last_error, attempt_count, request_started_at, reconciliation_status FROM outbound_operations WHERE id = ?'
+    ).bind(`ai_reply:${EVENT_ID}`).first<any>()).toMatchObject({
+      status: 'FAILED_FINAL',
+      last_error: 'CRISP_STATE_UNCONFIRMED_BEFORE_AI_SEND',
+      attempt_count: 0,
+      request_started_at: null,
+      reconciliation_status: 'NOT_REQUIRED'
+    });
+    db.close();
+  });
+
   it('fails closed before a Crisp send if the durable conversation target changes after generation', async () => {
     const db = new SqliteD1();
     db.migrate();
@@ -433,6 +599,9 @@ describe('Crisp AI durable delivery', () => {
           id: 'ai-response-drift',
           choices: [{ message: { content: 'Do not misroute' } }]
         }), { status: 200 });
+      }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ data: { state: 'unresolved' } }), { status: 200 });
       }
       if (url.startsWith('https://api.crisp.chat')) {
         crispCalls += 1;

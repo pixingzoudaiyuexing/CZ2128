@@ -52,6 +52,17 @@ export interface CrispMessageEvent extends QueueEventBase {
   };
 }
 
+export interface CrispLifecycleEvent extends QueueEventBase {
+  source: 'crisp';
+  type: 'conversation_state_changed';
+  payload: {
+    websiteRef: string;
+    sessionRef: string;
+    state: 'pending' | 'unresolved' | 'resolved';
+    providerTimestamp: number;
+  };
+}
+
 export interface TelegramMessageEvent extends QueueEventBase {
   source: 'telegram';
   type: 'message_created';
@@ -85,4 +96,5 @@ export interface AttachmentTransferEvent extends QueueEventBase {
 }
 
 export type ChatwootEvent = ChatwootMessageEvent | ChatwootLifecycleEvent;
-export type SupportEvent = ChatwootEvent | CrispMessageEvent | TelegramMessageEvent | AiTriggerEvent | AttachmentTransferEvent;
+export type CrispEvent = CrispMessageEvent | CrispLifecycleEvent;
+export type SupportEvent = ChatwootEvent | CrispEvent | TelegramMessageEvent | AiTriggerEvent | AttachmentTransferEvent;

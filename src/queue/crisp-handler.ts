@@ -5,11 +5,17 @@ import { getAIConfig } from '../config/ai';
 import { Env } from '../config/env';
 import { checkAutoResume, pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
-import { CrispMessageEvent } from '../core/events';
+import { RetryableProcessingError } from '../core/errors';
+import { CrispEvent, CrispMessageEvent } from '../core/events';
 import { executeOutboundOperation, getOutboundOperation } from '../core/outbound-operations';
 import { buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
 import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { logger } from '../observability/logger';
+import {
+  loadCrispConversation,
+  reconcileCrispLifecycle,
+  reconcileCrispLifecycleIdentity
+} from './crisp-lifecycle';
 
 export interface CrispMenuOption {
   pickerId: string;
@@ -199,12 +205,31 @@ async function isOwnCrispEcho(
   return false;
 }
 
-export async function processCrispEvent(event: CrispMessageEvent, env: Env): Promise<void> {
+export async function processCrispEvent(event: CrispEvent, env: Env): Promise<void> {
+  if (event.type === 'conversation_state_changed') {
+    await reconcileCrispLifecycle(event, env);
+    return;
+  }
   const payload = event.payload;
   const content = payload.content || '';
-  const conv = await getOrCreateConversation(
+  let conv = await getOrCreateConversation(
     env, 'crisp', payload.websiteRef, payload.sessionRef, payload.customerRef
   );
+  if (conv.operator_thread_ref && conv.operator_thread_status === 'CLOSED') {
+    await reconcileCrispLifecycleIdentity({
+      websiteRef: payload.websiteRef,
+      sessionRef: payload.sessionRef,
+      eventId: `crisp-message-reconcile:${event.eventId}`
+    }, env);
+    const reconciled = await loadCrispConversation(env, payload.websiteRef, payload.sessionRef);
+    if (!reconciled || reconciled.operator_thread_status !== 'OPEN') {
+      throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', 5, {
+        provider: 'CRISP',
+        stage: 'RECONCILE'
+      });
+    }
+    conv = reconciled;
+  }
   const isOperator = payload.actorRole === 'OPERATOR';
   if (await isOwnCrispEcho(env, conv.id, payload)) {
     logger.info('Crisp self echo suppressed', {

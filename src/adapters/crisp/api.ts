@@ -1,5 +1,5 @@
 import { Env } from '../../config/env';
-import { ProviderDeliveryError } from '../../core/errors';
+import { ProviderDeliveryError, RetryableProcessingError, SafeError } from '../../core/errors';
 import {
   invalidVisibleSuccessError,
   visibleHttpDeliveryError,
@@ -14,6 +14,7 @@ const CRISP_API_BASE = 'https://api.crisp.chat/v1';
 const CRISP_AUTOMATED_USER = { nickname: 'CZ2128' };
 const CRISP_ERROR_DIAGNOSTIC_MAX_BYTES = 4096;
 const CRISP_OPERATION_ID_PATTERN = /^[A-Za-z0-9:_-]{1,512}$/;
+export type CrispConversationState = 'pending' | 'unresolved' | 'resolved';
 
 type CrispProviderReasonCode = 'invalid_data' | 'invalid_session' | 'UNKNOWN_PROVIDER_REASON';
 type CrispProviderResponseState = 'JSON_OBJECT' | 'EMPTY' | 'NON_JSON' | 'TOO_LARGE' | 'READ_ERROR';
@@ -228,6 +229,53 @@ function crispAuth(env: Env): string {
     throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP' });
   }
   return `Basic ${btoa(`${env.CRISP_API_IDENTIFIER}:${env.CRISP_API_KEY}`)}`;
+}
+
+export async function fetchCrispConversationState(
+  env: Env,
+  websiteRef: string,
+  sessionRef: string
+): Promise<CrispConversationState> {
+  let authorization: string;
+  try {
+    authorization = crispAuth(env);
+  } catch {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP', stage: 'PREPARE' });
+  }
+  const url = `${CRISP_API_BASE}/website/${encodeURIComponent(websiteRef)}/conversation/${encodeURIComponent(sessionRef)}/state`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: authorization,
+        'X-Crisp-Tier': 'plugin'
+      }
+    });
+  } catch {
+    throw new RetryableProcessingError('CRISP_STATE_READ_FAILED', 5, {
+      provider: 'CRISP',
+      stage: 'SOURCE_METADATA'
+    });
+  }
+  if (!response.ok) {
+    throw new RetryableProcessingError('CRISP_STATE_READ_FAILED', 5, {
+      provider: 'CRISP',
+      stage: 'SOURCE_METADATA',
+      httpStatus: response.status
+    });
+  }
+  try {
+    const payload = await response.json() as { data?: { state?: unknown } };
+    const state = payload.data?.state;
+    if (state !== 'pending' && state !== 'unresolved' && state !== 'resolved') {
+      throw new SafeError('CRISP_STATE_INVALID', { provider: 'CRISP', stage: 'PARSE_RESPONSE' });
+    }
+    return state;
+  } catch (error) {
+    if (error instanceof SafeError) throw error;
+    throw new SafeError('CRISP_STATE_INVALID', { provider: 'CRISP', stage: 'PARSE_RESPONSE' });
+  }
 }
 
 async function sendCrispMessage(

@@ -1,6 +1,6 @@
 import { generateChatCompletion } from '../adapters/ai/openai-compatible';
 import { createChatwootMessage } from '../adapters/chatwoot/api';
-import { createCrispMessage } from '../adapters/crisp/api';
+import { createCrispMessage, fetchCrispConversationState } from '../adapters/crisp/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { isAiConversationAllowed } from '../config/ai-test-scope';
@@ -561,6 +561,13 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     deliveryConv,
     helpdeskOperationId
   );
+  const initialCrispState = helpdeskProvider === 'crisp'
+    ? await fetchCrispConversationState(
+      env,
+      deliveryConv.helpdesk_account_ref,
+      deliveryConv.helpdesk_conversation_ref
+    )
+    : null;
   const helpdeskDelivery = await executeOutboundOperation(
     env,
     convId,
@@ -602,6 +609,33 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         throw new ProviderDeliveryError('FINAL', 'TARGET_IDENTITY_CHANGED', {
           provider: helpdeskProvider === 'crisp' ? 'CRISP' : 'CHATWOOT'
         });
+      }
+      if (helpdeskProvider === 'crisp') {
+        if (initialCrispState === 'resolved') {
+          throw new ProviderDeliveryError('FINAL', 'CRISP_CONVERSATION_RESOLVED', {
+            provider: 'CRISP',
+            stage: 'PREPARE'
+          });
+        }
+        let crispState;
+        try {
+          crispState = await fetchCrispConversationState(
+            env,
+            currentConv.helpdesk_account_ref,
+            currentConv.helpdesk_conversation_ref
+          );
+        } catch {
+          throw new ProviderDeliveryError('FINAL', 'CRISP_STATE_UNCONFIRMED_BEFORE_AI_SEND', {
+            provider: 'CRISP',
+            stage: 'PREPARE'
+          });
+        }
+        if (crispState === 'resolved') {
+          throw new ProviderDeliveryError('FINAL', 'CRISP_CONVERSATION_RESOLVED', {
+            provider: 'CRISP',
+            stage: 'PREPARE'
+          });
+        }
       }
       const res = env.hooks?.beforeVisibleSend
         ? await env.hooks.beforeVisibleSend(
