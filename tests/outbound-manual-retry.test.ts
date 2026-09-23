@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Env } from '../src/config/env';
 import { OutboundOperation } from '../src/core/domain';
-import { buildChatwootTargetEvidence, buildTelegramTargetEvidence } from '../src/core/outbound-evidence';
+import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../src/core/outbound-evidence';
 import { executeOutboundOperation } from '../src/core/outbound-operations';
 import {
   manualRetryChildId,
@@ -263,6 +263,48 @@ describe('manual retry child operations', () => {
       currentEnv, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
     )).rejects.toMatchObject({ code: 'OUTBOUND_MANUAL_RETRY_TARGET_CHANGED' });
     expect(fetchMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('keeps an ambiguous Crisp attachment parent unchanged because its plaintext capability cannot be reconstructed', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `UPDATE conversations
+       SET helpdesk_provider = 'crisp', helpdesk_account_ref = 'website-1',
+           helpdesk_conversation_ref = 'session-1'
+       WHERE id = 'conv'`
+    ).run();
+    const env = makeEnv(db);
+    const evidence = buildCrispTargetEvidence('website-1', 'session-1');
+    await db.prepare(
+      `INSERT INTO attachments
+       (id, conversation_id, source_provider, source_message_ref, source_attachment_ref,
+        attachment_type, original_filename, safe_filename, mime_type, size_bytes,
+        storage_key, access_token_hash, status, destination_provider, attempt_count,
+        expires_at, last_error, created_at, updated_at)
+       VALUES ('att-crisp', 'conv', 'telegram', 'tg-msg', 'tg-att',
+               'document', 'report.pdf', 'report.pdf', 'application/pdf', 10,
+               'attachments/att-crisp', 'token-hash-only', 'FAILED_FINAL', 'crisp', 1,
+               9999999999, 'ATTACHMENT_DELIVERY_AMBIGUOUS', 1, 1)`
+    ).run();
+    await seedParent(db, evidence, {
+      provider: 'crisp', operationType: 'SEND_ATTACHMENT',
+      subjectType: 'ATTACHMENT', subjectRef: 'att-crisp'
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await db.prepare('SELECT COUNT(*) AS count FROM outbound_operations WHERE parent_operation_id = ?')
+      .bind('parent-op').first<{ count: number }>()).toEqual({ count: 0 });
+    expect((await loadOperation(db, 'parent-op'))).toMatchObject({
+      status: 'AMBIGUOUS', reconciliation_status: 'PENDING'
+    });
     db.close();
   });
 
