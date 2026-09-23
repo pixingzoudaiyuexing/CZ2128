@@ -2,7 +2,7 @@
 
 CZ2128 connects the current Crisp helpdesk target to Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder. Chatwoot remains a historical compatibility adapter and evidence surface.
 
-Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A, Phase 4B-4B and Phase 4B-5 are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged. Phase 4C is now **IN EXECUTION**: the isolated 4C staging foundation is deployed and Crisp-02 basic-support real Staging E2E is accepted in its scoped range. This is not production validation: real R2 data-plane behavior, Queue/D1 concurrency/load/fault acceptance, Admin flows, bot/group migration, Crisp attachments/AI and Production remain unvalidated unless separately recorded.
+Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A, Phase 4B-4B and Phase 4B-5 are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged. Phase 4C is now **IN EXECUTION** with several separately bounded isolated-Staging results recorded: Crisp-02 basic support, Crisp-03 AI delivery/handoff fencing, Crisp-04 Crisp close/reopen to the same Telegram topic, and Crisp-05 attachment transport / temporary ordinary-file upload slices. These scoped results are not whole-platform or production validation. Real Queue/D1 load and fault injection, full R2 proxy/cleanup coverage, large-file limits, Admin reliability operations, bot/group migration, monitoring/rollback drills and Production remain unvalidated unless separately recorded in the acceptance matrix.
 
 ## Durable AI Reliability
 - One AI trigger has at most three `generateChatCompletion()` invocations. The durable attempt count advances only immediately before the provider boundary.
@@ -10,7 +10,7 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - Human handoff wins. Generation-owned CAS prevents a late old generation from overwriting a reclaimed run or reviving AI after handoff.
 - New runtime code never writes legacy `FAILED`. The schema still accepts it for rolling deployment and new Workers lazily normalize old rows.
 - Durable `SUCCESS` text is reused for outbound continuation and explicit `AI_RUN` manual retry. Effective Chatwoot delivery repairs one AI context message; Telegram mirror delivery does not create a duplicate context entry.
-- The migration set remains `0001` through `0005`; there is no `0006`.
+- The frozen Phase 4B reliability schema remains `0001` through `0005`. Crisp-05 later added `0006_crisp_attachment_provider.sql` and `0007_crisp_upload_invites.sql` for the scoped attachment/upload work; this does not change the frozen Phase 4B reliability contracts.
 
 ## Manual Retry and Domain Resolution
 - Internal manual retry supports ambiguous `MESSAGE`, `ATTACHMENT` and Telegram topic lifecycle operations after an operator explicitly accepts duplicate risk.

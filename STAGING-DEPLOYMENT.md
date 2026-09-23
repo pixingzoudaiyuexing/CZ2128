@@ -4,7 +4,7 @@ Status: **HISTORICAL FOUNDATION PLAN / STAGING DEPLOYED / READ-ONLY RECONCILED 2
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
-This document originally prepared a new, provider-disconnected staging foundation. The Gate A–F text is retained as the historical execution contract and must not be replayed merely because this document is being reconciled. The staging foundation has since been created and the Worker has progressed to provider-connected Crisp-02 validation. This document still does not authorize any new resource creation, migration, deployment, secret/webhook change, Provider call, Queue mutation or cleanup.
+This document originally prepared a new, provider-disconnected staging foundation. The Gate A–F text is retained as the historical execution contract and must not be replayed merely because this document is being reconciled. The staging foundation has since been created and the Worker has progressed through separately bounded Crisp-02, Crisp-03, Crisp-04 and Crisp-05 validation. This document still does not authorize any new resource creation, migration, deployment, secret/webhook change, Provider call, Queue mutation or cleanup.
 
 Related documents:
 
@@ -17,8 +17,8 @@ Related documents:
 
 | Resource | Exact staging name | Current read-only evidence (2026-09-23) |
 | --- | --- | --- |
-| Worker | `cz2128-4c-staging` | Deployed version `b236cd98-1ece-4007-a641-a0139edbfe02`, message identifies main `512917eecb75df534b5cf1733f296ae06818d125`; handlers `fetch`, `queue`, `scheduled`. |
-| D1 | `cz2128-4c-staging-db` | UUID `6482f216-5357-4e93-9796-89eaf0c1299c`; migrations exactly `0001`–`0005`. |
+| Worker | `cz2128-4c-staging` | Crisp-06 read-only deployment list shows latest version `4d13f217-bd80-4c7c-a6bf-8ed13669be77`; the accepted Stage B deployment record ties it to exact main `d635520b1cde7a49e75ef5f658c862d5e856c5db`. |
+| D1 | `cz2128-4c-staging-db` | UUID `6482f216-5357-4e93-9796-89eaf0c1299c`; read-only `d1_migrations` lists exactly `0001`–`0007`, including the Crisp attachment/upload migrations; no migration is pending. |
 | Main Queue | `cz2128-4c-staging-queue` | ID `6a4ed17bccbb4d6db22fb5cd8407eeb3`; staging Worker is the one producer and one consumer. |
 | DLQ | `cz2128-4c-staging-dlq` | ID `6ec943a39dfe461ba33504593a5692f0`; staging Worker is the one consumer. |
 | Attachment R2 | `cz2128-4c-staging-attachments` | Exists; `attachments/` expires after seven days and incomplete multipart uploads abort after seven days. |
@@ -28,12 +28,12 @@ Historical Gate A required re-confirming the exact Cloudflare account and provin
 
 ### 1A. Current Deployment / Acceptance Snapshot
 
-- Exact current deployed Git merge SHA: `512917eecb75df534b5cf1733f296ae06818d125` (PR #27).
-- Exact current Worker version: `b236cd98-1ece-4007-a641-a0139edbfe02`.
+- Exact current main before Crisp-06: `d635520b1cde7a49e75ef5f658c862d5e856c5db` (PR #36 merge). The accepted Stage B deployment record used this exact main tree.
+- Exact latest Worker version independently re-read by Crisp-06: `4d13f217-bd80-4c7c-a6bf-8ed13669be77`.
 - Compatibility date/flag: `2024-03-20` / `nodejs_compat`.
 - Current resource bindings point to the 4C D1, main Queue and two 4C R2 buckets listed above; runtime Queue identity variables name the 4C main Queue and DLQ.
 - Provider secret **names** are now configured for Crisp and Telegram. Historical Chatwoot secret names also remain. Secret values were not read or recorded by this reconciliation.
-- Primary accepted Crisp-02 real Staging evidence only for the basic support bridge described in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md). This is not acceptance of attachments, AI, Admin recovery, fault injection, concurrency/load or Production.
+- The current evidence record now contains separately bounded Crisp-02 basic support, Crisp-03 AI/handoff, Crisp-04 lifecycle and Crisp-05 attachment/upload scopes described in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md). Those scopes do not accept the whole R2/proxy/cleanup matrix, real Queue/D1 concurrency/fault injection, Admin recovery, load/multi-region or Production.
 
 ## 2. Configuration Artifacts
 
@@ -87,7 +87,7 @@ Expected behavior before 4C-2:
 
 If the Worker cannot deploy or serve an inert route without Provider credentials, stop and return to Primary. Do not fill missing values with production credentials and do not modify frozen reliability behavior in the infrastructure task.
 
-Current reconciliation note: the staging Worker has since progressed past this gate and now has provider secret names configured; real Crisp/Telegram basic-support traffic was accepted under Crisp-02. This does not retroactively change the original zero-provider-mutation Gate A–F evidence or validate the retained Chatwoot/AI settings.
+Current reconciliation note: the staging Worker has since progressed past this gate and now has provider secret names configured; real bounded Crisp/Telegram traffic has been recorded through Crisp-05. This does not retroactively change the original zero-provider-mutation Gate A–F evidence, authorize another deployment, or validate retained historical Chatwoot settings / broader untested reliability scopes.
 
 ## 4. Historical Permission and Credential Boundary
 

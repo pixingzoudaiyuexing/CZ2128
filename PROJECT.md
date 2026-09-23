@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged / Phase 4C In Execution — Crisp-02 Basic-Support Staging Accepted**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged / Phase 4C In Execution — Crisp-02 through Crisp-05 Scoped Staging Evidence Recorded / Production Not Validated**
 
 ## Purpose
 
@@ -25,11 +25,11 @@ New helpdesk development targets Crisp only. Chatwoot adapter code and historica
 Chatwoot rows remain preserved for data and reliability safety, but Chatwoot is no
 longer a parallel product target. New Crisp conversations use `helpdesk_provider =
 crisp` and the stable `(Crisp website_id, session_id)` identity; they never reuse
-historical Chatwoot identities. Crisp attachments and later delivery-mode changes
-remain separate follow-up work after the basic text bridge. Crisp AI generation and
-durable AI outbound recovery remain a separate adaptation gate; this slice preserves
-AI mode and operator handoff state without routing Crisp events into Chatwoot AI
-outbound code.
+historical Chatwoot identities. The later Crisp-03, Crisp-04 and Crisp-05 work
+adapted AI delivery/handoff fencing, conversation close/reopen and attachment/upload
+transport to Crisp. Their accepted real-Staging evidence remains explicitly scoped in
+`PREPRODUCTION-ACCEPTANCE.md`; it does not imply full R2, concurrency/fault, Admin,
+load or Production acceptance.
 
 ## V1 Goals
 
@@ -103,7 +103,7 @@ V1 is complete only when the Chatwoot ↔ Telegram ↔ AI ↔ R2 flow works end-
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**.
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**.
 - Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **ACCEPTED / COMPLETE / FROZEN / MERGED**.
-- Phase 4C: **IN EXECUTION** — isolated staging foundation deployed; Crisp-02 real Staging basic-support scope accepted; remaining matrix areas and Production are not implied validated.
+- Phase 4C: **IN EXECUTION** — isolated staging foundation deployed; Crisp-02 basic support, Crisp-03 AI/handoff, Crisp-04 lifecycle and Crisp-05 attachment/upload scopes have bounded Staging evidence recorded. The broader 23-item matrix and Production are not implied validated.
 
 Phase 4B-2C-2 uses the existing `0005` parent linkage and reconciliation state. An explicit operator decision creates one deterministic child operation, preserves the parent's historical ambiguity, reconstructs supported message/attachment/conversation payloads from durable state, blocks target drift, and applies idempotent attachment/topic domain repair after effective delivery. It adds no `0006`, Admin UI or command, DLQ consumption, `CONFIRMED_NOT_SENT` activation or AI durable-state behavior.
 
