@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCrispMessage, createCrispPicker } from '../src/adapters/crisp/api';
+import { crispFingerprintForOperation } from '../src/adapters/crisp/fingerprint';
 import { verifyCrispWebhook } from '../src/adapters/crisp/webhook';
 import { parseCrispMenu, resolveCrispMenuOption } from '../src/queue/crisp-handler';
 
@@ -120,14 +121,16 @@ describe('Crisp adapter', () => {
     const lifecycle = { requestStarted: vi.fn(), responseObserved: vi.fn() };
     await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'op-99', lifecycle)).resolves.toEqual({ messageId: '99' });
     const [url, init] = fetchMock.mock.calls[0];
+    const expectedFingerprint = await crispFingerprintForOperation('op-99');
     expect(url).toBe('https://api.crisp.chat/v1/website/website-1/conversation/session-1/message');
     expect(new Headers(init?.headers).get('Authorization')).toBe(`Basic ${btoa('identifier:key')}`);
     expect(new Headers(init?.headers).get('X-Crisp-Tier')).toBe('plugin');
     const body = JSON.parse(String(init?.body));
     expect(body).toMatchObject({
       type: 'text', from: 'operator', origin: 'chat', content: 'Reply', automated: true,
-      user: { nickname: 'CZ2128' }, properties: { cz2128_operation_id: 'op-99' }
+      user: { nickname: 'CZ2128' }, fingerprint: expectedFingerprint
     });
+    expect(body).not.toHaveProperty('properties');
     expect(body.user).not.toHaveProperty('type');
     expect(body.user).not.toHaveProperty('user_id');
     expect(lifecycle.requestStarted).toHaveBeenCalledOnce();
@@ -274,11 +277,13 @@ describe('Crisp adapter', () => {
       { value: 'human', label: 'Contact human' }
     ], 'picker-op');
     const pickerBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const expectedFingerprint = await crispFingerprintForOperation('picker-op');
     expect(pickerBody).toMatchObject({
       type: 'picker', from: 'operator', origin: 'chat', automated: true,
-      user: { nickname: 'CZ2128' }, properties: { cz2128_operation_id: 'picker-op' },
+      user: { nickname: 'CZ2128' }, fingerprint: expectedFingerprint,
       content: { id: 'main', text: 'Choose', choices: [{ value: 'human', selected: false }] }
     });
+    expect(pickerBody).not.toHaveProperty('properties');
     expect(pickerBody.user).not.toHaveProperty('type');
     expect(pickerBody.user).not.toHaveProperty('user_id');
     await expect(createCrispMessage(env, 'website-1', 'session-1', 'Reply', 'invalid-op')).rejects.toMatchObject({
