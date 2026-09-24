@@ -9,8 +9,16 @@ import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from 
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { RetryableProcessingError, SafeError } from '../core/errors';
 import { CrispEvent, CrispMessageEvent } from '../core/events';
-import { executeOutboundOperation, getOutboundOperation } from '../core/outbound-operations';
-import { buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import {
+  executeOutboundOperation,
+  finalizeNeverStartedOutboundOperation,
+  getOutboundOperation
+} from '../core/outbound-operations';
+import {
+  buildCrispTargetEvidence,
+  buildTelegramTargetEvidence,
+  targetEvidenceMatches
+} from '../core/outbound-evidence';
 import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { logger } from '../observability/logger';
 import {
@@ -21,6 +29,7 @@ import {
 import { processCrispKeywordReply } from './crisp-keyword-reply';
 import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
 import { getRuntimeHistoryVersion } from '../runtime-config/repository';
+import type { OutboundOperation } from '../core/domain';
 
 export interface CrispMenuOption {
   pickerId: string;
@@ -91,10 +100,98 @@ async function historicalWelcomeText(env: Env, version: number): Promise<string 
   return parseCrispWelcomeConfig(history.value_text)?.text || null;
 }
 
+type UnrecoverableWelcomeReason =
+  | 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
+  | 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED';
+
+async function welcomeFinalizationAuditId(
+  operationId: string,
+  reason: UnrecoverableWelcomeReason
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify([operationId, reason]))
+  );
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `crisp-welcome-finalized:${hex}`;
+}
+
+function assertWelcomeOperationIdentity(
+  operation: OutboundOperation,
+  conversationId: string,
+  websiteRef: string,
+  sessionRef: string
+): void {
+  if (
+    operation.id !== `crisp_welcome:${conversationId}` ||
+    operation.conversation_id !== conversationId ||
+    operation.destination_provider !== 'crisp' ||
+    operation.operation_type !== 'SEND_MESSAGE'
+  ) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+
+  const legacySubject = `crisp-welcome:${conversationId}`;
+  const hasNoSubject = operation.subject_type === null && operation.subject_ref === null;
+  const hasWelcomeSubject = operation.subject_type === 'MESSAGE' &&
+    operation.subject_ref !== null &&
+    (operation.subject_ref === legacySubject || WELCOME_SUBJECT_PATTERN.test(operation.subject_ref));
+  if (!hasNoSubject && !hasWelcomeSubject) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+
+  if (
+    operation.target_evidence_json !== null &&
+    !targetEvidenceMatches(
+      operation.target_evidence_json,
+      buildCrispTargetEvidence(websiteRef, sessionRef)
+    )
+  ) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+}
+
+async function settleUnrecoverableWelcomeOperation(
+  env: Env,
+  operation: OutboundOperation,
+  conversationId: string,
+  websiteRef: string,
+  sessionRef: string,
+  reason: UnrecoverableWelcomeReason
+): Promise<null> {
+  assertWelcomeOperationIdentity(operation, conversationId, websiteRef, sessionRef);
+
+  if (operation.status === 'SENT' || operation.status === 'FAILED_FINAL') {
+    return null;
+  }
+  if (operation.status === 'SENDING' || operation.status === 'AMBIGUOUS') {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+
+  const result = await finalizeNeverStartedOutboundOperation(
+    env,
+    operation,
+    'OUTBOUND_PRECONDITION_FAILED',
+    {
+      id: await welcomeFinalizationAuditId(operation.id, reason),
+      action: 'CRISP_WELCOME_UNSENT_FINALIZED',
+      actorRef: 'system:crisp-welcome',
+      reasonCode: reason
+    }
+  );
+  if (result.changed || result.operation.status === 'SENT' || result.operation.status === 'FAILED_FINAL') {
+    return null;
+  }
+
+  throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+}
+
 async function resolveWelcomeOperation(
   env: Env,
   menu: CrispMenuConfig | null,
-  conversationId: string
+  conversationId: string,
+  websiteRef: string,
+  sessionRef: string
 ): Promise<{ text: string; subjectRef: string } | null> {
   const operationId = `crisp_welcome:${conversationId}`;
   const existing = await getOutboundOperation(env, operationId);
@@ -105,17 +202,29 @@ async function resolveWelcomeOperation(
     if (match) {
       const version = Number(match[1]);
       const text = Number.isSafeInteger(version) ? await historicalWelcomeText(env, version) : null;
-      if (!text) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      if (!text) {
+        return settleUnrecoverableWelcomeOperation(
+          env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
+        );
+      }
       return { text, subjectRef: existing.subject_ref! };
     }
     if (existing.subject_ref === `crisp-welcome:${conversationId}`) {
       const legacy = resolveCrispWelcome(env, menu?.welcome);
-      if (legacy.source === 'D1') throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      if (legacy.source === 'D1') {
+        return settleUnrecoverableWelcomeOperation(
+          env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED'
+        );
+      }
       return legacy.status === 'ENABLED' && legacy.text
         ? { text: legacy.text, subjectRef: existing.subject_ref }
-        : null;
+        : settleUnrecoverableWelcomeOperation(
+            env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
+          );
     }
-    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    return settleUnrecoverableWelcomeOperation(
+      env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
+    );
   }
 
   const welcome = resolveCrispWelcome(env, menu?.welcome);
@@ -136,8 +245,8 @@ async function sendCrispTextOperation(
   operationId: string,
   content: string,
   subjectRef: string
-): Promise<void> {
-  await executeOutboundOperation(
+): Promise<{ status: string; providerMessageRef?: string }> {
+  return executeOutboundOperation(
     env,
     conversationId,
     'crisp',
@@ -337,12 +446,17 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
   const keywordHandled = await processCrispKeywordReply(event, env, conv);
   const menu = parseCrispMenu(env.CRISP_MENU_JSON);
   if (!keywordHandled && !isOperator && wasNewConversation) {
-    const welcome = await resolveWelcomeOperation(env, menu, conv.id);
+    const welcome = await resolveWelcomeOperation(
+      env, menu, conv.id, payload.websiteRef, payload.sessionRef
+    );
     if (welcome) {
-      await sendCrispTextOperation(
+      const welcomeResult = await sendCrispTextOperation(
         env, conv.id, payload.websiteRef, payload.sessionRef,
         `crisp_welcome:${conv.id}`, welcome.text, welcome.subjectRef
       );
+      if (welcomeResult.status !== 'SENT' && welcomeResult.status !== 'FAILED_FINAL') {
+        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      }
     }
     if (menu?.picker) {
       await sendCrispPickerOperation(
