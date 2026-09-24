@@ -170,10 +170,10 @@ describe('Admin DLQ inspection', () => {
 
     const rendered = adminCalls.map(call => String(call[1]?.body || '')).join('\n');
     expect(rendered).toContain('DLQ OPEN: 1');
-    expect(rendered).toContain('Open DLQ (Latest 10)');
-    expect(rendered).toContain('DLQ Receipt');
-    expect(rendered).toContain('Event ref: event-admin');
-    expect(rendered).not.toContain('Redrive AI');
+    expect(rendered).toContain('OPEN DLQ（最近 10 条）');
+    expect(rendered).toContain('DLQ 回执');
+    expect(rendered).toContain('事件引用：event-admin');
+    expect(rendered).not.toContain('重放 AI');
     for (const sentinel of privacySentinels) expect(rendered).not.toContain(sentinel);
 
     for (const call of adminCalls) {
@@ -233,7 +233,7 @@ describe('Admin DLQ inspection', () => {
     });
     expect(bucket.get).not.toHaveBeenCalled();
     const rendered = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
-    expect(rendered).toContain('Terminal DLQ Quarantine');
+    expect(rendered).toContain('终态 DLQ 隔离区');
     expect(rendered).toContain(`dlq-quarantine:v1:${'a'.repeat(64)}`);
     expect(rendered).toContain('D1_DLQ_RECEIPT_PERSIST_FAILED');
     expect(rendered).toContain('QUARANTINED');
@@ -256,7 +256,7 @@ describe('Admin DLQ inspection', () => {
 
     const rendered = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
     expect(rendered).toContain(`dlq-quarantine:v1:${'a'.repeat(64)}`);
-    expect(rendered).toContain('Invalid sanitized metadata: 0');
+    expect(rendered).toContain('无效的脱敏元数据：0');
     expect(bucket.get).not.toHaveBeenCalled();
     db.close();
   });
@@ -285,13 +285,13 @@ describe('Admin DLQ inspection', () => {
     await handleAdminTelegramWebhook(callback(30, 'r:dlqo'), testEnv);
     await handleAdminTelegramWebhook(callback(31, 'r:d:0'), testEnv);
     const beforeConfirmation = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
-    expect(beforeConfirmation).toContain('AI redrive: ELIGIBLE');
-    expect(beforeConfirmation).toContain('Redrive AI');
+    expect(beforeConfirmation).toContain('AI 重放：可执行');
+    expect(beforeConfirmation).toContain('重放 AI');
 
     await handleAdminTelegramWebhook(callback(32, 'r:dr'), testEnv);
     expect(testEnv.QUEUE.send).not.toHaveBeenCalled();
     const confirmation = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
-    expect(confirmation).toContain('Confirm AI redrive request?');
+    expect(confirmation).toContain('确认请求 AI 重放？');
 
     await handleAdminTelegramWebhook(callback(33, 'r:dy'), testEnv);
     expect(testEnv.QUEUE.send).toHaveBeenCalledTimes(1);
@@ -327,7 +327,7 @@ describe('Admin DLQ inspection', () => {
     expect((await db.prepare("SELECT COUNT(*) AS c FROM reliability_audit WHERE entity_type = 'DLQ_RECEIPT'")
       .first<any>()).c).toBe(0);
     const rendered = fetchMock.mock.calls.map(call => String(call[1]?.body || '')).join('\n');
-    expect(rendered).toContain('Redrive unavailable: AI paused');
+    expect(rendered).toContain('AI 重放不可用：AI 已暂停');
     db.close();
   });
 });

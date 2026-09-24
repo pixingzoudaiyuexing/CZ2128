@@ -1,6 +1,6 @@
 import { Env } from '../config/env';
 import { encryptRuntimeSecret, decryptRuntimeSecret, generateOpaqueSecret, validateMasterKey } from '../runtime-config/crypto';
-import { testAiCandidate, testChatwootCandidate } from '../runtime-config/candidate-validation';
+import { testAiCandidate } from '../runtime-config/candidate-validation';
 import { getRuntimeConfigDefinition, parseTelegramSupportProfile, RUNTIME_CONFIG_SHORT_CODES, validateRuntimeValue } from '../runtime-config/registry';
 import {
   claimAdminUpdate,
@@ -34,6 +34,7 @@ import { reply, showMain, showPage } from './ui';
 import { processReliabilityCallback, processReliabilityMessage, showReliabilityMain } from './reliability';
 import { processCrispKeywordCallback, processCrispKeywordMessage } from './crisp-keywords';
 import { safeErrorCode } from '../core/errors';
+import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './platform-policy';
 
 function adminBootstrap(env: Env): AdminBootstrap | null {
   const token = env.ADMIN_TELEGRAM_BOT_TOKEN?.trim() || '';
@@ -100,6 +101,11 @@ async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext,
   }
   const definition = RUNTIME_CONFIG_SHORT_CODES.get(code);
   if (!definition || definition.rollback === 'DEDICATED') throw new Error('UNKNOWN_ADMIN_ACTION');
+  if (isLegacyChatwootRuntimeKey(definition.key)) {
+    await clearAdminSession(env, ctx.userId);
+    await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
+    return 'CHATWOOT_ADMIN_DISABLED';
+  }
   await saveAdminSession(env, {
     admin_user_id: ctx.userId, action: 'SET', target: definition.key,
     expected_version: await currentRuntimeVersion(env, definition.key),
@@ -112,6 +118,11 @@ async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext,
 async function beginRestore(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string): Promise<string> {
   const definition = RUNTIME_CONFIG_SHORT_CODES.get(code);
   if (!definition || definition.rollback === 'DEDICATED') throw new Error('DEDICATED_WORKFLOW_REQUIRED');
+  if (isLegacyChatwootRuntimeKey(definition.key)) {
+    await clearAdminSession(env, ctx.userId);
+    await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
+    return 'CHATWOOT_ADMIN_DISABLED';
+  }
   const current = await getRuntimeConfig(env, definition.key);
   if (!current) {
     await reply(bootstrap, ctx, '当前已经使用 ENV。');
@@ -123,7 +134,7 @@ async function beginRestore(env: Env, bootstrap: AdminBootstrap, ctx: AdminConte
       expected_version: current.version,
       candidate_value_text: null, candidate_ciphertext: null, candidate_nonce: null, context_json: null
     });
-    await reply(bootstrap, ctx, `确认移除 ${definition.label} 的 D1 override 并恢复 ENV？`, [[
+    await reply(bootstrap, ctx, `确认移除 ${definition.label} 的 D1 覆盖配置并恢复 ENV？`, [[
       { text: '确认', callback_data: 'c:yes' }, { text: '取消', callback_data: 'c:no' }
     ]]);
     return `RESTORE_CONFIRM_${definition.key}`;
@@ -137,6 +148,11 @@ async function beginRollback(env: Env, bootstrap: AdminBootstrap, ctx: AdminCont
   if (!/^\d{1,12}$/.test(rawId)) throw new Error('INVALID_HISTORY_ID');
   const history = await getRuntimeHistory(env, Number(rawId));
   if (!history) throw new Error('HISTORY_NOT_FOUND');
+  if (isLegacyChatwootRuntimeKey(history.key)) {
+    await clearAdminSession(env, ctx.userId);
+    await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
+    return 'CHATWOOT_ADMIN_DISABLED';
+  }
   const definition = getRuntimeConfigDefinition(history.key);
   if (definition.rollback === 'DEDICATED') throw new Error('DEDICATED_WORKFLOW_REQUIRED');
   const expectedVersion = await currentRuntimeVersion(env, history.key);
@@ -165,6 +181,14 @@ async function processSetInput(
 ): Promise<string> {
   if (!session || !ctx.text) throw new Error('ADMIN_INPUT_INVALID');
   const key = session.target as RuntimeConfigKey;
+  if (isLegacyChatwootRuntimeKey(key)) {
+    if (key === 'CHATWOOT_API_TOKEN' && ctx.messageId !== undefined) {
+      try { await deleteAdminInput(bootstrap.token, ctx.chatId, ctx.messageId); } catch { /* fail closed; no config write */ }
+    }
+    await clearAdminSession(env, ctx.userId);
+    await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
+    return 'CHATWOOT_ADMIN_DISABLED';
+  }
   const definition = getRuntimeConfigDefinition(key);
   const secretInput = definition.kind === 'SECRET';
   const deleted = secretInput && ctx.messageId !== undefined
@@ -177,23 +201,8 @@ async function processSetInput(
       await testAiCandidate(env, { [key]: normalized });
     } catch (error) {
       if (safeErrorCode(error) !== 'AI_CONFIG_INCOMPLETE') throw error;
-      validationNote = '\nProvider test not performed: AI_CONFIG_INCOMPLETE. AI remains disabled until the provider profile is complete.';
+      validationNote = '\nAI Provider 测试未执行：AI_CONFIG_INCOMPLETE。Provider 配置完整前，AI 保持未启用。';
     }
-  }
-  if (key === 'CHATWOOT_API_URL' || key === 'CHATWOOT_API_TOKEN') {
-    await testChatwootCandidate(env, { [key]: normalized });
-  }
-  if (key === 'CHATWOOT_API_URL') {
-    await saveAdminSession(env, {
-      admin_user_id: ctx.userId, action: 'CONFIRM_SET', target: key,
-      expected_version: session.expected_version,
-      candidate_value_text: normalized, candidate_ciphertext: null, candidate_nonce: null, context_json: null
-    });
-    await reply(bootstrap, ctx,
-      '确认修改 Chatwoot API 地址？这不会自动重配外部 webhook 或签名 secret。',
-      [[{ text: '确认', callback_data: 'c:yes' }, { text: '取消', callback_data: 'c:no' }]]
-    );
-    return 'SET_CONFIRM_CHATWOOT_API_URL';
   }
   if (secretInput) {
     await setSecretOverride(env, key, normalized, session.expected_version, ctx.userId, ctx.updateId);
@@ -204,7 +213,7 @@ async function processSetInput(
   await reply(bootstrap, ctx,
     `${definition.label} 已更新${secretInput ? `：${maskSecret(normalized)}` : ''}.` +
     validationNote +
-    (!deleted ? '\nSecret was stored, but the Telegram source message could not be deleted. Please delete it manually.' : '')
+    (!deleted ? '\n密钥已保存，但 Telegram 中的原输入消息未能自动删除，请手动删除该消息。' : '')
   );
   return `SET_${key}`;
 }
@@ -236,10 +245,10 @@ async function processBotToken(
     admin_user_id: ctx.userId, action: 'CONFIRM_BOT', target: 'TELEGRAM_SUPPORT_PROFILE',
     expected_version: expectedVersion, candidate_value_text: null,
     candidate_ciphertext: encrypted.ciphertext, candidate_nonce: encrypted.nonce,
-    context_json: JSON.stringify({ username: bot.username?.slice(0, 64) || 'validated', deleteFailed: !deleted })
+    context_json: JSON.stringify({ username: bot.username?.slice(0, 64) || '已验证', deleteFailed: !deleted })
   });
   await reply(bootstrap, ctx,
-    `新客服 Bot 已验证：${bot.username ? `@${bot.username}` : 'validated'}。确认轮换并创建全新 webhook identity？` +
+    `新客服 Bot 已验证：${bot.username ? `@${bot.username}` : '已验证'}。确认轮换并创建全新的 Webhook 身份？` +
     (!deleted ? '\n输入消息未能自动删除，请手动删除。' : ''),
     [[{ text: '确认轮换', callback_data: 'c:yes' }, { text: '取消', callback_data: 'c:no' }]]
   );
@@ -262,8 +271,8 @@ async function processGroupInput(
     candidate_ciphertext: null, candidate_nonce: null, context_json: null
   });
   await reply(bootstrap, ctx,
-    `Current Group: ${env.BOT_GROUP_ID || '未配置'}\n\nTarget Group: ${groupId}\n\n` +
-    'Existing topic mappings will be reset. Old Telegram topics will NOT be deleted automatically.',
+    `当前客服群：${env.BOT_GROUP_ID || '未配置'}\n\n目标客服群：${groupId}\n\n` +
+    '现有 Topic 映射将被重置；旧 Telegram Topic 不会自动删除。',
     [[{ text: '确认迁移', callback_data: 'c:yes' }, { text: '取消', callback_data: 'c:no' }]]
   );
   return 'GROUP_MIGRATION_CONFIRM';
@@ -278,6 +287,11 @@ async function confirmSession(
 ): Promise<string> {
   const session = await getAdminSession(env, ctx.userId);
   if (!session || !session.action.startsWith('CONFIRM_')) throw new Error('CONFIRMATION_SESSION_MISSING');
+  if (isLegacyChatwootRuntimeKey(session.target)) {
+    await clearAdminSession(env, ctx.userId);
+    await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
+    return 'CHATWOOT_ADMIN_DISABLED';
+  }
   let completionWarning = '';
   if (session.action === 'CONFIRM_SET') {
     if (!session.candidate_value_text) throw new Error('CONFIRMATION_INVALID');
@@ -286,6 +300,12 @@ async function confirmSession(
     await restoreEnvOverride(env, session.target as RuntimeConfigKey, session.expected_version, ctx.userId, ctx.updateId);
   } else if (session.action === 'CONFIRM_ROLLBACK') {
     const historyId = Number(JSON.parse(session.context_json || '{}').historyId);
+    const history = await getRuntimeHistory(env, historyId);
+    if (!history || isLegacyChatwootRuntimeKey(history.key)) {
+      await clearAdminSession(env, ctx.userId);
+      await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
+      return 'CHATWOOT_ADMIN_DISABLED';
+    }
     await rollbackOverride(env, historyId, session.expected_version, ctx.userId, ctx.updateId);
   } else if (session.action === 'CONFIRM_GROUP') {
     if (!session.candidate_value_text) throw new Error('CONFIRMATION_INVALID');
@@ -343,7 +363,7 @@ async function processCallback(
     try { await answerAdminCallback(bootstrap.token, ctx.callbackId); } catch { /* mutation remains authoritative */ }
   }
   if (data === 'm') { await showMain(bootstrap, ctx); return 'MAIN'; }
-  if (/^p:(ai|air|tg|cw|cwr|att|attr|sys|hist|rel|kw)$/.test(data)) {
+  if (/^p:(ai|air|tg|crisp|cw|cwr|att|attr|sys|hist|rel|kw)$/.test(data)) {
     const page = data.slice(2);
     await showPage(env, bootstrap, ctx, page);
     return `PAGE_${page.toUpperCase()}`;
