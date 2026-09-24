@@ -36,7 +36,8 @@ export async function discoverAttachment(
   descriptor: AttachmentDescriptor,
   destinationProvider?: AttachmentProvider,
   publicOrigin?: string,
-  accessTokenOverride?: string
+  accessTokenOverride?: string,
+  requestOptionsJson?: string
 ): Promise<DiscoveredAttachment> {
   const id = await stableAttachmentId(sourceProvider, sourceMessageRef, descriptor.sourceAttachmentRef);
   const token = accessTokenOverride || generateAttachmentToken();
@@ -53,14 +54,14 @@ export async function discoverAttachment(
        id, conversation_id, source_provider, source_message_ref, source_attachment_ref,
        attachment_type, original_filename, safe_filename, mime_type, size_bytes,
        storage_key, access_token_hash, status, destination_provider, attempt_count,
-       expires_at, last_error, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+       expires_at, last_error, created_at, updated_at, request_options_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
      ON CONFLICT (source_provider, source_message_ref, source_attachment_ref) DO NOTHING`
   ).bind(
     id, conversationId, sourceProvider, sourceMessageRef, descriptor.sourceAttachmentRef,
     descriptor.attachmentType, filename.original, filename.safe, normalizeMime(descriptor.mimeType),
     descriptor.sizeBytes ?? null, storageKey, tokenHash, status, resolvedDestinationProvider,
-    now + config.ttlSeconds, descriptor.rejectionCode || null, now, now
+    now + config.ttlSeconds, descriptor.rejectionCode || null, now, now, requestOptionsJson || null
   ).run();
 
   let row = await env.DB.prepare('SELECT * FROM attachments WHERE id = ?').bind(id).first<AttachmentRow>();
@@ -101,7 +102,8 @@ export async function enqueueAttachmentJobs(
   sourceMessageRef: string,
   descriptors: AttachmentDescriptor[],
   destinationProvider?: AttachmentProvider,
-  publicOrigin?: string
+  publicOrigin?: string,
+  requestOptionsJson?: string
 ): Promise<void> {
   if (descriptors.length > config.maxCountPerMessage) {
     logger.warn('Attachment count exceeds configured limit', {
@@ -115,7 +117,7 @@ export async function enqueueAttachmentJobs(
   for (const descriptor of descriptors.slice(0, config.maxCountPerMessage)) {
     const discovered = await discoverAttachment(
       env, config, conversationId, sourceProvider, sourceMessageRef, descriptor,
-      destinationProvider, publicOrigin
+      destinationProvider, publicOrigin, undefined, requestOptionsJson
     );
     if (discovered.job) await env.QUEUE.send(discovered.job);
   }
