@@ -176,7 +176,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       row.conversation_id,
       row.destination_provider,
       'SEND_ATTACHMENT',
-      async (opId, lifecycle, operation) => row.destination_provider === 'chatwoot'
+      async (opId, lifecycle) => row.destination_provider === 'chatwoot'
         ? deliverAttachmentToChatwoot(
             env, config, row, conversation.helpdesk_account_ref,
             conversation.helpdesk_conversation_ref, opId, bytes!, lifecycle
@@ -185,7 +185,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
           ? deliverAttachmentToCrisp(
               env, conversation.helpdesk_account_ref, conversation.helpdesk_conversation_ref,
               opId, crispContent!, lifecycle,
-              parseCrispIdentityRequestOptions(operation.request_options_json) || undefined
+              parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson) || undefined
             )
           : uploadNotification
             ? deliverUploadNotificationToTelegram(
@@ -194,7 +194,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
             : deliverAttachmentToTelegram(
                 env, config, row, conversation.operator_thread_ref, bytes!, lifecycle,
                 (() => {
-                  const frozen = parseTelegramCustomerRequestOptions(operation.request_options_json);
+                  const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
                   return frozen ? { disableNotification: frozen.disableNotification } : undefined;
                 })()
               ),
