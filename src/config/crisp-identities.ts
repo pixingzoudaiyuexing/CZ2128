@@ -32,6 +32,9 @@ function identity(
   fallbackNickname: string
 ): CrispDisplayIdentity {
   const snapshot = env.runtimeConfigSnapshot;
+  if (snapshot?.errors[nicknameKey] || snapshot?.errors[avatarKey]) {
+    throw new Error('Invalid Crisp identity runtime configuration');
+  }
   const configuredNickname = snapshot?.values[nicknameKey] ?? env[nicknameKey];
   const nickname = configuredNickname ? validateCrispNickname(configuredNickname) : fallbackNickname;
   if (!nickname) throw new Error('Invalid Crisp display nickname');
