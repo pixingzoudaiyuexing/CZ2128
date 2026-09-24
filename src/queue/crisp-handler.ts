@@ -450,7 +450,8 @@ async function resolveWelcomeOperation(
   conversationId: string,
   websiteRef: string,
   sessionRef: string,
-  existingOverride?: OutboundOperation | null
+  existingOverride?: OutboundOperation | null,
+  bootstrapIntent?: CrispBootstrapWelcomeIntent
 ): Promise<{ text: string; subjectRef: string } | null> {
   const operationId = `crisp_welcome:${conversationId}`;
   const existing = existingOverride === undefined
@@ -462,6 +463,12 @@ async function resolveWelcomeOperation(
       : null;
     if (match) {
       const version = Number(match[1]);
+      if (bootstrapIntent?.kind === 'D1' && bootstrapIntent.version !== version) {
+        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      }
+      if (bootstrapIntent?.kind === 'LEGACY' || bootstrapIntent?.kind === 'NONE') {
+        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      }
       const text = Number.isSafeInteger(version) ? await historicalWelcomeText(env, version) : null;
       if (!text) {
         return settleUnrecoverableWelcomeOperation(
@@ -471,11 +478,28 @@ async function resolveWelcomeOperation(
       return { text, subjectRef: existing.subject_ref! };
     }
     if (existing.subject_ref === `crisp-welcome:${conversationId}`) {
+      if (bootstrapIntent?.kind === 'D1' || bootstrapIntent?.kind === 'NONE') {
+        return settleUnrecoverableWelcomeOperation(
+          env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED'
+        );
+      }
       const legacy = resolveCrispWelcome(env, menu?.welcome);
       if (legacy.source === 'D1') {
         return settleUnrecoverableWelcomeOperation(
           env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED'
         );
+      }
+      if (bootstrapIntent?.kind === 'LEGACY') {
+        if (
+          legacy.status !== 'ENABLED' ||
+          !legacy.text ||
+          await sha256Hex(legacy.text) !== bootstrapIntent.textHash
+        ) {
+          return settleUnrecoverableWelcomeOperation(
+            env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED'
+          );
+        }
+        return { text: legacy.text, subjectRef: existing.subject_ref };
       }
       return legacy.status === 'ENABLED' && legacy.text
         ? { text: legacy.text, subjectRef: existing.subject_ref }
@@ -486,6 +510,25 @@ async function resolveWelcomeOperation(
     return settleUnrecoverableWelcomeOperation(
       env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
     );
+  }
+
+  if (bootstrapIntent) {
+    if (bootstrapIntent.kind === 'NONE') return null;
+    if (bootstrapIntent.kind === 'D1') {
+      const text = await historicalWelcomeText(env, bootstrapIntent.version);
+      if (!text) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      return { text, subjectRef: `crisp-welcome:v${bootstrapIntent.version}` };
+    }
+    const legacy = resolveCrispWelcome(env, menu?.welcome);
+    if (
+      legacy.source === 'D1' ||
+      legacy.status !== 'ENABLED' ||
+      !legacy.text ||
+      await sha256Hex(legacy.text) !== bootstrapIntent.textHash
+    ) {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
+    return { text: legacy.text, subjectRef: `crisp-welcome:${conversationId}` };
   }
 
   const welcome = resolveCrispWelcome(env, menu?.welcome);
