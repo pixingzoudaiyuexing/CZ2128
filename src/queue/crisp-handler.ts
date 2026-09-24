@@ -829,8 +829,8 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
       conv.id,
       'telegram',
       'SEND_MESSAGE',
-      async (_opId, lifecycle, operation) => {
-        const frozen = parseTelegramCustomerRequestOptions(operation.request_options_json);
+      async (_opId, lifecycle) => {
+        const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
         const response = await sendTelegramMessage(
           env,
           env.BOT_GROUP_ID,
