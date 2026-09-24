@@ -2,6 +2,7 @@ ALTER TABLE conversations ADD COLUMN ai_pause_source TEXT
   CHECK (ai_pause_source IS NULL OR ai_pause_source IN ('CRISP_OPERATOR', 'TELEGRAM_OPERATOR', 'MANUAL', 'HELPDESK_OPERATOR'));
 
 ALTER TABLE outbound_operations ADD COLUMN request_options_json TEXT;
+ALTER TABLE attachments ADD COLUMN request_options_json TEXT;
 CREATE INDEX idx_outbound_operations_provider_message_ref
   ON outbound_operations(destination_provider, provider_message_ref);
 
