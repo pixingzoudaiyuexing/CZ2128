@@ -183,6 +183,7 @@ export async function applyTelegramOperatorAction(
     ).run();
     if (result.meta.changes === 1) return 'APPLIED';
   } else {
+    const desiredMode = action === 'AI_OFF' ? 'PAUSED_MANUAL' : 'ENABLED';
     const setMode = action === 'AI_OFF'
       ? `SET ai_mode = 'PAUSED_MANUAL',
              ai_pause_source = 'MANUAL',
@@ -193,27 +194,44 @@ export async function applyTelegramOperatorAction(
              last_telegram_operator_profile_version = ?,
              last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`
       : `SET ai_mode = 'ENABLED',
-           ai_pause_source = NULL,
-           ai_generation_id = NULL,
-           ai_generation_started_at = NULL,
-           ai_generation_message_id = NULL,
+             ai_pause_source = NULL,
+             ai_generation_id = NULL,
+             ai_generation_started_at = NULL,
+             ai_generation_message_id = NULL,
              last_telegram_operator_profile_version = ?,
              last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`;
+    const orderingPredicate = `(
+      COALESCE(last_telegram_operator_profile_version, 0) < ?
+      OR (
+        COALESCE(last_telegram_operator_profile_version, 0) = ?
+        AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)
+      )
+    )`;
     const result = await env.DB.prepare(
       `UPDATE conversations ${setMode}
-       WHERE id = ?
-         AND (
-           COALESCE(last_telegram_operator_profile_version, 0) < ?
-           OR (
-             COALESCE(last_telegram_operator_profile_version, 0) = ?
-             AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)
-           )
-         )`
+       WHERE id = ? AND ai_mode != ? AND ${orderingPredicate}`
     ).bind(
-      supportProfileVersion, updateId, now, convId,
+      supportProfileVersion, updateId, now, convId, desiredMode,
       supportProfileVersion, supportProfileVersion, updateId
     ).run();
     if (result.meta.changes === 1) return 'APPLIED';
+
+    const currentMode = await env.DB.prepare(
+      'SELECT ai_mode FROM conversations WHERE id = ?'
+    ).bind(convId).first<{ ai_mode: Conversation['ai_mode'] }>();
+    if (currentMode?.ai_mode === desiredMode) {
+      const ordered = await env.DB.prepare(
+        `UPDATE conversations
+         SET last_telegram_operator_profile_version = ?,
+             last_telegram_operator_update_id = ?,
+             updated_at = ?
+         WHERE id = ? AND ${orderingPredicate}`
+      ).bind(
+        supportProfileVersion, updateId, now, convId,
+        supportProfileVersion, supportProfileVersion, updateId
+      ).run();
+      if (ordered.meta.changes === 1) return 'CURRENT';
+    }
   }
 
   const current = await env.DB.prepare(
