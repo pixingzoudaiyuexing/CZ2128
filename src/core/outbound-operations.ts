@@ -26,6 +26,7 @@ export const MAX_OUTBOUND_ATTEMPTS = 3;
 export interface OutboundAttemptLifecycle {
   requestStarted(): Promise<void>;
   responseObserved(httpStatus: number): Promise<void>;
+  requestOptionsJson?: string | null;
 }
 
 export interface ExecuteOutboundOperationOptions {
@@ -244,11 +245,7 @@ export async function executeOutboundOperation(
   conversationId: string,
   destinationProvider: string,
   operationType: string,
-  action: (
-    operationId: string,
-    lifecycle: OutboundAttemptLifecycle,
-    operation: OutboundOperation
-  ) => Promise<{ providerMessageRef?: string }>,
+  action: (operationId: string, lifecycle: OutboundAttemptLifecycle) => Promise<{ providerMessageRef?: string }>,
   deterministicOperationId: string,
   options: ExecuteOutboundOperationOptions
 ): Promise<{ status: string; providerMessageRef?: string }> {
@@ -404,6 +401,7 @@ export async function executeOutboundOperation(
   let hasStarted = false;
   
   const lifecycle: OutboundAttemptLifecycle = {
+    requestOptionsJson: op.request_options_json ?? null,
     async requestStarted() {
       const ts = Math.floor(Date.now() / 1000);
       let result;
@@ -440,7 +438,7 @@ export async function executeOutboundOperation(
   };
 let result: { providerMessageRef?: string };
   try {
-    result = await action(id, lifecycle, op);
+    result = await action(id, lifecycle);
   } catch (error: unknown) {
     if (error instanceof RetryableProcessingError && error.code === 'CONCURRENCY_CAS_CONFLICT') {
       logger.warn('Stale owner detected during request lifecycle, exiting safely', { operation_id: id });
