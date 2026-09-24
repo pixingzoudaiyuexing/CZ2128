@@ -253,7 +253,7 @@ describe('Telegram admin control plane', () => {
     await handleAdminTelegramWebhook(callback(1500, 'p:crisp'), testEnv);
 
     const body = JSON.parse(String(fetchMock.mock.calls.find(call => String(call[0]).endsWith('/sendMessage'))?.[1]?.body));
-    expect(body.text).toContain('Crisp 客服设置');
+    expect(body.text).toContain('🔵 Crisp 设置');
     expect(body.text).toContain('网站 ID：已配置');
     expect(body.text).toContain('API 身份标识：已配置');
     expect(body.text).toContain('API 密钥：已配置');
