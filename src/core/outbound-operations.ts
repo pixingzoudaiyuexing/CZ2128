@@ -26,6 +26,7 @@ export const MAX_OUTBOUND_ATTEMPTS = 3;
 export interface OutboundAttemptLifecycle {
   requestStarted(): Promise<void>;
   responseObserved(httpStatus: number): Promise<void>;
+  requestOptionsJson?: string | null;
 }
 
 export interface ExecuteOutboundOperationOptions {
@@ -34,6 +35,7 @@ export interface ExecuteOutboundOperationOptions {
   parentOperationId?: string;
   subject: OutboundSubjectIdentity;
   targetEvidence: OutboundTargetEvidence;
+  requestOptions?: unknown;
 }
 
 export class OutboundOperationIdentityCollisionError extends Error {
@@ -94,6 +96,7 @@ export async function prepareOutboundOperation(
   options: ExecuteOutboundOperationOptions
 ): Promise<OutboundOperation | null> {
   const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
+  const requestOptionsJson = options.requestOptions === undefined ? null : JSON.stringify(options.requestOptions);
   let operation = await getOutboundOperation(env, deterministicOperationId);
   if (!operation && options.allowCreate === false) return null;
 
@@ -102,8 +105,8 @@ export async function prepareOutboundOperation(
     await env.DB.prepare(
       `INSERT INTO outbound_operations
        (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-        subject_type, subject_ref, target_evidence_json, parent_operation_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subject_type, subject_ref, target_evidence_json, parent_operation_id, request_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`
     ).bind(
       deterministicOperationId,
@@ -116,7 +119,8 @@ export async function prepareOutboundOperation(
       options.subject.type,
       options.subject.ref,
       targetEvidenceJson,
-      options.parentOperationId || null
+      options.parentOperationId || null,
+      requestOptionsJson
     ).run();
     operation = await loadOperation(env, deterministicOperationId);
   }
@@ -248,6 +252,7 @@ export async function executeOutboundOperation(
   const id = deterministicOperationId;
   const now = Math.floor(Date.now() / 1000);
   const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
+  const requestOptionsJson = options.requestOptions === undefined ? null : JSON.stringify(options.requestOptions);
   let op = await getOutboundOperation(env, id);
   if (!op && options.allowCreate === false) {
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
@@ -256,12 +261,13 @@ export async function executeOutboundOperation(
     await env.DB.prepare(
       `INSERT INTO outbound_operations
        (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-        subject_type, subject_ref, target_evidence_json, parent_operation_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subject_type, subject_ref, target_evidence_json, parent_operation_id, request_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`
     ).bind(
       id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
-      options.subject.type, options.subject.ref, targetEvidenceJson, options.parentOperationId || null
+      options.subject.type, options.subject.ref, targetEvidenceJson, options.parentOperationId || null,
+      requestOptionsJson
     ).run();
     op = await loadOperation(env, id);
   }
@@ -395,6 +401,7 @@ export async function executeOutboundOperation(
   let hasStarted = false;
   
   const lifecycle: OutboundAttemptLifecycle = {
+    requestOptionsJson: op.request_options_json ?? null,
     async requestStarted() {
       const ts = Math.floor(Date.now() / 1000);
       let result;

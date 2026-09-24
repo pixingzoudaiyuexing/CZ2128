@@ -4,6 +4,7 @@ import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/a
 import { getAIConfig } from '../config/ai';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
+import { parseTelegramCustomerRequestOptions, telegramCustomerRequestOptions } from '../config/telegram-customer-ux';
 import { checkAutoResume, pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
@@ -786,12 +787,18 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     return;
   }
   const wasNewConversation = !conv.operator_thread_ref;
+  if (!isOperator && await checkAutoResume(env, conv)) {
+    const resumed = await loadCrispConversation(env, payload.websiteRef, payload.sessionRef);
+    if (resumed) conv = resumed;
+  }
+  const customerUx = !isOperator ? telegramCustomerRequestOptions(env, conv) : null;
+  const customerUxJson = customerUx ? JSON.stringify(customerUx) : undefined;
   const menu = parseCrispMenu(env.CRISP_MENU_JSON);
   const bootstrapIntent = !isOperator
     ? await firstEventBootstrapIntent(env, conv.id, event.eventId, menu, wasNewConversation)
     : null;
 
-  if (isOperator) await pauseOperator(env, conv.id);
+  if (isOperator) await pauseOperator(env, conv.id, 'CRISP_OPERATOR');
   if (content) {
     await insertMessage(
       env, conv.id, 'crisp', payload.messageRef,
@@ -811,7 +818,9 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     'crisp',
     payload.messageRef,
     payload.attachments || [],
-    'telegram'
+    'telegram',
+    undefined,
+    customerUxJson
   );
 
   if (content) {
@@ -821,13 +830,32 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
       'telegram',
       'SEND_MESSAGE',
       async (_opId, lifecycle) => {
-        const response = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle);
+        const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
+        const response = await sendTelegramMessage(
+          env,
+          env.BOT_GROUP_ID,
+          threadRef,
+          content,
+          lifecycle,
+          frozen ? {
+            disableNotification: frozen.disableNotification,
+            ...(frozen.controls === 'AI_TOGGLE_V1' ? {
+              replyMarkup: {
+                inline_keyboard: [[
+                  { text: '开启 AI', callback_data: 'ai:on' },
+                  { text: '关闭 AI', callback_data: 'ai:off' }
+                ]]
+              }
+            } : {})
+          } : undefined
+        );
         return { providerMessageRef: response.messageId };
       },
       `send_tg_crisp_${payload.messageRef}`,
       {
         subject: { type: 'MESSAGE', ref: `crisp:${payload.messageRef}` },
-        targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage')
+        targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage'),
+        ...(customerUx ? { requestOptions: customerUx } : {})
       }
     );
   }

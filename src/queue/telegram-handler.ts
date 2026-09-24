@@ -1,15 +1,17 @@
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { createCrispMessage } from '../adapters/crisp/api';
-import { sendTelegramMessage } from '../adapters/telegram/api';
+import { answerTelegramCallbackQuery, sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
+import { crispIdentityRequestOptions, crispOperatorIdentity, parseCrispIdentityRequestOptions } from '../config/crisp-identities';
+import { parseTelegramCustomerRequestOptions } from '../config/telegram-customer-ux';
 import { applyTelegramOperatorAction } from '../core/ai-state';
 import { insertMessage } from '../core/conversation-service';
-import { TelegramMessageEvent } from '../core/events';
+import { TelegramEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
-import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence, targetEvidenceMatches } from '../core/outbound-evidence';
 import { createAndSendUploadInvite, revokeUploadInviteFromTelegram } from '../uploads/service';
 
 function isAuthorizedUploadOperator(env: Env, operatorRef: string | undefined): operatorRef is string {
@@ -21,7 +23,65 @@ function isAuthorizedUploadOperator(env: Env, operatorRef: string | undefined): 
   return allowed.includes(operatorRef);
 }
 
-export async function processTelegramEvent(event: TelegramMessageEvent, env: Env): Promise<void> {
+async function processTelegramControlEvent(event: Extract<TelegramEvent, { type: 'control_action' }>, env: Env): Promise<void> {
+  const payload = event.payload;
+  const matches = await env.DB.prepare(
+    `SELECT o.conversation_id, o.request_options_json, o.target_evidence_json
+     FROM outbound_operations o
+     JOIN conversations c ON c.id = o.conversation_id
+     WHERE o.destination_provider = 'telegram'
+       AND o.operation_type = 'SEND_MESSAGE'
+       AND o.status = 'SENT'
+       AND o.provider_message_ref = ?
+       AND o.subject_type = 'MESSAGE'
+       AND o.subject_ref LIKE 'crisp:%'
+       AND c.helpdesk_provider = 'crisp'
+       AND c.operator_channel = 'telegram'
+       AND c.operator_thread_ref = ?`
+  ).bind(payload.messageRef, payload.threadRef).all<{
+    conversation_id: string;
+    request_options_json: string | null;
+    target_evidence_json: string | null;
+  }>();
+  const rows = matches.results || [];
+  const frozen = rows.length === 1 ? parseTelegramCustomerRequestOptions(rows[0].request_options_json) : null;
+  const currentTarget = buildTelegramTargetEvidence(
+    env,
+    env.BOT_GROUP_ID,
+    payload.threadRef,
+    'sendMessage'
+  );
+  const targetMatches = rows.length === 1 && !!rows[0].target_evidence_json &&
+    targetEvidenceMatches(rows[0].target_evidence_json, currentTarget);
+  if (rows.length !== 1 || frozen?.controls !== 'AI_TOGGLE_V1' || !targetMatches) {
+    await answerTelegramCallbackQuery(env, payload.callbackQueryRef, '按钮已失效，请使用最新客户消息上的按钮。');
+    return;
+  }
+
+  const state = await applyTelegramOperatorAction(
+    env,
+    rows[0].conversation_id,
+    payload.supportProfileVersion,
+    payload.updateRef,
+    payload.action
+  );
+  if (state === 'STALE' || state === 'STALE_PROFILE') {
+    await answerTelegramCallbackQuery(env, payload.callbackQueryRef, '操作已失效，请使用最新客户消息上的按钮。');
+    return;
+  }
+  const message = payload.action === 'AI_OFF'
+    ? 'AI 已关闭，后续由人工客服处理。'
+    : getAIConfig(env).enabled
+      ? 'AI 已开启。'
+      : 'AI 已允许，但当前 AI Provider 未配置。';
+  await answerTelegramCallbackQuery(env, payload.callbackQueryRef, message);
+}
+
+export async function processTelegramEvent(event: TelegramEvent, env: Env): Promise<void> {
+  if (event.type === 'control_action') {
+    await processTelegramControlEvent(event, env);
+    return;
+  }
   const payload = event.payload;
   const supportProfileVersion = payload.supportProfileVersion ?? 0;
   const scopedMessageRef = `${supportProfileVersion}:${payload.messageRef}`;
@@ -103,6 +163,8 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
   );
   if (humanAction === 'STALE_PROFILE') return;
   const destinationProvider = conv.helpdesk_provider === 'crisp' ? 'crisp' : 'chatwoot';
+  const operatorIdentity = destinationProvider === 'crisp' ? crispOperatorIdentity(env) : null;
+  const operatorRequestOptions = operatorIdentity ? crispIdentityRequestOptions(operatorIdentity) : undefined;
   if (content) {
     const operationId = `send_${destinationProvider}_${scopedMessageRef}`;
     await insertMessage(
@@ -122,9 +184,11 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
       destinationProvider,
       'SEND_MESSAGE',
       async (opId, lifecycle) => {
+        const frozenIdentity = parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson);
         const res = destinationProvider === 'crisp'
           ? await createCrispMessage(
-              env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, content, String(opId), lifecycle
+              env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, content, String(opId), lifecycle,
+              frozenIdentity ? { identity: frozenIdentity, automated: true } : undefined
             )
           : await createChatwootMessage(
               env,
@@ -143,7 +207,8 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
           ? buildCrispTargetEvidence(conv.helpdesk_account_ref, conv.helpdesk_conversation_ref)
           : await buildChatwootTargetEvidence(
               env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, operationId
-            )
+            ),
+        ...(operatorRequestOptions ? { requestOptions: operatorRequestOptions } : {})
       }
     );
   }
@@ -156,6 +221,7 @@ export async function processTelegramEvent(event: TelegramMessageEvent, env: Env
     scopedMessageRef,
     attachments,
     destinationProvider,
-    destinationProvider === 'crisp' ? payload.publicOrigin : undefined
+    destinationProvider === 'crisp' ? payload.publicOrigin : undefined,
+    operatorRequestOptions ? JSON.stringify(operatorRequestOptions) : undefined
   );
 }

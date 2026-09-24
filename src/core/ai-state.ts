@@ -22,11 +22,18 @@ const FINAL_AI_ERRORS = new Set<SafeErrorCode>([
   'AI_CONTEXT_INVALID'
 ]);
 
-export async function pauseOperator(env: Env, convId: string): Promise<void> {
+export type AiPauseSource = 'CRISP_OPERATOR' | 'TELEGRAM_OPERATOR' | 'MANUAL' | 'HELPDESK_OPERATOR';
+
+export async function pauseOperator(
+  env: Env,
+  convId: string,
+  source: AiPauseSource = 'HELPDESK_OPERATOR'
+): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
     `UPDATE conversations 
-     SET ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
+     SET ai_pause_source = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_pause_source ELSE ? END,
+         ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
          last_operator_reply_at = ?,
          ai_generation_id = NULL,
          ai_generation_started_at = NULL,
@@ -35,7 +42,7 @@ export async function pauseOperator(env: Env, convId: string): Promise<void> {
          updated_at = ?,
          version = version + 1
      WHERE id = ?`
-  ).bind(now, now, convId).run();
+  ).bind(source, now, now, convId).run();
   
   logger.info('AI paused due to operator reply', { conversation_id: convId });
 }
@@ -58,7 +65,8 @@ export async function pauseOperatorForCrispSelection(
   const results = await env.DB.batch([
     env.DB.prepare(
       `UPDATE conversations
-       SET ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
+       SET ai_pause_source = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_pause_source ELSE 'CRISP_OPERATOR' END,
+           ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
            last_operator_reply_at = ?, ai_generation_id = NULL,
            ai_generation_started_at = NULL, ai_generation_message_id = NULL,
            ai_handoff_epoch = ai_handoff_epoch + 1, updated_at = ?, version = version + 1
@@ -99,6 +107,7 @@ export async function pauseManual(env: Env, convId: string): Promise<void> {
   await env.DB.prepare(
     `UPDATE conversations 
      SET ai_mode = 'PAUSED_MANUAL',
+         ai_pause_source = 'MANUAL',
          ai_generation_id = NULL,
          ai_generation_started_at = NULL,
          ai_generation_message_id = NULL,
@@ -116,6 +125,7 @@ export async function resumeManual(env: Env, convId: string): Promise<void> {
   await env.DB.prepare(
     `UPDATE conversations 
      SET ai_mode = 'ENABLED',
+         ai_pause_source = NULL,
          ai_generation_id = NULL,
          ai_generation_started_at = NULL,
          ai_generation_message_id = NULL,
@@ -148,7 +158,8 @@ export async function applyTelegramOperatorAction(
   if (action === 'HUMAN_REPLY') {
     const result = await env.DB.prepare(
       `UPDATE conversations
-       SET ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
+       SET ai_pause_source = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_pause_source ELSE 'TELEGRAM_OPERATOR' END,
+           ai_mode = CASE WHEN ai_mode = 'PAUSED_MANUAL' THEN ai_mode ELSE 'PAUSED_OPERATOR' END,
            last_operator_reply_at = ?,
            ai_generation_id = NULL,
            ai_generation_started_at = NULL,
@@ -172,8 +183,10 @@ export async function applyTelegramOperatorAction(
     ).run();
     if (result.meta.changes === 1) return 'APPLIED';
   } else {
+    const desiredMode = action === 'AI_OFF' ? 'PAUSED_MANUAL' : 'ENABLED';
     const setMode = action === 'AI_OFF'
       ? `SET ai_mode = 'PAUSED_MANUAL',
+             ai_pause_source = 'MANUAL',
              ai_generation_id = NULL,
              ai_generation_started_at = NULL,
              ai_generation_message_id = NULL,
@@ -181,26 +194,44 @@ export async function applyTelegramOperatorAction(
              last_telegram_operator_profile_version = ?,
              last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`
       : `SET ai_mode = 'ENABLED',
-           ai_generation_id = NULL,
-           ai_generation_started_at = NULL,
-           ai_generation_message_id = NULL,
+             ai_pause_source = NULL,
+             ai_generation_id = NULL,
+             ai_generation_started_at = NULL,
+             ai_generation_message_id = NULL,
              last_telegram_operator_profile_version = ?,
              last_telegram_operator_update_id = ?, updated_at = ?, version = version + 1`;
+    const orderingPredicate = `(
+      COALESCE(last_telegram_operator_profile_version, 0) < ?
+      OR (
+        COALESCE(last_telegram_operator_profile_version, 0) = ?
+        AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)
+      )
+    )`;
     const result = await env.DB.prepare(
       `UPDATE conversations ${setMode}
-       WHERE id = ?
-         AND (
-           COALESCE(last_telegram_operator_profile_version, 0) < ?
-           OR (
-             COALESCE(last_telegram_operator_profile_version, 0) = ?
-             AND (last_telegram_operator_update_id IS NULL OR last_telegram_operator_update_id < ?)
-           )
-         )`
+       WHERE id = ? AND ai_mode != ? AND ${orderingPredicate}`
     ).bind(
-      supportProfileVersion, updateId, now, convId,
+      supportProfileVersion, updateId, now, convId, desiredMode,
       supportProfileVersion, supportProfileVersion, updateId
     ).run();
     if (result.meta.changes === 1) return 'APPLIED';
+
+    const currentMode = await env.DB.prepare(
+      'SELECT ai_mode FROM conversations WHERE id = ?'
+    ).bind(convId).first<{ ai_mode: Conversation['ai_mode'] }>();
+    if (currentMode?.ai_mode === desiredMode) {
+      const ordered = await env.DB.prepare(
+        `UPDATE conversations
+         SET last_telegram_operator_profile_version = ?,
+             last_telegram_operator_update_id = ?,
+             updated_at = ?
+         WHERE id = ? AND ${orderingPredicate}`
+      ).bind(
+        supportProfileVersion, updateId, now, convId,
+        supportProfileVersion, supportProfileVersion, updateId
+      ).run();
+      if (ordered.meta.changes === 1) return 'CURRENT';
+    }
   }
 
   const current = await env.DB.prepare(
@@ -227,7 +258,7 @@ export async function checkAutoResume(env: Env, conv: Conversation): Promise<boo
     if (now - conv.last_operator_reply_at >= config.operatorPauseTimeoutSeconds) {
       const claim = await env.DB.prepare(
         `UPDATE conversations 
-         SET ai_mode = 'ENABLED', updated_at = ?, version = version + 1
+         SET ai_mode = 'ENABLED', ai_pause_source = NULL, updated_at = ?, version = version + 1
          WHERE id = ? AND ai_mode = 'PAUSED_OPERATOR' AND last_operator_reply_at = ?`
       ).bind(now, conv.id, conv.last_operator_reply_at).run();
       

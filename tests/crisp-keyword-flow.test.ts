@@ -203,7 +203,7 @@ describe('Crisp keyword reply orchestration', () => {
       ...event('kw-7', '续费'),
       payload: { ...event('kw-7', '续费').payload, actorRole: 'OPERATOR' as const }
     }, env);
-    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
+    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp', 'CRISP_OPERATOR');
     expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(call => call[2] === 'crisp')).toBe(false);
   });
 

@@ -1,6 +1,7 @@
 import { ATTACHMENT_HARD_MAX_BYTES, ATTACHMENT_HARD_MAX_COUNT } from '../config/attachments';
 import { canonicalizeCrispKeywordRules } from '../config/crisp-keywords';
 import { canonicalizeCrispWelcomeConfig } from '../config/crisp-welcome';
+import { validateCrispAvatarUrl, validateCrispNickname } from '../config/crisp-identities';
 import { SafeErrorCode } from '../core/error-taxonomy';
 import { SafeError } from '../core/errors';
 import { RuntimeConfigKey, RuntimeValueKind, TelegramSupportProfile } from './types';
@@ -79,6 +80,26 @@ function allowedHosts(value: string): string {
   return [...new Set(normalized)].join(',');
 }
 
+function crispNickname(value: string): string {
+  const normalized = validateCrispNickname(value);
+  if (!normalized) throw new RuntimeConfigValidationError('RUNTIME_CONFIG_VALUE_INVALID');
+  return normalized;
+}
+
+function crispAvatar(value: string): string {
+  const normalized = validateCrispAvatarUrl(value);
+  if (!normalized) throw new RuntimeConfigValidationError('INVALID_PROVIDER_URL');
+  return normalized;
+}
+
+function notifyMode(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized !== 'normal' && normalized !== 'silent') {
+    throw new RuntimeConfigValidationError('RUNTIME_CONFIG_VALUE_INVALID');
+  }
+  return normalized;
+}
+
 function supportProfile(value: string): string {
   if (value.length > 8192) throw new RuntimeConfigValidationError('INVALID_TELEGRAM_PROFILE');
   let profile: TelegramSupportProfile;
@@ -123,6 +144,13 @@ const definitions: RuntimeConfigDefinition[] = [
     if (!normalized) throw new RuntimeConfigValidationError('RUNTIME_CONFIG_VALUE_INVALID');
     return normalized;
   } },
+  { key: 'CRISP_OPERATOR_NICKNAME', kind: 'PLAIN', label: 'Crisp 人工客服昵称', shortCode: 'con', rollback: 'GENERIC', highImpact: false, validate: crispNickname },
+  { key: 'CRISP_OPERATOR_AVATAR_URL', kind: 'PLAIN', label: 'Crisp 人工客服头像', shortCode: 'coa', rollback: 'GENERIC', highImpact: false, validate: crispAvatar },
+  { key: 'CRISP_AI_NICKNAME', kind: 'PLAIN', label: 'Crisp AI 昵称', shortCode: 'can', rollback: 'GENERIC', highImpact: false, validate: crispNickname },
+  { key: 'CRISP_AI_AVATAR_URL', kind: 'PLAIN', label: 'Crisp AI 头像', shortCode: 'caa', rollback: 'GENERIC', highImpact: false, validate: crispAvatar },
+  { key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR', kind: 'PLAIN', label: 'Crisp 接管通知', shortCode: 'tnc', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
+  { key: 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', kind: 'PLAIN', label: 'Telegram 接管通知', shortCode: 'tnt', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
+  { key: 'TELEGRAM_NOTIFY_MANUAL_OFF', kind: 'PLAIN', label: '手动关闭 AI 通知', shortCode: 'tnm', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
   { key: 'TELEGRAM_SUPPORT_PROFILE', kind: 'SECRET', label: '客服 Telegram Bot', shortCode: 'tb', rollback: 'DEDICATED', highImpact: true, validate: supportProfile },
   { key: 'BOT_GROUP_ID', kind: 'PLAIN', label: '客服 Telegram 群', shortCode: 'tg', rollback: 'DEDICATED', highImpact: true, validate: value => {
     const normalized = value.trim();

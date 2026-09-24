@@ -26,8 +26,9 @@ export async function verifyTelegramWebhook(
   }
 
   const message = payload.message || payload.edited_message;
-  const chat = message?.chat;
-  if (message && (!chat || String(chat.id) !== botGroupId)) {
+  const callbackMessage = payload.callback_query?.message;
+  const chat = message?.chat || callbackMessage?.chat;
+  if ((message || callbackMessage) && (!chat || String(chat.id) !== botGroupId)) {
     return { valid: false };
   }
 

@@ -10,6 +10,13 @@ export const RUNTIME_CONFIG_KEYS = [
   'AI_OPERATOR_PAUSE_TIMEOUT_SECONDS',
   'CRISP_KEYWORD_RULES',
   'CRISP_WELCOME_CONFIG',
+  'CRISP_OPERATOR_NICKNAME',
+  'CRISP_OPERATOR_AVATAR_URL',
+  'CRISP_AI_NICKNAME',
+  'CRISP_AI_AVATAR_URL',
+  'TELEGRAM_NOTIFY_CRISP_OPERATOR',
+  'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR',
+  'TELEGRAM_NOTIFY_MANUAL_OFF',
   'TELEGRAM_SUPPORT_PROFILE',
   'BOT_GROUP_ID',
   'CHATWOOT_API_URL',
@@ -61,7 +68,7 @@ export interface TelegramSupportProfile {
 
 export interface RuntimeConfigSnapshot {
   values: Partial<Record<RuntimeConfigKey, string>>;
-  sources: Record<RuntimeConfigKey, RuntimeValueSource>;
+  sources: Partial<Record<RuntimeConfigKey, RuntimeValueSource>>;
   versions: Partial<Record<RuntimeConfigKey, number>>;
   errors: Partial<Record<RuntimeConfigKey | 'RUNTIME_CONFIG', SafeErrorCode>>;
   overrideCount: number;

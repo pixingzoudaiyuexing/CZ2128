@@ -5,6 +5,7 @@ import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAIConfig } from '../config/ai';
 import { isAiConversationAllowed } from '../config/ai-test-scope';
 import { Env } from '../config/env';
+import { crispAiIdentity, crispIdentityRequestOptions, parseCrispIdentityRequestOptions } from '../config/crisp-identities';
 import { buildAIContext } from '../core/ai-context';
 import {
   acquireGenerationLease,
@@ -396,6 +397,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
       if (!currentConv) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
       const helpdeskOperationId = `ai_reply:${stableAiJobId}`;
       const helpdeskProvider = aiHelpdeskProvider(currentConv);
+      const aiRequestOptions = helpdeskProvider === 'crisp'
+        ? crispIdentityRequestOptions(crispAiIdentity(env))
+        : undefined;
       const preparedHelpdesk = await prepareOutboundOperation(
         env,
         convId,
@@ -405,7 +409,8 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
         {
           allowCreate: !isDlqRecovery,
           subject: { type: 'AI_RUN', ref: stableAiJobId },
-          targetEvidence: await buildAiHelpdeskTargetEvidence(env, currentConv, helpdeskOperationId)
+          targetEvidence: await buildAiHelpdeskTargetEvidence(env, currentConv, helpdeskOperationId),
+          ...(aiRequestOptions ? { requestOptions: aiRequestOptions } : {})
         }
       );
       if (!preparedHelpdesk || preparedHelpdesk.status !== 'PENDING') {
@@ -556,6 +561,9 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
   const deliveryConv = await loadConversation(env, convId);
   if (!deliveryConv) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
   const helpdeskProvider = aiHelpdeskProvider(deliveryConv);
+  const aiRequestOptions = helpdeskProvider === 'crisp'
+    ? crispIdentityRequestOptions(crispAiIdentity(env))
+    : undefined;
   const helpdeskTargetEvidence = await buildAiHelpdeskTargetEvidence(
     env,
     deliveryConv,
@@ -653,7 +661,11 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
             currentConv.helpdesk_conversation_ref,
             aiContent,
             String(opId),
-            lifecycle
+            lifecycle,
+            (() => {
+              const frozenIdentity = parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson);
+              return frozenIdentity ? { identity: frozenIdentity, automated: true } : undefined;
+            })()
           )
           : await createChatwootMessage(
             env,
@@ -669,7 +681,8 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     {
       allowCreate: !isDlqRecovery,
       subject: { type: 'AI_RUN', ref: stableAiJobId },
-      targetEvidence: helpdeskTargetEvidence
+      targetEvidence: helpdeskTargetEvidence,
+      ...(aiRequestOptions ? { requestOptions: aiRequestOptions } : {})
     }
   );
 

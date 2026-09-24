@@ -38,6 +38,7 @@ export interface AttachmentRow {
   attempt_count: number;
   expires_at: number | null;
   last_error: SafeErrorCode | null;
+  request_options_json?: string | null;
   created_at: number;
   updated_at: number;
 }

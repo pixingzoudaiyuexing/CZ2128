@@ -79,6 +79,20 @@ export interface TelegramMessageEvent extends QueueEventBase {
   };
 }
 
+export interface TelegramControlEvent extends QueueEventBase {
+  source: 'telegram';
+  type: 'control_action';
+  payload: {
+    supportProfileVersion: number;
+    updateRef: string;
+    callbackQueryRef: string;
+    messageRef: string;
+    threadRef: string;
+    operatorRef: string;
+    action: 'AI_ON' | 'AI_OFF';
+  };
+}
+
 export interface AiTriggerEvent extends QueueEventBase {
   source: 'internal';
   type: 'ai_trigger';
@@ -101,4 +115,5 @@ export interface AttachmentTransferEvent extends QueueEventBase {
 
 export type ChatwootEvent = ChatwootMessageEvent | ChatwootLifecycleEvent;
 export type CrispEvent = CrispMessageEvent | CrispLifecycleEvent;
-export type SupportEvent = ChatwootEvent | CrispEvent | TelegramMessageEvent | AiTriggerEvent | AttachmentTransferEvent;
+export type TelegramEvent = TelegramMessageEvent | TelegramControlEvent;
+export type SupportEvent = ChatwootEvent | CrispEvent | TelegramEvent | AiTriggerEvent | AttachmentTransferEvent;

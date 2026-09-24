@@ -18,6 +18,7 @@ import { sendAdminMessage } from './telegram';
 import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
 
 const CONFIG_KEY = 'CRISP_KEYWORD_RULES' as const;
+export const CRISP_KEYWORD_ADMIN_PAGE_SIZE = 10;
 
 function configState(env: Env): { config: CrispKeywordRulesConfig; version: number } {
   const snapshot = env.runtimeConfigSnapshot;
@@ -81,7 +82,8 @@ async function persist(
 export async function showKeywordRulesPage(
   env: Env,
   bootstrap: AdminBootstrap,
-  ctx: AdminContext
+  ctx: AdminContext,
+  page = 0
 ): Promise<void> {
   let state;
   try {
@@ -92,14 +94,26 @@ export async function showKeywordRulesPage(
     ]);
     return;
   }
+  const pageCount = Math.max(1, Math.ceil(state.config.rules.length / CRISP_KEYWORD_ADMIN_PAGE_SIZE));
+  if (!Number.isSafeInteger(page) || page < 0 || page >= pageCount) {
+    throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
+  }
   const enabled = state.config.rules.filter(rule => rule.enabled).length;
-  const lines = state.config.rules.map((rule, index) =>
-    `${index + 1}. ${rule.enabled ? '✅' : '⏸'} ${rule.keyword}`
+  const offset = page * CRISP_KEYWORD_ADMIN_PAGE_SIZE;
+  const pageRules = state.config.rules.slice(offset, offset + CRISP_KEYWORD_ADMIN_PAGE_SIZE);
+  const lines = pageRules.map((rule, index) =>
+    `${offset + index + 1}. ${rule.enabled ? '✅' : '⏸'} ${rule.keyword}`
   );
-  const keyboard: AdminKeyboard = state.config.rules.map(rule => [{
+  const keyboard: AdminKeyboard = pageRules.map(rule => [{
     text: `${rule.enabled ? '✅' : '⏸'} ${displayKeyword(rule.keyword)}`,
     callback_data: `k:v:${rule.id}`
   }]);
+  if (pageCount > 1) {
+    const nav = [];
+    if (page > 0) nav.push({ text: '⬅️ 上一页', callback_data: `k:p:${page - 1}` });
+    if (page + 1 < pageCount) nav.push({ text: '下一页 ➡️', callback_data: `k:p:${page + 1}` });
+    if (nav.length) keyboard.push(nav);
+  }
   if (state.config.rules.length < CRISP_KEYWORD_RULES_MAX_COUNT) {
     keyboard.push([{ text: '➕ 添加规则', callback_data: 'k:add' }]);
   }
@@ -107,7 +121,7 @@ export async function showKeywordRulesPage(
   await send(
     bootstrap,
     ctx,
-    `Crisp 关键词自动回复\n\n规则：${state.config.rules.length}/${CRISP_KEYWORD_RULES_MAX_COUNT}，启用：${enabled}\n\n` +
+    `Crisp 关键词自动回复\n\n规则：${state.config.rules.length}/${CRISP_KEYWORD_RULES_MAX_COUNT}，启用：${enabled}，第 ${page + 1}/${pageCount} 页\n\n` +
       (lines.join('\n') || '当前没有规则。未配置规则时不会产生关键词自动回复。'),
     keyboard
   );
@@ -130,7 +144,7 @@ async function showRule(
       [{ text: '修改关键词', callback_data: `k:ek:${rule.id}` }, { text: '修改回复', callback_data: `k:er:${rule.id}` }],
       [{ text: rule.enabled ? '停用规则' : '启用规则', callback_data: `k:t:${rule.id}` }],
       [{ text: '🗑 删除规则', callback_data: `k:d:${rule.id}` }],
-      [{ text: '返回规则列表', callback_data: 'p:kw' }]
+      [{ text: '返回规则列表', callback_data: `k:p:${Math.floor(config.rules.findIndex(item => item.id === rule.id) / CRISP_KEYWORD_ADMIN_PAGE_SIZE)}` }]
     ]
   );
 }
@@ -180,8 +194,18 @@ export async function processCrispKeywordCallback(
     return 'KEYWORD_DELETE_CANCEL';
   }
   const { config, version } = configState(env);
+  const pageMatch = /^p:(\d{1,2})$/.exec(action);
+  if (pageMatch) {
+    await showKeywordRulesPage(env, bootstrap, ctx, Number(pageMatch[1]));
+    return 'KEYWORD_PAGE';
+  }
   if (action === 'add') {
-    if (config.rules.length >= CRISP_KEYWORD_RULES_MAX_COUNT) throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
+    if (config.rules.length >= CRISP_KEYWORD_RULES_MAX_COUNT) {
+      await send(bootstrap, ctx, `关键词规则已达到 ${CRISP_KEYWORD_RULES_MAX_COUNT} 条上限。`, [
+        [{ text: '返回规则列表', callback_data: 'k:p:0' }]
+      ]);
+      return 'KEYWORD_LIMIT';
+    }
     await beginSession(env, ctx, 'KEYWORD_ADD_KEYWORD', version);
     await send(bootstrap, ctx, '请输入新规则的关键词。匹配方式为：首尾去空白、英文字母忽略大小写、其余字符精确匹配。');
     return 'KEYWORD_ADD_BEGIN';

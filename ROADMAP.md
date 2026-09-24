@@ -389,3 +389,11 @@ Optional later work:
 - knowledge-candidate review UI
 
 This phase is intentionally not part of initial V1.
+
+## Crisp-12 - Legacy support UX parity
+
+Status: **IMPLEMENTED IN PR #41 / EXACT-HEAD CI AND INDEPENDENT REVIEW REQUIRED BEFORE MERGE**
+
+Scope is limited to Telegram customer-message notification policy by persisted pause source, separate Crisp human/AI display identities, the 100-rule bounded keyword configuration with Admin pagination, and trusted Telegram AI on/off controls. Migration 0008 preserves existing D1 data and expands only the Runtime Config plain-value capacity needed by the 100-rule bound.
+
+No Staging deployment, Provider acceptance, Production change, knowledge-base work, Picker editing, Crisp-07/Crisp-08 work, historical replay or attachment cleanup is implied by code completion. Real UI acceptance remains gated by exact-head CI, independent Gemini review and Primary approval, and is specified in CRISP-12-STAGING-ACCEPTANCE.md.

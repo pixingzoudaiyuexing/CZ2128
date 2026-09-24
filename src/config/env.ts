@@ -66,6 +66,13 @@ export interface Env {
   CRISP_WEBSITE_ID?: string;
   CRISP_WELCOME_TEXT?: string;
   CRISP_MENU_JSON?: string;
+  CRISP_OPERATOR_NICKNAME?: string;
+  CRISP_OPERATOR_AVATAR_URL?: string;
+  CRISP_AI_NICKNAME?: string;
+  CRISP_AI_AVATAR_URL?: string;
+  TELEGRAM_NOTIFY_CRISP_OPERATOR?: string;
+  TELEGRAM_NOTIFY_TELEGRAM_OPERATOR?: string;
+  TELEGRAM_NOTIFY_MANUAL_OFF?: string;
   AI_BASE_URL?: string;
   AI_API_KEY?: string;
   AI_MODEL?: string;

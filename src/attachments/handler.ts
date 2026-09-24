@@ -31,6 +31,8 @@ import {
   storeAttachmentStream
 } from './source';
 import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { parseTelegramCustomerRequestOptions } from '../config/telegram-customer-ux';
+import { crispIdentityRequestOptions, parseCrispIdentityRequestOptions } from '../config/crisp-identities';
 
 export async function processAttachmentTransfer(event: AttachmentTransferEvent, env: Env): Promise<void> {
   const config = getAttachmentConfig(env);
@@ -140,6 +142,17 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         )
       : undefined;
     const operationId = `attachment_${row.destination_provider}:${row.id}`;
+    const telegramUx = row.destination_provider === 'telegram'
+      ? parseTelegramCustomerRequestOptions(row.request_options_json)
+      : null;
+    const crispIdentity = row.destination_provider === 'crisp'
+      ? parseCrispIdentityRequestOptions(row.request_options_json)
+      : null;
+    const frozenRequestOptions = telegramUx
+      ? telegramUx
+      : crispIdentity
+        ? crispIdentityRequestOptions(crispIdentity)
+        : undefined;
     const targetEvidence = row.destination_provider === 'chatwoot'
       ? await buildChatwootTargetEvidence(
           env,
@@ -171,20 +184,26 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         : row.destination_provider === 'crisp'
           ? deliverAttachmentToCrisp(
               env, conversation.helpdesk_account_ref, conversation.helpdesk_conversation_ref,
-              opId, crispContent!, lifecycle
+              opId, crispContent!, lifecycle,
+              parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson) || undefined
             )
           : uploadNotification
             ? deliverUploadNotificationToTelegram(
                 env, conversation.operator_thread_ref, telegramUploadContent!, lifecycle
               )
             : deliverAttachmentToTelegram(
-                env, config, row, conversation.operator_thread_ref, bytes!, lifecycle
+                env, config, row, conversation.operator_thread_ref, bytes!, lifecycle,
+                (() => {
+                  const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
+                  return frozen ? { disableNotification: frozen.disableNotification } : undefined;
+                })()
               ),
       operationId,
       {
         leaseSeconds: config.outboundLeaseSeconds,
         subject: { type: 'ATTACHMENT', ref: row.id },
-        targetEvidence
+        targetEvidence,
+        ...(frozenRequestOptions ? { requestOptions: frozenRequestOptions } : {})
       }
     );
 

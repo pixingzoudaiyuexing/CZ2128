@@ -194,44 +194,75 @@ if (this.query.includes('INSERT INTO conversations')) {
       }
     } else if (this.query.includes('last_telegram_operator_update_id = ?')) {
       const isHumanReply = this.query.includes('last_operator_reply_at = ?');
-      const [operatorReplyAt, profileVersion, updateId, updatedAt, id, expectedProfileVersion, _sameProfileVersion, expectedUpdateId] = isHumanReply
-        ? this.boundParams
-        : [undefined, ...this.boundParams];
+      const isModeTransition = this.query.includes('AND ai_mode != ?');
+      let operatorReplyAt: any;
+      let profileVersion: any;
+      let updateId: any;
+      let updatedAt: any;
+      let id: any;
+      let expectedProfileVersion: any;
+      let expectedUpdateId: any;
+      let desiredMode: any;
+      if (isHumanReply) {
+        [operatorReplyAt, profileVersion, updateId, updatedAt, id, expectedProfileVersion, , expectedUpdateId] = this.boundParams;
+      } else if (isModeTransition) {
+        [profileVersion, updateId, updatedAt, id, desiredMode, expectedProfileVersion, , expectedUpdateId] = this.boundParams;
+      } else {
+        [profileVersion, updateId, updatedAt, id, expectedProfileVersion, , expectedUpdateId] = this.boundParams;
+      }
       const row = this.db.tables.conversations.find(item => item.id === id);
       const storedProfileVersion = Number(row?.last_telegram_operator_profile_version || 0);
-      if (
-        row &&
-        (
-          storedProfileVersion < Number(expectedProfileVersion) ||
-          (storedProfileVersion === Number(expectedProfileVersion) &&
-            (row.last_telegram_operator_update_id === undefined || row.last_telegram_operator_update_id === null ||
-              Number(row.last_telegram_operator_update_id) < Number(expectedUpdateId)))
-        )
-      ) {
+      const ordered = row && (
+        storedProfileVersion < Number(expectedProfileVersion) ||
+        (storedProfileVersion === Number(expectedProfileVersion) &&
+          (row.last_telegram_operator_update_id === undefined || row.last_telegram_operator_update_id === null ||
+            Number(row.last_telegram_operator_update_id) < Number(expectedUpdateId)))
+      );
+      if (ordered && (!isModeTransition || row.ai_mode !== desiredMode)) {
         if (isHumanReply) {
-          if (row.ai_mode !== 'PAUSED_MANUAL') row.ai_mode = 'PAUSED_OPERATOR';
+          if (row.ai_mode !== 'PAUSED_MANUAL') {
+            row.ai_mode = 'PAUSED_OPERATOR';
+            row.ai_pause_source = 'TELEGRAM_OPERATOR';
+          }
           row.last_operator_reply_at = operatorReplyAt;
           row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
-        } else if (this.query.includes("SET ai_mode = 'PAUSED_MANUAL'")) {
+        } else if (isModeTransition && this.query.includes("SET ai_mode = 'PAUSED_MANUAL'")) {
           row.ai_mode = 'PAUSED_MANUAL';
+          row.ai_pause_source = 'MANUAL';
           row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
-        } else {
+        } else if (isModeTransition) {
           row.ai_mode = 'ENABLED';
+          row.ai_pause_source = null;
         }
-        row.ai_generation_id = null;
-        row.ai_generation_started_at = null;
-        row.ai_generation_message_id = null;
+        if (isHumanReply || isModeTransition) {
+          row.ai_generation_id = null;
+          row.ai_generation_started_at = null;
+          row.ai_generation_message_id = null;
+        }
+        row.last_telegram_operator_profile_version = profileVersion;
+        row.last_telegram_operator_update_id = updateId;
+        row.updated_at = updatedAt;
+        meta.changes = 1;
+      } else if (ordered && !isHumanReply && !isModeTransition) {
         row.last_telegram_operator_profile_version = profileVersion;
         row.last_telegram_operator_update_id = updateId;
         row.updated_at = updatedAt;
         meta.changes = 1;
       }
     } else if (this.query.includes('last_operator_reply_at = ?') && this.query.includes('ai_handoff_epoch = ai_handoff_epoch + 1')) {
-      const row = this.db.tables.conversations.find(item => item.id === this.boundParams[2]);
+      const hasParameterizedPauseSource = this.query.includes('ai_pause_source = CASE') && this.query.includes('ELSE ? END');
+      const id = hasParameterizedPauseSource ? this.boundParams[3] : this.boundParams[2];
+      const lastOperatorReplyAt = hasParameterizedPauseSource ? this.boundParams[1] : this.boundParams[0];
+      const row = this.db.tables.conversations.find(item => item.id === id);
       if (row) {
-        if (row.ai_mode !== 'PAUSED_MANUAL') row.ai_mode = 'PAUSED_OPERATOR';
-        row.last_operator_reply_at = this.boundParams[0];
+        if (row.ai_mode !== 'PAUSED_MANUAL') {
+          row.ai_mode = 'PAUSED_OPERATOR';
+          row.ai_pause_source = hasParameterizedPauseSource ? this.boundParams[0] : 'CRISP_OPERATOR';
+        }
+        row.last_operator_reply_at = lastOperatorReplyAt;
         row.ai_generation_id = null;
+        row.ai_generation_started_at = null;
+        row.ai_generation_message_id = null;
         row.ai_handoff_epoch = (row.ai_handoff_epoch || 0) + 1;
         meta.changes = 1;
       }
@@ -324,7 +355,8 @@ if (this.query.includes('INSERT INTO conversations')) {
           provider_message_ref: null, lease_until: null, lease_token: null, last_error: null,
           request_started_at: null, response_observed_at: null, response_http_status: null,
           retry_after_seconds: null, next_retry_at: null, resolved_by: null,
-          resolved_at: null, resolution_reason: null, parent_operation_id: null
+          resolved_at: null, resolution_reason: null, parent_operation_id: this.boundParams[10] ?? null,
+          request_options_json: this.boundParams[11] ?? null
         });
         meta.changes = 1;
       }
