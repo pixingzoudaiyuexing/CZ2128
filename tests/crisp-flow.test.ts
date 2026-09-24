@@ -39,12 +39,33 @@ describe('Crisp basic bridge orchestration', () => {
     inFlight: Array<{ id: string }> = [],
     welcomeHistory?: string
   ) {
+    const audits = new Map<string, any>();
     return {
       prepare: (sql: string) => {
         let params: any[] = [];
         const statement = {
           bind: (...values: any[]) => { params = values; return statement; },
+          run: async () => {
+            if (sql.includes('INSERT OR IGNORE INTO reliability_audit')) {
+              const id = String(params[0]);
+              if (audits.has(id)) return { success: true, meta: { changes: 0 } };
+              audits.set(id, {
+                entity_type: params[1],
+                entity_id: params[2],
+                action: params[3],
+                actor_type: params[4],
+                actor_ref: params[5],
+                old_state: params[6],
+                new_state: params[7],
+                reason_code: params[8]
+              });
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true, meta: { changes: 1 } };
+          },
           first: async () => {
+            if (sql.includes('FROM reliability_audit WHERE id = ?')) return audits.get(String(params[0])) || null;
+            if (sql.includes('SELECT ai_mode FROM conversations WHERE id = ?')) return { ai_mode: 'ENABLED' };
             if (sql.includes('provider_message_ref = ?')) return sent;
             if (sql.includes('FROM runtime_config_history WHERE key = ? AND version = ?')) {
               return welcomeHistory && params[0] === 'CRISP_WELCOME_CONFIG' && params[1] === 1
