@@ -739,6 +739,12 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     });
     return;
   }
+  const wasNewConversation = !conv.operator_thread_ref;
+  const menu = parseCrispMenu(env.CRISP_MENU_JSON);
+  const bootstrapIntent = !isOperator
+    ? await firstEventBootstrapIntent(env, conv.id, event.eventId, menu, wasNewConversation)
+    : null;
+
   if (isOperator) await pauseOperator(env, conv.id);
   if (content) {
     await insertMessage(
@@ -747,7 +753,6 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     );
   }
 
-  const wasNewConversation = !conv.operator_thread_ref;
   const threadRef = await ensureTelegramTopic(
     env, conv.id, payload.customerName, payload.sessionRef, conv.operator_thread_ref
   );
@@ -781,34 +786,59 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     );
   }
 
-  const keywordHandled = await processCrispKeywordReply(event, env, conv);
-  const menu = parseCrispMenu(env.CRISP_MENU_JSON);
-  let retryWelcomeOperation: OutboundOperation | null = null;
-  if (!keywordHandled && !isOperator && !wasNewConversation && await currentEventAttemptCount(env, event) > 1) {
-    retryWelcomeOperation = await getOutboundOperation(env, `crisp_welcome:${conv.id}`);
-  }
-  if (!keywordHandled && !isOperator && (wasNewConversation || retryWelcomeOperation)) {
-    const welcome = await resolveWelcomeOperation(
-      env,
-      menu,
-      conv.id,
-      payload.websiteRef,
-      payload.sessionRef,
-      retryWelcomeOperation || undefined
-    );
-    if (welcome) {
-      const welcomeResult = await sendCrispTextOperation(
-        env, conv.id, payload.websiteRef, payload.sessionRef,
-        `crisp_welcome:${conv.id}`, welcome.text, welcome.subjectRef
+  let keywordHandled = false;
+  let bootstrapDecision: CrispBootstrapDecision | null = null;
+  if (!isOperator && bootstrapIntent) {
+    bootstrapDecision = await loadBootstrapDecision(env, conv.id, event.eventId);
+    if (bootstrapDecision === null) {
+      keywordHandled = await processCrispKeywordReply(event, env, conv);
+      bootstrapDecision = await persistBootstrapDecision(
+        env,
+        conv.id,
+        event.eventId,
+        keywordHandled
+          ? 'KEYWORD'
+          : await automationStillEnabled(env, conv.id)
+            ? 'BOOTSTRAP'
+            : 'SUPPRESSED'
       );
-      if (welcomeResult.status !== 'SENT' && welcomeResult.status !== 'FAILED_FINAL') {
-        throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
-      }
+    } else if (bootstrapDecision === 'KEYWORD') {
+      keywordHandled = await processCrispKeywordReply(event, env, conv);
+      if (!keywordHandled) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
-    if (wasNewConversation && menu?.picker) {
-      await sendCrispPickerOperation(
-        env, conv.id, payload.websiteRef, payload.sessionRef,
-        `crisp_picker:${conv.id}:${menu.picker.id}`, menu.picker
+  } else {
+    keywordHandled = await processCrispKeywordReply(event, env, conv);
+  }
+
+  if (!isOperator && bootstrapIntent && bootstrapDecision === 'BOOTSTRAP') {
+    if (!await automationStillEnabled(env, conv.id)) {
+      await assertPausedBootstrapHasNoUnresolvedOperation(env, conv.id, bootstrapIntent);
+    } else {
+      const welcome = await resolveWelcomeOperation(
+        env,
+        menu,
+        conv.id,
+        payload.websiteRef,
+        payload.sessionRef,
+        undefined,
+        bootstrapIntent.welcome
+      );
+      if (welcome) {
+        const welcomeResult = await sendCrispTextOperation(
+          env, conv.id, payload.websiteRef, payload.sessionRef,
+          `crisp_welcome:${conv.id}`, welcome.text, welcome.subjectRef
+        );
+        if (welcomeResult.status !== 'SENT' && welcomeResult.status !== 'FAILED_FINAL') {
+          throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+        }
+      }
+      await processBootstrapPicker(
+        env,
+        conv.id,
+        payload.websiteRef,
+        payload.sessionRef,
+        bootstrapIntent.picker,
+        menu
       );
     }
   }
