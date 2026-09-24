@@ -14,6 +14,8 @@ import {
   validateCrispNickname
 } from '../src/config/crisp-identities';
 import { customerNotificationMode } from '../src/config/telegram-customer-ux';
+import { executeOutboundOperation } from '../src/core/outbound-operations';
+import { buildTelegramTargetEvidence, serializeTargetEvidence } from '../src/core/outbound-evidence';
 
 function insertConversation(db: SqliteD1, id = 'conv-1'): void {
   db.exec(`
@@ -131,6 +133,67 @@ describe('Crisp-12 legacy UX contracts', () => {
     expect(customerNotificationMode(env, { ai_mode: 'PAUSED_OPERATOR', ai_pause_source: 'TELEGRAM_OPERATOR' } as any)).toBe('normal');
     expect(customerNotificationMode(env, { ai_mode: 'PAUSED_MANUAL', ai_pause_source: 'MANUAL' } as any)).toBe('silent');
     expect(customerNotificationMode(env, { ai_mode: 'PAUSED_OPERATOR', ai_pause_source: null } as any)).toBe('normal');
+  });
+
+  it('keeps first-persisted outbound request options immutable across a later retry call', async () => {
+    const db = new SqliteD1();
+    try {
+      db.migrate();
+      insertConversation(db);
+      const env = { DB: db } as any;
+      const evidence = buildTelegramTargetEvidence(
+        { BOT_GROUP_ID: '-10099' } as any,
+        '-10099',
+        '77',
+        'sendMessage'
+      );
+      db.exec(`
+        INSERT INTO outbound_operations (
+          id, conversation_id, destination_provider, operation_type, status,
+          attempt_count, created_at, updated_at, next_retry_at,
+          reconciliation_status, subject_type, subject_ref, target_evidence_json, request_options_json
+        ) VALUES (
+          'retry-freeze', 'conv-1', 'telegram', 'SEND_MESSAGE', 'FAILED_RETRYABLE',
+          1, 1, 1, 0,
+          'NOT_REQUIRED', 'MESSAGE', 'crisp:freeze',
+          '${serializeTargetEvidence(evidence).replaceAll("'", "''")}',
+          '{"version":1,"disableNotification":true,"controls":"AI_TOGGLE_V1"}'
+        )
+      `);
+
+      let observed: string | null | undefined;
+      const result = await executeOutboundOperation(
+        env,
+        'conv-1',
+        'telegram',
+        'SEND_MESSAGE',
+        async (_id, lifecycle) => {
+          observed = lifecycle.requestOptionsJson;
+          await lifecycle.requestStarted();
+          await lifecycle.responseObserved(200);
+          return { providerMessageRef: 'provider-1' };
+        },
+        'retry-freeze',
+        {
+          subject: { type: 'MESSAGE', ref: 'crisp:freeze' },
+          targetEvidence: evidence,
+          requestOptions: { version: 1, disableNotification: false, controls: 'AI_TOGGLE_V1' }
+        }
+      );
+
+      expect(result.status).toBe('SENT');
+      expect(JSON.parse(String(observed))).toEqual({
+        version: 1,
+        disableNotification: true,
+        controls: 'AI_TOGGLE_V1'
+      });
+      const stored = await db.prepare(
+        'SELECT request_options_json FROM outbound_operations WHERE id = ?'
+      ).bind('retry-freeze').first<any>();
+      expect(JSON.parse(stored.request_options_json).disableNotification).toBe(true);
+    } finally {
+      db.close();
+    }
   });
 
   it('binds AI callback control to a sent Crisp customer message instead of callback-supplied ids', async () => {
