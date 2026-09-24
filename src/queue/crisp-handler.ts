@@ -370,6 +370,17 @@ async function historicalWelcomeText(env: Env, version: number): Promise<string 
   return parseCrispWelcomeConfig(history.value_text)?.text || null;
 }
 
+async function welcomeTextForD1Intent(env: Env, version: number): Promise<string | null> {
+  if (
+    env.runtimeConfigSnapshot?.sources.CRISP_WELCOME_CONFIG === 'D1' &&
+    Number(env.runtimeConfigSnapshot.versions.CRISP_WELCOME_CONFIG || 0) === version
+  ) {
+    const current = parseCrispWelcomeConfig(env.runtimeConfigSnapshot.values.CRISP_WELCOME_CONFIG);
+    if (current?.enabled) return current.text;
+  }
+  return historicalWelcomeText(env, version);
+}
+
 type UnrecoverableWelcomeReason =
   | 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
   | 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED';
@@ -488,7 +499,7 @@ async function resolveWelcomeOperation(
       if (bootstrapIntent?.kind === 'LEGACY' || bootstrapIntent?.kind === 'NONE') {
         throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
       }
-      const text = Number.isSafeInteger(version) ? await historicalWelcomeText(env, version) : null;
+      const text = Number.isSafeInteger(version) ? await welcomeTextForD1Intent(env, version) : null;
       if (!text) {
         return settleUnrecoverableWelcomeOperation(
           env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
@@ -498,8 +509,16 @@ async function resolveWelcomeOperation(
     }
     if (existing.subject_ref === `crisp-welcome:${conversationId}`) {
       if (bootstrapIntent?.kind === 'LEGACY_UNKNOWN') {
+        const legacy = resolveCrispWelcome(env, menu?.welcome);
         return settleUnrecoverableWelcomeOperation(
-          env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
+          env,
+          existing,
+          conversationId,
+          websiteRef,
+          sessionRef,
+          legacy.source === 'D1'
+            ? 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED'
+            : 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
         );
       }
       if (bootstrapIntent?.kind === 'D1' || bootstrapIntent?.kind === 'NONE') {
@@ -542,7 +561,7 @@ async function resolveWelcomeOperation(
       throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
     }
     if (bootstrapIntent.kind === 'D1') {
-      const text = await historicalWelcomeText(env, bootstrapIntent.version);
+      const text = await welcomeTextForD1Intent(env, bootstrapIntent.version);
       if (!text) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
       return { text, subjectRef: `crisp-welcome:v${bootstrapIntent.version}` };
     }
