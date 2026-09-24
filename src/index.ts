@@ -323,6 +323,39 @@ export default {
         return new Response('Malformed update', { status: 400 });
       }
 
+      const supportProfileVersion = effectiveEnv.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;
+      const callback = payload.callback_query;
+      if (callback) {
+        const callbackMessage = callback.message;
+        const data = callback.data;
+        if (
+          typeof callback.id !== 'string' || !callback.id ||
+          !Number.isSafeInteger(callback.from?.id) || callback.from.id <= 0 ||
+          callbackMessage?.from?.is_bot !== true ||
+          callbackMessage?.message_id === undefined ||
+          callbackMessage?.message_thread_id === undefined ||
+          (data !== 'ai:on' && data !== 'ai:off')
+        ) {
+          return new Response('Ignored', { status: 200 });
+        }
+        await env.QUEUE.send({
+          version: 1,
+          source: 'telegram',
+          type: 'control_action',
+          eventId: `tg:${supportProfileVersion}:${updateId}`,
+          payload: {
+            supportProfileVersion,
+            updateRef: updateId,
+            callbackQueryRef: callback.id,
+            messageRef: String(callbackMessage.message_id),
+            threadRef: String(callbackMessage.message_thread_id),
+            operatorRef: String(callback.from.id),
+            action: data === 'ai:on' ? 'AI_ON' : 'AI_OFF'
+          }
+        });
+        return new Response('Accepted', { status: 200 });
+      }
+
       const telegramMessage = payload.message || payload.edited_message;
       if (!telegramMessage) {
         return new Response('Ignored', { status: 200 });
@@ -357,8 +390,6 @@ export default {
       if (!hasProviderId(telegramMessage.message_id)) {
         return new Response('Ignored', { status: 200 });
       }
-      const supportProfileVersion = effectiveEnv.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;
-
       await env.QUEUE.send({
         version: 1,
         source: 'telegram',
