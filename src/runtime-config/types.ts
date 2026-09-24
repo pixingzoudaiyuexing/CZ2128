@@ -68,7 +68,7 @@ export interface TelegramSupportProfile {
 
 export interface RuntimeConfigSnapshot {
   values: Partial<Record<RuntimeConfigKey, string>>;
-  sources: Record<RuntimeConfigKey, RuntimeValueSource>;
+  sources: Partial<Record<RuntimeConfigKey, RuntimeValueSource>>;
   versions: Partial<Record<RuntimeConfigKey, number>>;
   errors: Partial<Record<RuntimeConfigKey | 'RUNTIME_CONFIG', SafeErrorCode>>;
   overrideCount: number;
