@@ -12,7 +12,11 @@ import { createCrispWelcomeConfig } from '../src/config/crisp-welcome';
 vi.mock('../src/core/conversation-service', () => ({
   getOrCreateConversation: vi.fn(), insertMessage: vi.fn(), updateOperatorThreadRef: vi.fn()
 }));
-vi.mock('../src/core/outbound-operations', () => ({ executeOutboundOperation: vi.fn(), getOutboundOperation: vi.fn() }));
+vi.mock('../src/core/outbound-operations', () => ({
+  executeOutboundOperation: vi.fn(),
+  finalizeNeverStartedOutboundOperation: vi.fn(),
+  getOutboundOperation: vi.fn()
+}));
 vi.mock('../src/core/attachment-repository', () => ({ enqueueAttachmentJobs: vi.fn() }));
 vi.mock('../src/core/ai-state', () => ({
   checkAutoResume: vi.fn(),
@@ -98,6 +102,10 @@ describe('Crisp basic bridge orchestration', () => {
     vi.mocked(conversationService.updateOperatorThreadRef).mockResolvedValue('77');
     vi.mocked(outbound.executeOutboundOperation).mockResolvedValue({ status: 'SENT', providerMessageRef: 'p1' } as any);
     vi.mocked(outbound.getOutboundOperation).mockResolvedValue(null);
+    vi.mocked(outbound.finalizeNeverStartedOutboundOperation).mockImplementation(async (_env: any, operation: any) => ({
+      operation,
+      changed: false
+    }));
     vi.mocked(aiState.applyTelegramOperatorAction).mockResolvedValue('APPLIED' as any);
     vi.mocked(aiState.checkAutoResume).mockResolvedValue(true);
   });
@@ -376,6 +384,34 @@ describe('Crisp basic bridge orchestration', () => {
       .not.toContain('crisp_welcome:new-unconfigured');
   });
 
+
+  it('does not fall back to old ENV or menu Welcome when the runtime config snapshot read failed', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'new-runtime-read-failed', operator_thread_ref: null
+    } as any);
+    env.CRISP_WELCOME_TEXT = 'old ENV welcome';
+    env.CRISP_MENU_JSON = JSON.stringify({ welcome: 'old menu welcome' });
+    env.runtimeConfigSnapshot = {
+      values: {},
+      sources: { CRISP_WELCOME_CONFIG: 'D1' },
+      versions: {},
+      errors: { RUNTIME_CONFIG: 'RUNTIME_CONFIG_READ_FAILED' },
+      health: 'ERROR',
+      overrideCount: 0
+    } as any;
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:runtime-read-failed',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-new', customerRef: 'visitor-1',
+        messageRef: 'runtime-read-failed', actorRole: 'CUSTOMER', content: 'Hello'
+      }
+    }, env);
+
+    const calls = vi.mocked(outbound.executeOutboundOperation).mock.calls;
+    expect(calls.some(call => call[2] === 'telegram' && call[5] === 'send_tg_crisp_runtime-read-failed')).toBe(true);
+    expect(calls.some(call => call[5] === 'crisp_welcome:new-runtime-read-failed')).toBe(false);
+  });
 
   it('keeps the Telegram bridge working when only Crisp welcome config is invalid', async () => {
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
