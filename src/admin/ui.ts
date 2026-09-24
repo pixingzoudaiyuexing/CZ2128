@@ -136,8 +136,16 @@ export async function showPage(
     await reply(bootstrap, ctx,
       `Telegram 设置\n\n客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n` +
       `配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_SUPPORT_PROFILE')}\n\n` +
-      `${valueLine(env, 'BOT_GROUP_ID')}\n\nBot Token：${maskSecret(env.TELEGRAM_BOT_TOKEN)}`,
-      [[{ text: '轮换客服 Bot', callback_data: 'e:tbot' }], [{ text: '迁移客服群', callback_data: 'e:tgroup' }], [{ text: '返回', callback_data: 'm' }]]
+      `${valueLine(env, 'BOT_GROUP_ID')}\n\nBot Token：${maskSecret(env.TELEGRAM_BOT_TOKEN)}\n\n` +
+      `Crisp 接管通知：${env.TELEGRAM_NOTIFY_CRISP_OPERATOR || 'silent（默认）'}\n` +
+      `Telegram 接管通知：${env.TELEGRAM_NOTIFY_TELEGRAM_OPERATOR || 'normal（默认）'}\n` +
+      `手动关闭 AI 通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}`,
+      [
+        [{ text: '轮换客服 Bot', callback_data: 'e:tbot' }, { text: '迁移客服群', callback_data: 'e:tgroup' }],
+        [edit('Crisp 接管通知', 'tnc'), edit('Telegram 接管通知', 'tnt')],
+        [edit('手动关闭通知', 'tnm')],
+        [{ text: '返回', callback_data: 'm' }]
+      ]
     );
     return;
   }
@@ -155,9 +163,16 @@ export async function showPage(
       `API 密钥：${configured(env.CRISP_API_KEY)}`,
       `Webhook 签名密钥：${configured(env.CRISP_WEBHOOK_SECRET)}`,
       '',
-      '身份凭据仍由 Worker ENV / Secret 管理，不能通过本 Bot 修改。'
+      `人工客服昵称：${env.CRISP_OPERATOR_NICKNAME || '人工客服（默认）'}`,
+      `人工客服头像：${env.CRISP_OPERATOR_AVATAR_URL || '未配置'}`,
+      `AI 昵称：${env.CRISP_AI_NICKNAME || '智能客服（默认）'}`,
+      `AI 头像：${env.CRISP_AI_AVATAR_URL || '未配置'}`,
+      '',
+      '身份凭据仍由 Worker ENV / Secret 管理；展示昵称和 HTTPS 头像可通过本 Bot 修改。'
     ].join('\n'), [
       [{ text: '👋 欢迎语', callback_data: 'p:cwelcome' }, { text: '📋 客服菜单', callback_data: 'p:cmenu' }],
+      [edit('人工昵称', 'con'), edit('人工头像', 'coa')],
+      [edit('AI 昵称', 'can'), edit('AI 头像', 'caa')],
       [{ text: '返回主菜单', callback_data: 'm' }]
     ]);
     return;
