@@ -95,6 +95,35 @@ describe('Crisp-12 legacy UX contracts', () => {
     }
   });
 
+  it('keeps repeated AI toggle actions state-idempotent while advancing update ordering', async () => {
+    const db = new SqliteD1();
+    try {
+      db.migrate();
+      insertConversation(db);
+      const env = { DB: db } as any;
+
+      expect(await applyTelegramOperatorAction(env, 'conv-1', 0, '20', 'AI_OFF')).toBe('APPLIED');
+      const first = await db.prepare(
+        'SELECT ai_handoff_epoch, last_telegram_operator_update_id FROM conversations WHERE id = ?'
+      ).bind('conv-1').first<any>();
+
+      expect(await applyTelegramOperatorAction(env, 'conv-1', 0, '21', 'AI_OFF')).toBe('CURRENT');
+      const second = await db.prepare(
+        'SELECT ai_handoff_epoch, last_telegram_operator_update_id FROM conversations WHERE id = ?'
+      ).bind('conv-1').first<any>();
+      expect(second.ai_handoff_epoch).toBe(first.ai_handoff_epoch);
+      expect(second.last_telegram_operator_update_id).toBe(21);
+
+      expect(await applyTelegramOperatorAction(env, 'conv-1', 0, '21', 'AI_OFF')).toBe('CURRENT');
+      const third = await db.prepare(
+        'SELECT ai_handoff_epoch, last_telegram_operator_update_id FROM conversations WHERE id = ?'
+      ).bind('conv-1').first<any>();
+      expect(third).toEqual(second);
+    } finally {
+      db.close();
+    }
+  });
+
   it('uses source-specific default notification policy while preserving legacy paused rows', () => {
     const env = {} as any;
     expect(customerNotificationMode(env, { ai_mode: 'ENABLED' } as any)).toBe('normal');
