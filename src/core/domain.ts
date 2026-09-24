@@ -9,6 +9,7 @@ export interface Conversation {
   operator_thread_status: 'OPEN' | 'CLOSED';
   last_operator_reply_at: number | null;
   ai_mode: 'ENABLED' | 'PAUSED_OPERATOR' | 'PAUSED_MANUAL';
+  ai_pause_source: 'CRISP_OPERATOR' | 'TELEGRAM_OPERATOR' | 'MANUAL' | 'HELPDESK_OPERATOR' | null;
   ai_generation_id: string | null;
   ai_generation_started_at: number | null;
   ai_generation_message_id: string | null;
@@ -99,5 +100,6 @@ export interface OutboundOperation {
   subject_type: 'MESSAGE' | 'ATTACHMENT' | 'CONVERSATION' | 'AI_RUN' | 'CONTROL_ACK' | 'UPLOAD_INVITE' | null;
   subject_ref: string | null;
   target_evidence_json: string | null;
+  request_options_json: string | null;
 }
 import { SafeErrorCode } from './error-taxonomy';
