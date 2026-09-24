@@ -34,7 +34,7 @@ export interface ExecuteOutboundOperationOptions {
   parentOperationId?: string;
   subject: OutboundSubjectIdentity;
   targetEvidence: OutboundTargetEvidence;
-  requestOptions?: Record<string, unknown>;
+  requestOptions?: unknown;
 }
 
 export class OutboundOperationIdentityCollisionError extends Error {
