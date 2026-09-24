@@ -68,7 +68,8 @@ export class SqliteD1 {
       '0004_runtime_config.sql',
       '0005_reliability.sql',
       '0006_crisp_attachment_provider.sql',
-      '0007_crisp_upload_invites.sql'
+      '0007_crisp_upload_invites.sql',
+      '0008_crisp_legacy_ux.sql'
     ]) {
       this.exec(readFileSync(`migrations/${migration}`, 'utf8'));
     }
