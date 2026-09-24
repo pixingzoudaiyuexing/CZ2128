@@ -1,4 +1,7 @@
 import { createChatwootMessage } from '../adapters/chatwoot/api';
+import { createCrispMessage } from '../adapters/crisp/api';
+import { parseCrispIdentityRequestOptions } from '../config/crisp-identities';
+import { parseTelegramCustomerRequestOptions } from '../config/telegram-customer-ux';
 import {
   closeTelegramTopic,
   createTelegramTopic,
@@ -18,6 +21,7 @@ import { AiRun, Conversation, Message, OutboundOperation } from './domain';
 import { RetryableProcessingError, SafeError } from './errors';
 import {
   buildChatwootTargetEvidence,
+  buildCrispTargetEvidence,
   buildTelegramTargetEvidence,
   manualRetryDestinationMatches,
   OutboundSubjectIdentity,
@@ -213,7 +217,7 @@ async function prepareMessageRetry(
   if (parent.operation_type !== 'SEND_MESSAGE') {
     throw new SafeError('OUTBOUND_MANUAL_RETRY_NOT_ELIGIBLE');
   }
-  let provider: 'chatwoot' | 'telegram';
+  let provider: 'chatwoot' | 'crisp' | 'telegram';
   let providerMessageRef: string;
   if (parent.subject_ref.startsWith('chatwoot:')) {
     provider = 'chatwoot';
@@ -221,10 +225,16 @@ async function prepareMessageRetry(
     if (parent.destination_provider !== 'telegram') {
       throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
     }
+  } else if (parent.subject_ref.startsWith('crisp:')) {
+    provider = 'crisp';
+    providerMessageRef = parent.subject_ref.slice('crisp:'.length);
+    if (parent.destination_provider !== 'telegram') {
+      throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
+    }
   } else if (parent.subject_ref.startsWith('telegram:')) {
     provider = 'telegram';
     providerMessageRef = parent.subject_ref.slice('telegram:'.length);
-    if (parent.destination_provider !== 'chatwoot') {
+    if (parent.destination_provider !== 'chatwoot' && parent.destination_provider !== 'crisp') {
       throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
     }
   } else {
@@ -251,8 +261,46 @@ async function prepareMessageRetry(
       subject: { type: 'MESSAGE', ref: parent.subject_ref },
       targetEvidence,
       action: async (_operationId, lifecycle) => {
+        const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
         const response = await sendTelegramMessage(
-          env, env.BOT_GROUP_ID, conversation.operator_thread_ref, message.text_content!, lifecycle
+          env,
+          env.BOT_GROUP_ID,
+          conversation.operator_thread_ref,
+          message.text_content!,
+          lifecycle,
+          frozen ? {
+            disableNotification: frozen.disableNotification,
+            ...(frozen.controls === 'AI_TOGGLE_V1' ? {
+              replyMarkup: { inline_keyboard: [[
+                { text: '开启 AI', callback_data: 'ai:on' },
+                { text: '关闭 AI', callback_data: 'ai:off' }
+              ]] }
+            } : {})
+          } : undefined
+        );
+        return { providerMessageRef: response.messageId };
+      }
+    };
+  }
+
+  if (parent.destination_provider === 'crisp') {
+    const targetEvidence = buildCrispTargetEvidence(
+      conversation.helpdesk_account_ref,
+      conversation.helpdesk_conversation_ref
+    );
+    return {
+      subject: { type: 'MESSAGE', ref: parent.subject_ref },
+      targetEvidence,
+      action: async (operationId, lifecycle) => {
+        const frozenIdentity = parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson);
+        const response = await createCrispMessage(
+          env,
+          conversation.helpdesk_account_ref,
+          conversation.helpdesk_conversation_ref,
+          message.text_content!,
+          operationId,
+          lifecycle,
+          frozenIdentity ? { identity: frozenIdentity, automated: false } : undefined
         );
         return { providerMessageRef: response.messageId };
       }
@@ -330,9 +378,18 @@ async function prepareAttachmentRetry(
       subject: { type: 'ATTACHMENT', ref: row.id },
       targetEvidence,
       leaseSeconds: config.outboundLeaseSeconds,
-      action: async (_operationId, lifecycle) => deliverAttachmentToTelegram(
-        env, config, row, conversation.operator_thread_ref!, bytes, lifecycle
-      )
+      action: async (_operationId, lifecycle) => {
+        const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
+        return deliverAttachmentToTelegram(
+          env,
+          config,
+          row,
+          conversation.operator_thread_ref!,
+          bytes,
+          lifecycle,
+          frozen ? { disableNotification: frozen.disableNotification } : undefined
+        );
+      }
     };
   }
 
@@ -472,10 +529,10 @@ async function createChildAtomically(
         created_at, updated_at, request_started_at, response_observed_at,
         response_http_status, next_retry_at, retry_after_seconds, reconciliation_status,
         resolved_by, resolved_at, resolution_reason, parent_operation_id,
-        subject_type, subject_ref, target_evidence_json)
+        subject_type, subject_ref, target_evidence_json, request_options_json)
        SELECT ?, conversation_id, destination_provider, operation_type, 'PENDING',
               NULL, 0, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, 'NOT_REQUIRED',
-              NULL, NULL, NULL, id, subject_type, subject_ref, ?
+              NULL, NULL, NULL, id, subject_type, subject_ref, ?, request_options_json
        FROM outbound_operations
        WHERE id = ? AND status = 'AMBIGUOUS'
          AND reconciliation_status = ?
