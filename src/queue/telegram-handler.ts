@@ -8,7 +8,7 @@ import { crispIdentityRequestOptions, crispOperatorIdentity, parseCrispIdentityR
 import { parseTelegramCustomerRequestOptions } from '../config/telegram-customer-ux';
 import { applyTelegramOperatorAction } from '../core/ai-state';
 import { insertMessage } from '../core/conversation-service';
-import { TelegramEvent, TelegramMessageEvent } from '../core/events';
+import { TelegramEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
