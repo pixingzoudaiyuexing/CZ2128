@@ -11,7 +11,7 @@ import { insertMessage } from '../core/conversation-service';
 import { TelegramEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
-import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
+import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence, targetEvidenceMatches } from '../core/outbound-evidence';
 import { createAndSendUploadInvite, revokeUploadInviteFromTelegram } from '../uploads/service';
 
 function isAuthorizedUploadOperator(env: Env, operatorRef: string | undefined): operatorRef is string {
@@ -26,7 +26,7 @@ function isAuthorizedUploadOperator(env: Env, operatorRef: string | undefined): 
 async function processTelegramControlEvent(event: Extract<TelegramEvent, { type: 'control_action' }>, env: Env): Promise<void> {
   const payload = event.payload;
   const matches = await env.DB.prepare(
-    `SELECT o.conversation_id, o.request_options_json
+    `SELECT o.conversation_id, o.request_options_json, o.target_evidence_json
      FROM outbound_operations o
      JOIN conversations c ON c.id = o.conversation_id
      WHERE o.destination_provider = 'telegram'
@@ -38,10 +38,22 @@ async function processTelegramControlEvent(event: Extract<TelegramEvent, { type:
        AND c.helpdesk_provider = 'crisp'
        AND c.operator_channel = 'telegram'
        AND c.operator_thread_ref = ?`
-  ).bind(payload.messageRef, payload.threadRef).all<{ conversation_id: string; request_options_json: string | null }>();
+  ).bind(payload.messageRef, payload.threadRef).all<{
+    conversation_id: string;
+    request_options_json: string | null;
+    target_evidence_json: string | null;
+  }>();
   const rows = matches.results || [];
   const frozen = rows.length === 1 ? parseTelegramCustomerRequestOptions(rows[0].request_options_json) : null;
-  if (rows.length !== 1 || frozen?.controls !== 'AI_TOGGLE_V1') {
+  const currentTarget = buildTelegramTargetEvidence(
+    env,
+    env.BOT_GROUP_ID,
+    payload.threadRef,
+    'sendMessage'
+  );
+  const targetMatches = rows.length === 1 && !!rows[0].target_evidence_json &&
+    targetEvidenceMatches(rows[0].target_evidence_json, currentTarget);
+  if (rows.length !== 1 || frozen?.controls !== 'AI_TOGGLE_V1' || !targetMatches) {
     await answerTelegramCallbackQuery(env, payload.callbackQueryRef, '按钮已失效，请使用最新客户消息上的按钮。');
     return;
   }
