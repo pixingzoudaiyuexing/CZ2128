@@ -96,7 +96,8 @@ export function parseCrispMenu(value: string | undefined): CrispMenuConfig | nul
 type CrispBootstrapWelcomeIntent =
   | { kind: 'NONE' }
   | { kind: 'D1'; version: number }
-  | { kind: 'LEGACY'; textHash: string };
+  | { kind: 'LEGACY'; textHash: string }
+  | { kind: 'LEGACY_UNKNOWN' };
 
 interface CrispBootstrapPickerIntent {
   id: string;
@@ -168,17 +169,34 @@ async function pickerMenuHash(menu: CrispMenuConfig | null): Promise<string | nu
   return canonical === null ? null : sha256Hex(canonical);
 }
 
-async function buildBootstrapIntent(env: Env, menu: CrispMenuConfig | null): Promise<CrispBootstrapIntent> {
-  const welcome = resolveCrispWelcome(env, menu?.welcome);
+async function buildBootstrapIntent(
+  env: Env,
+  menu: CrispMenuConfig | null,
+  existingWelcome?: OutboundOperation | null
+): Promise<CrispBootstrapIntent> {
   let welcomeIntent: CrispBootstrapWelcomeIntent = { kind: 'NONE' };
-  if (welcome.status === 'ENABLED' && welcome.text) {
-    if (welcome.source === 'D1') {
-      const version = Number(env.runtimeConfigSnapshot?.versions.CRISP_WELCOME_CONFIG || 0);
-      if (Number.isSafeInteger(version) && version > 0) {
-        welcomeIntent = { kind: 'D1', version };
+  const existingSubject = existingWelcome?.subject_type === 'MESSAGE'
+    ? existingWelcome.subject_ref
+    : null;
+  const existingVersion = existingSubject ? WELCOME_SUBJECT_PATTERN.exec(existingSubject) : null;
+  if (existingVersion) {
+    const version = Number(existingVersion[1]);
+    if (Number.isSafeInteger(version) && version > 0) {
+      welcomeIntent = { kind: 'D1', version };
+    }
+  } else if (existingSubject === `crisp-welcome:${existingWelcome?.conversation_id}`) {
+    welcomeIntent = { kind: 'LEGACY_UNKNOWN' };
+  } else {
+    const welcome = resolveCrispWelcome(env, menu?.welcome);
+    if (welcome.status === 'ENABLED' && welcome.text) {
+      if (welcome.source === 'D1') {
+        const version = Number(env.runtimeConfigSnapshot?.versions.CRISP_WELCOME_CONFIG || 0);
+        if (Number.isSafeInteger(version) && version > 0) {
+          welcomeIntent = { kind: 'D1', version };
+        }
+      } else {
+        welcomeIntent = { kind: 'LEGACY', textHash: await sha256Hex(welcome.text) };
       }
-    } else {
-      welcomeIntent = { kind: 'LEGACY', textHash: await sha256Hex(welcome.text) };
     }
   }
   const menuHash = await pickerMenuHash(menu);
@@ -199,7 +217,7 @@ function parseBootstrapIntent(value: string | null): CrispBootstrapIntent | null
       !welcome ||
       (welcome.kind === 'D1' && (!Number.isSafeInteger(welcome.version) || welcome.version < 1)) ||
       (welcome.kind === 'LEGACY' && !/^[a-f0-9]{64}$/.test(welcome.textHash)) ||
-      !['NONE', 'D1', 'LEGACY'].includes(welcome.kind)
+      !['NONE', 'D1', 'LEGACY', 'LEGACY_UNKNOWN'].includes(welcome.kind)
     ) return null;
     const picker = parsed.picker;
     if (picker !== null && (
@@ -230,7 +248,8 @@ async function firstEventBootstrapIntent(
   const id = await bootstrapAuditId(conversationId, 'intent');
   const eventHash = await bootstrapEventHash(eventId);
   if (mayCreate) {
-    const intent = await buildBootstrapIntent(env, menu);
+    const existingWelcome = await getOutboundOperation(env, `crisp_welcome:${conversationId}`);
+    const intent = await buildBootstrapIntent(env, menu, existingWelcome);
     await insertReliabilityAuditOnce(env, {
       id,
       entityType: 'CONVERSATION',
