@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChatwootMessage, fetchChatwootConversationStatus } from '../src/adapters/chatwoot/api';
 import { closeTelegramTopic, sendTelegramMessage } from '../src/adapters/telegram/api';
+import { createCrispMessage } from '../src/adapters/crisp/api';
 import { ProviderDeliveryError } from '../src/core/errors';
 
 const env = {
   CHATWOOT_API_URL: 'https://chatwoot.example',
   CHATWOOT_API_TOKEN: 'chatwoot-token',
-  TELEGRAM_BOT_TOKEN: 'telegram-token'
+  TELEGRAM_BOT_TOKEN: 'telegram-token',
+  CRISP_API_IDENTIFIER: 'identifier',
+  CRISP_API_KEY: 'api-key'
 } as any;
 
 describe('provider API contracts', () => {
@@ -84,6 +87,63 @@ describe('provider API contracts', () => {
     expect(error.outcome).toBe('AMBIGUOUS');
     expect(String(error)).not.toContain('private customer text');
     expect(String(error)).not.toContain('token');
+  });
+
+
+  it('sends frozen Crisp nickname/avatar as plugin operator identity without changing the gateway echo marker', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ data: { fingerprint: 'fp-1' } }), { status: 202 })
+    );
+
+    await createCrispMessage(
+      env,
+      'site',
+      'session',
+      'Human reply',
+      'crisp-human-1',
+      undefined,
+      { identity: { nickname: '人工客服', avatar: 'https://cdn.example/human.png' }, automated: true }
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body).toMatchObject({
+      type: 'text',
+      from: 'operator',
+      origin: 'chat',
+      content: 'Human reply',
+      user: { nickname: '人工客服', avatar: 'https://cdn.example/human.png' },
+      automated: true
+    });
+  });
+
+  it('sends Telegram silent notification and fixed AI controls without changing message text', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: { message_id: 42 } }), { status: 200 })
+    );
+
+    await sendTelegramMessage(env, '-100', '7', 'Customer text', undefined, {
+      disableNotification: true,
+      replyMarkup: {
+        inline_keyboard: [[
+          { text: '开启 AI', callback_data: 'ai:on' },
+          { text: '关闭 AI', callback_data: 'ai:off' }
+        ]]
+      }
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body).toEqual({
+      chat_id: '-100',
+      text: 'Customer text',
+      message_thread_id: '7',
+      disable_notification: true,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '开启 AI', callback_data: 'ai:on' },
+          { text: '关闭 AI', callback_data: 'ai:off' }
+        ]]
+      }
+    });
   });
 
   it('classifies Telegram HTTP 503 as ambiguous', async () => {
