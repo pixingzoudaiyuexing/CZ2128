@@ -6,6 +6,8 @@ import * as outbound from '../src/core/outbound-operations';
 import * as aiState from '../src/core/ai-state';
 import * as attachmentRepository from '../src/core/attachment-repository';
 import { crispFingerprintForOperation } from '../src/adapters/crisp/fingerprint';
+import * as crispApi from '../src/adapters/crisp/api';
+import { createCrispWelcomeConfig } from '../src/config/crisp-welcome';
 
 vi.mock('../src/core/conversation-service', () => ({
   getOrCreateConversation: vi.fn(), insertMessage: vi.fn(), updateOperatorThreadRef: vi.fn()
@@ -28,12 +30,29 @@ vi.mock('../src/adapters/crisp/api', () => ({
 describe('Crisp basic bridge orchestration', () => {
   let env: any;
 
-  function echoDb(sent: { id: string } | null = null, inFlight: Array<{ id: string }> = []) {
+  function echoDb(
+    sent: { id: string } | null = null,
+    inFlight: Array<{ id: string }> = [],
+    welcomeHistory?: string
+  ) {
     return {
-      prepare: (sql: string) => ({
-        bind: () => ({
+      prepare: (sql: string) => {
+        let params: any[] = [];
+        const statement = {
+          bind: (...values: any[]) => { params = values; return statement; },
           first: async () => {
             if (sql.includes('provider_message_ref = ?')) return sent;
+            if (sql.includes('FROM runtime_config_history WHERE key = ? AND version = ?')) {
+              return welcomeHistory && params[0] === 'CRISP_WELCOME_CONFIG' && params[1] === 1
+                ? {
+                    key: 'CRISP_WELCOME_CONFIG',
+                    version: 1,
+                    value_kind: 'PLAIN',
+                    value_text: welcomeHistory,
+                    is_deleted: 0
+                  }
+                : null;
+            }
             if (sql.includes('FROM conversations WHERE operator_channel = ? AND operator_thread_ref = ?')) {
               return {
                 id: 'conv-crisp',
@@ -46,9 +65,21 @@ describe('Crisp basic bridge orchestration', () => {
             return null;
           },
           all: async () => ({ results: sql.includes("status IN ('SENDING', 'AMBIGUOUS')") ? inFlight : [] })
-        })
-      })
+        };
+        return statement;
+      }
     };
+  }
+
+  function welcomeSnapshot(value: string, version = 1) {
+    return {
+      values: { CRISP_WELCOME_CONFIG: value },
+      sources: { CRISP_WELCOME_CONFIG: 'D1' },
+      versions: { CRISP_WELCOME_CONFIG: version },
+      errors: {},
+      health: 'AVAILABLE',
+      overrideCount: 1
+    } as any;
   }
 
   beforeEach(() => {
@@ -324,6 +355,131 @@ describe('Crisp basic bridge orchestration', () => {
     const operationIds = vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]);
     expect(operationIds).toContain('crisp_welcome:new-conv');
     expect(operationIds).toContain('crisp_picker:new-conv:main');
+  });
+
+
+
+  it('does not send a welcome when none is configured', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'new-unconfigured', operator_thread_ref: null
+    } as any);
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:no-welcome',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-new', customerRef: 'visitor-1',
+        messageRef: 'no-welcome', actorRole: 'CUSTOMER', content: 'Start'
+      }
+    }, env);
+
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]))
+      .not.toContain('crisp_welcome:new-unconfigured');
+  });
+
+  it('keeps an explicit D1 welcome disable authoritative over ENV fallback', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'new-disabled', operator_thread_ref: null
+    } as any);
+    env.CRISP_WELCOME_TEXT = 'ENV should not leak through';
+    env.runtimeConfigSnapshot = welcomeSnapshot(createCrispWelcomeConfig('Selected welcome', false));
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:disabled-welcome',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-new', customerRef: 'visitor-1',
+        messageRef: 'disabled-welcome', actorRole: 'CUSTOMER', content: 'Start'
+      }
+    }, env);
+
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.map(call => call[5]))
+      .not.toContain('crisp_welcome:new-disabled');
+  });
+
+  it('binds a new D1 welcome outbound operation to its runtime config version', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'new-versioned', operator_thread_ref: null
+    } as any);
+    env.runtimeConfigSnapshot = welcomeSnapshot(createCrispWelcomeConfig('Versioned welcome', true), 3);
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:versioned-welcome',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-new', customerRef: 'visitor-1',
+        messageRef: 'versioned-welcome', actorRole: 'CUSTOMER', content: 'Start'
+      }
+    }, env);
+
+    const welcomeCall = vi.mocked(outbound.executeOutboundOperation).mock.calls
+      .find(call => call[5] === 'crisp_welcome:new-versioned');
+    expect(welcomeCall?.[6]).toMatchObject({
+      subject: { type: 'MESSAGE', ref: 'crisp-welcome:v3' }
+    });
+  });
+
+  it('reuses historical welcome text for an in-flight versioned operation after config changes', async () => {
+    const oldConfig = createCrispWelcomeConfig('old frozen welcome', true);
+    env.DB = echoDb(null, [], oldConfig);
+    env.runtimeConfigSnapshot = welcomeSnapshot(createCrispWelcomeConfig('new changed welcome', true), 2);
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'new-inflight', operator_thread_ref: null
+    } as any);
+    vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
+      id: 'crisp_welcome:new-inflight',
+      conversation_id: 'new-inflight',
+      destination_provider: 'crisp',
+      operation_type: 'SEND_MESSAGE',
+      status: 'PENDING',
+      subject_type: 'MESSAGE',
+      subject_ref: 'crisp-welcome:v1'
+    } as any);
+    vi.mocked(crispApi.createCrispMessage).mockResolvedValue({ messageId: 'welcome-1' } as any);
+    vi.mocked(outbound.executeOutboundOperation).mockImplementation(async (...args: any[]) => {
+      if (args[5] === 'crisp_welcome:new-inflight') {
+        await args[4](args[5], { requestStarted: vi.fn(), responseObserved: vi.fn() });
+      }
+      return { status: 'SENT', providerMessageRef: 'p1' } as any;
+    });
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:inflight-welcome',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-new', customerRef: 'visitor-1',
+        messageRef: 'inflight-welcome', actorRole: 'CUSTOMER', content: 'Start'
+      }
+    }, env);
+
+    expect(crispApi.createCrispMessage).toHaveBeenCalledWith(
+      env,
+      'website-1',
+      'session-new',
+      'old frozen welcome',
+      'crisp_welcome:new-inflight',
+      expect.any(Object)
+    );
+  });
+
+  it('fails closed instead of substituting D1 text into a pre-version legacy in-flight welcome', async () => {
+    env.runtimeConfigSnapshot = welcomeSnapshot(createCrispWelcomeConfig('new runtime welcome', true), 1);
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'legacy-inflight', operator_thread_ref: null
+    } as any);
+    vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
+      id: 'crisp_welcome:legacy-inflight',
+      conversation_id: 'legacy-inflight',
+      destination_provider: 'crisp',
+      operation_type: 'SEND_MESSAGE',
+      status: 'PENDING',
+      subject_type: 'MESSAGE',
+      subject_ref: 'crisp-welcome:legacy-inflight'
+    } as any);
+
+    await expect(processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:legacy-inflight',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-new', customerRef: 'visitor-1',
+        messageRef: 'legacy-inflight', actorRole: 'CUSTOMER', content: 'Start'
+      }
+    }, env)).rejects.toMatchObject({ message: 'OUTBOUND_PRECONDITION_FAILED' });
   });
 
   it('pauses AI and notifies the mapped topic for a human handoff option', async () => {
