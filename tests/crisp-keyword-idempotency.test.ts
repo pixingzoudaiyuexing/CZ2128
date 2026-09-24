@@ -59,13 +59,13 @@ describe('Crisp keyword real-D1 idempotency', () => {
     };
 
     vi.mocked(telegramApi.sendTelegramMessage).mockImplementation(async (...args: any[]) => {
-      const lifecycle = args.at(-1);
+      const lifecycle = args[4];
       await lifecycle.requestStarted();
       await lifecycle.responseObserved(200);
       return { messageId: 'tg-provider-1' } as any;
     });
     vi.mocked(crispApi.createCrispMessage).mockImplementation(async (...args: any[]) => {
-      const lifecycle = args.at(-1);
+      const lifecycle = args[5];
       await lifecycle.requestStarted();
       await lifecycle.responseObserved(200);
       return { messageId: 'crisp-provider-1' } as any;
