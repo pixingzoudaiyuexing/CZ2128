@@ -162,7 +162,7 @@ export async function deliverAttachmentToCrisp(
 ): Promise<{ providerMessageRef: string }> {
   const result = await createCrispMessage(
     env, websiteRef, sessionRef, content, operationId, lifecycle,
-    identity ? { identity, automated: false } : undefined
+    identity ? { identity, automated: true } : undefined
   );
   return { providerMessageRef: result.messageId };
 }
