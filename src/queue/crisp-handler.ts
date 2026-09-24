@@ -30,6 +30,7 @@ import { processCrispKeywordReply } from './crisp-keyword-reply';
 import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
 import { getRuntimeHistoryVersion } from '../runtime-config/repository';
 import type { OutboundOperation } from '../core/domain';
+import { insertReliabilityAuditOnce } from '../core/reliability-audit';
 
 export interface CrispMenuOption {
   pickerId: string;
@@ -89,6 +90,256 @@ export function parseCrispMenu(value: string | undefined): CrispMenuConfig | nul
     return parsed;
   } catch {
     return null;
+  }
+}
+
+type CrispBootstrapWelcomeIntent =
+  | { kind: 'NONE' }
+  | { kind: 'D1'; version: number }
+  | { kind: 'LEGACY'; textHash: string };
+
+interface CrispBootstrapPickerIntent {
+  id: string;
+  menuHash: string;
+}
+
+interface CrispBootstrapIntent {
+  version: 1;
+  welcome: CrispBootstrapWelcomeIntent;
+  picker: CrispBootstrapPickerIntent | null;
+}
+
+type CrispBootstrapDecision = 'KEYWORD' | 'BOOTSTRAP' | 'SUPPRESSED';
+
+interface BootstrapAuditRow {
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  actor_type: string;
+  actor_ref: string | null;
+  old_state: string | null;
+  new_state: string | null;
+  reason_code: string;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function bootstrapAuditId(conversationId: string, kind: 'intent' | 'decision'): Promise<string> {
+  return `crisp-bootstrap-${kind}:${await sha256Hex(JSON.stringify([conversationId, kind]))}`;
+}
+
+async function bootstrapEventHash(eventId: string): Promise<string> {
+  return sha256Hex(JSON.stringify(['crisp-bootstrap-event', eventId]));
+}
+
+function canonicalPickerMenu(menu: CrispMenuConfig | null): string | null {
+  if (!menu?.picker) return null;
+  const choices = (value: CrispPickerChoice[]) => value.map(choice => ({
+    value: choice.value,
+    label: choice.label,
+    selected: choice.selected ?? false
+  }));
+  return JSON.stringify({
+    picker: {
+      id: menu.picker.id,
+      text: menu.picker.text,
+      choices: choices(menu.picker.choices)
+    },
+    options: (menu.options || []).map(option => ({
+      pickerId: option.pickerId,
+      value: option.value,
+      label: option.label,
+      response: option.response ?? null,
+      next: option.next ? {
+        id: option.next.id,
+        text: option.next.text,
+        choices: choices(option.next.choices)
+      } : null,
+      handoff: option.handoff === true
+    }))
+  });
+}
+
+async function pickerMenuHash(menu: CrispMenuConfig | null): Promise<string | null> {
+  const canonical = canonicalPickerMenu(menu);
+  return canonical === null ? null : sha256Hex(canonical);
+}
+
+async function buildBootstrapIntent(env: Env, menu: CrispMenuConfig | null): Promise<CrispBootstrapIntent> {
+  const welcome = resolveCrispWelcome(env, menu?.welcome);
+  let welcomeIntent: CrispBootstrapWelcomeIntent = { kind: 'NONE' };
+  if (welcome.status === 'ENABLED' && welcome.text) {
+    if (welcome.source === 'D1') {
+      const version = Number(env.runtimeConfigSnapshot?.versions.CRISP_WELCOME_CONFIG || 0);
+      if (Number.isSafeInteger(version) && version > 0) {
+        welcomeIntent = { kind: 'D1', version };
+      }
+    } else {
+      welcomeIntent = { kind: 'LEGACY', textHash: await sha256Hex(welcome.text) };
+    }
+  }
+  const menuHash = await pickerMenuHash(menu);
+  return {
+    version: 1,
+    welcome: welcomeIntent,
+    picker: menu?.picker && menuHash ? { id: menu.picker.id, menuHash } : null
+  };
+}
+
+function parseBootstrapIntent(value: string | null): CrispBootstrapIntent | null {
+  if (!value || value.length > 1024) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<CrispBootstrapIntent>;
+    if (parsed.version !== 1) return null;
+    const welcome = parsed.welcome as CrispBootstrapWelcomeIntent | undefined;
+    if (
+      !welcome ||
+      (welcome.kind === 'D1' && (!Number.isSafeInteger(welcome.version) || welcome.version < 1)) ||
+      (welcome.kind === 'LEGACY' && !/^[a-f0-9]{64}$/.test(welcome.textHash)) ||
+      !['NONE', 'D1', 'LEGACY'].includes(welcome.kind)
+    ) return null;
+    const picker = parsed.picker;
+    if (picker !== null && (
+      !picker ||
+      typeof picker.id !== 'string' || !boundedMenuText(picker.id, 128) ||
+      typeof picker.menuHash !== 'string' || !/^[a-f0-9]{64}$/.test(picker.menuHash)
+    )) return null;
+    return { version: 1, welcome, picker: picker || null };
+  } catch {
+    return null;
+  }
+}
+
+async function loadBootstrapAudit(env: Env, id: string): Promise<BootstrapAuditRow | null> {
+  return env.DB.prepare(
+    `SELECT entity_type, entity_id, action, actor_type, actor_ref, old_state, new_state, reason_code
+     FROM reliability_audit WHERE id = ?`
+  ).bind(id).first<BootstrapAuditRow>();
+}
+
+async function firstEventBootstrapIntent(
+  env: Env,
+  conversationId: string,
+  eventId: string,
+  menu: CrispMenuConfig | null,
+  mayCreate: boolean
+): Promise<CrispBootstrapIntent | null> {
+  const id = await bootstrapAuditId(conversationId, 'intent');
+  const eventHash = await bootstrapEventHash(eventId);
+  if (mayCreate) {
+    const intent = await buildBootstrapIntent(env, menu);
+    await insertReliabilityAuditOnce(env, {
+      id,
+      entityType: 'CONVERSATION',
+      entityId: conversationId,
+      action: 'CRISP_BOOTSTRAP_INTENT_CREATED',
+      actorType: 'SYSTEM',
+      actorRef: 'system:crisp-bootstrap',
+      oldState: eventHash,
+      newState: JSON.stringify(intent),
+      reasonCode: 'CRISP_FIRST_CUSTOMER_EVENT',
+      createdAt: Math.floor(Date.now() / 1000)
+    });
+  }
+
+  const row = await loadBootstrapAudit(env, id);
+  if (!row) return null;
+  if (
+    row.entity_type !== 'CONVERSATION' ||
+    row.entity_id !== conversationId ||
+    row.action !== 'CRISP_BOOTSTRAP_INTENT_CREATED' ||
+    row.actor_type !== 'SYSTEM' ||
+    row.actor_ref !== 'system:crisp-bootstrap' ||
+    row.reason_code !== 'CRISP_FIRST_CUSTOMER_EVENT'
+  ) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+  if (row.old_state !== eventHash) return null;
+  const intent = parseBootstrapIntent(row.new_state);
+  if (!intent) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  return intent;
+}
+
+async function loadBootstrapDecision(
+  env: Env,
+  conversationId: string,
+  eventId: string
+): Promise<CrispBootstrapDecision | null> {
+  const id = await bootstrapAuditId(conversationId, 'decision');
+  const row = await loadBootstrapAudit(env, id);
+  if (!row) return null;
+  const eventHash = await bootstrapEventHash(eventId);
+  if (
+    row.entity_type !== 'CONVERSATION' ||
+    row.entity_id !== conversationId ||
+    row.action !== 'CRISP_BOOTSTRAP_DECISION_FIXED' ||
+    row.actor_type !== 'SYSTEM' ||
+    row.actor_ref !== 'system:crisp-bootstrap' ||
+    row.reason_code !== 'CRISP_FIRST_CUSTOMER_EVENT' ||
+    row.old_state !== eventHash ||
+    (row.new_state !== 'KEYWORD' && row.new_state !== 'BOOTSTRAP' && row.new_state !== 'SUPPRESSED')
+  ) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+  return row.new_state;
+}
+
+async function persistBootstrapDecision(
+  env: Env,
+  conversationId: string,
+  eventId: string,
+  decision: CrispBootstrapDecision
+): Promise<CrispBootstrapDecision> {
+  const id = await bootstrapAuditId(conversationId, 'decision');
+  await insertReliabilityAuditOnce(env, {
+    id,
+    entityType: 'CONVERSATION',
+    entityId: conversationId,
+    action: 'CRISP_BOOTSTRAP_DECISION_FIXED',
+    actorType: 'SYSTEM',
+    actorRef: 'system:crisp-bootstrap',
+    oldState: await bootstrapEventHash(eventId),
+    newState: decision,
+    reasonCode: 'CRISP_FIRST_CUSTOMER_EVENT',
+    createdAt: Math.floor(Date.now() / 1000)
+  });
+  const fixed = await loadBootstrapDecision(env, conversationId, eventId);
+  if (fixed !== decision) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  return fixed;
+}
+
+async function automationStillEnabled(env: Env, conversationId: string): Promise<boolean> {
+  const current = await env.DB.prepare(
+    'SELECT ai_mode FROM conversations WHERE id = ?'
+  ).bind(conversationId).first<{ ai_mode: string }>();
+  return current?.ai_mode === 'ENABLED';
+}
+
+function bootstrapOperationTerminal(operation: OutboundOperation): boolean {
+  return operation.status === 'SENT' ||
+    operation.status === 'FAILED_FINAL' ||
+    (
+      operation.status === 'AMBIGUOUS' &&
+      (operation.reconciliation_status === 'CONFIRMED_SENT' ||
+        operation.reconciliation_status === 'MANUAL_MARK_DELIVERED')
+    );
+}
+
+async function assertPausedBootstrapHasNoUnresolvedOperation(
+  env: Env,
+  conversationId: string,
+  intent: CrispBootstrapIntent
+): Promise<void> {
+  const ids = [`crisp_welcome:${conversationId}`];
+  if (intent.picker) ids.push(`crisp_picker:${conversationId}:${intent.picker.id}`);
+  for (const id of ids) {
+    const operation = await getOutboundOperation(env, id);
+    if (operation && !bootstrapOperationTerminal(operation)) {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
   }
 }
 
