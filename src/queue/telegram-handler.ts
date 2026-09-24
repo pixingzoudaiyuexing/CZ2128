@@ -171,8 +171,8 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
       conv.id,
       destinationProvider,
       'SEND_MESSAGE',
-      async (opId, lifecycle, operation) => {
-        const frozenIdentity = parseCrispIdentityRequestOptions(operation.request_options_json);
+      async (opId, lifecycle) => {
+        const frozenIdentity = parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson);
         const res = destinationProvider === 'crisp'
           ? await createCrispMessage(
               env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, content, String(opId), lifecycle,
