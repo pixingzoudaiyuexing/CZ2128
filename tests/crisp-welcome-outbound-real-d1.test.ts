@@ -192,46 +192,48 @@ describe('Crisp Welcome historical outbound settlement on real local D1', () => 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('finalizes a migrated never-started FAILED_RETRYABLE Welcome but not one that crossed requestStarted', async () => {
-    const safeDb = setup();
-    await seedWelcomeOperation(safeDb, { status: 'FAILED_RETRYABLE', attemptCount: 0 });
-    const safeFetch = mockTelegramOnly();
-    const safeEvent = event('crisp:legacy-retry-safe');
-    await handleQueueEvent(safeEvent, env(safeDb));
-    expect(await operation(safeDb)).toMatchObject({
-      status: 'FAILED_FINAL',
-      attempt_count: 0,
-      request_started_at: null
-    });
-    expect(await receipt(safeDb, safeEvent.eventId)).toMatchObject({ status: 'PROCESSED' });
-    safeFetch.mockRestore();
-
-    const unsafeDb = setup();
-    await seedWelcomeOperation(unsafeDb, {
-      status: 'FAILED_RETRYABLE',
+  it.each([
+    ['legacy migrated evidence', {
+      attemptCount: 1,
+      requestStartedAt: null,
+      responseObservedAt: null,
+      responseHttpStatus: null
+    }],
+    ['v2 request-boundary evidence', {
       attemptCount: 1,
       requestStartedAt: 10,
       responseObservedAt: 11,
       responseHttpStatus: 429
+    }]
+  ] as const)('preserves reachable FAILED_RETRYABLE Welcome with %s', async (label, evidence) => {
+    const db = setup();
+    await seedWelcomeOperation(db, {
+      status: 'FAILED_RETRYABLE',
+      attemptCount: evidence.attemptCount,
+      requestStartedAt: evidence.requestStartedAt,
+      responseObservedAt: evidence.responseObservedAt,
+      responseHttpStatus: evidence.responseHttpStatus
     });
-    const unsafeFetch = mockTelegramOnly();
-    const unsafeEvent = event('crisp:legacy-retry-started');
-    await expect(handleQueueEvent(unsafeEvent, env(unsafeDb))).rejects.toMatchObject({
+    const fetchMock = mockTelegramOnly();
+    const e = event(`crisp:failed-retryable:${label.replaceAll(' ', '-')}`);
+
+    await expect(handleQueueEvent(e, env(db))).rejects.toMatchObject({
       message: 'OUTBOUND_PRECONDITION_FAILED'
     });
-    expect(await operation(unsafeDb)).toMatchObject({
+
+    expect(await operation(db)).toMatchObject({
       status: 'FAILED_RETRYABLE',
       attempt_count: 1,
-      request_started_at: 10,
-      response_observed_at: 11,
-      response_http_status: 429
+      request_started_at: evidence.requestStartedAt,
+      response_observed_at: evidence.responseObservedAt,
+      response_http_status: evidence.responseHttpStatus
     });
-    expect(await receipt(unsafeDb, unsafeEvent.eventId)).toMatchObject({
+    expect(await receipt(db, e.eventId)).toMatchObject({
       status: 'FAILED',
       attempt_count: 1,
       last_error: 'OUTBOUND_PRECONDITION_FAILED'
     });
-    expect(unsafeFetch).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it.each([
