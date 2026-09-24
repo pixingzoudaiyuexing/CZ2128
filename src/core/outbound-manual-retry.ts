@@ -300,7 +300,7 @@ async function prepareMessageRetry(
           message.text_content!,
           operationId,
           lifecycle,
-          frozenIdentity ? { identity: frozenIdentity, automated: false } : undefined
+          frozenIdentity ? { identity: frozenIdentity, automated: true } : undefined
         );
         return { providerMessageRef: response.messageId };
       }
