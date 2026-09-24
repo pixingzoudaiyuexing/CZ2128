@@ -14,6 +14,7 @@ function configuredNotifyMode(env: Env, key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR' | 
   if (snapshot?.errors[key]) return 'silent';
   const value = snapshot?.values[key] ?? env[key];
   if (value === 'normal' || value === 'silent') return value;
+  if (typeof value === 'string' && value.trim() !== '') return 'silent';
   return fallback;
 }
 
