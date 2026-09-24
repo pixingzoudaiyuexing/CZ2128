@@ -121,6 +121,6 @@ describe('Crisp welcome runtime config', () => {
       enabled: true,
       text: 'Hello'
     });
-    expect(() => createCrispWelcomeConfig('')).toThrow('RUNTIME_CONFIG_VALUE_INVALID');
+    expect(() => createCrispWelcomeConfig('', true)).toThrow('RUNTIME_CONFIG_VALUE_INVALID');
   });
 });
