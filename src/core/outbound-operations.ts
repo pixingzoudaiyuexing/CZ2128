@@ -582,6 +582,88 @@ let result: { providerMessageRef?: string };
   return { status: 'SENT', providerMessageRef: result.providerMessageRef };
 }
 
+export interface FinalizeNeverStartedOutboundAudit {
+  id: string;
+  action: string;
+  actorRef: string;
+  reasonCode: string;
+}
+
+export async function finalizeNeverStartedOutboundOperation(
+  env: DatabaseEnv,
+  expected: OutboundOperation,
+  reason: SafeErrorCode,
+  audit: FinalizeNeverStartedOutboundAudit
+): Promise<{ operation: OutboundOperation; changed: boolean }> {
+  if (
+    expected.status !== 'PENDING' ||
+    expected.attempt_count !== 0 ||
+    expected.provider_message_ref !== null ||
+    expected.request_started_at !== null ||
+    expected.response_observed_at !== null ||
+    expected.response_http_status !== null ||
+    expected.lease_until !== null ||
+    expected.lease_token !== null
+  ) {
+    return { operation: expected, changed: false };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE outbound_operations
+       SET status = 'FAILED_FINAL', last_error = ?, lease_until = NULL, lease_token = NULL, updated_at = ?
+       WHERE id = ?
+         AND conversation_id = ?
+         AND destination_provider = ?
+         AND operation_type = ?
+         AND status = ?
+         AND attempt_count = 0
+         AND provider_message_ref IS NULL
+         AND request_started_at IS NULL
+         AND response_observed_at IS NULL
+         AND response_http_status IS NULL
+         AND lease_until IS NULL
+         AND lease_token IS NULL
+         AND subject_type IS ?
+         AND subject_ref IS ?
+         AND target_evidence_json IS ?
+         AND reconciliation_status IS ?`
+    ).bind(
+      reason,
+      now,
+      expected.id,
+      expected.conversation_id,
+      expected.destination_provider,
+      expected.operation_type,
+      expected.status,
+      expected.subject_type,
+      expected.subject_ref,
+      expected.target_evidence_json,
+      expected.reconciliation_status
+    ),
+    auditAfterPreviousChange(env, {
+      id: audit.id,
+      entityType: 'OUTBOUND_OPERATION',
+      entityId: expected.id,
+      action: audit.action,
+      actorType: 'SYSTEM',
+      actorRef: audit.actorRef,
+      oldState: expected.status,
+      newState: 'FAILED_FINAL',
+      reasonCode: audit.reasonCode,
+      createdAt: now
+    })
+  ]);
+  if (d1Changed(results[0]) !== d1Changed(results[1])) {
+    throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', OUTBOUND_LEASE_SECONDS);
+  }
+  return {
+    operation: await loadOperation(env, expected.id),
+    changed: d1Changed(results[0])
+  };
+}
+
 export async function markOutboundOperationFinal(
   env: DatabaseEnv,
   operationId: string,

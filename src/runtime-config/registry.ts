@@ -1,5 +1,6 @@
 import { ATTACHMENT_HARD_MAX_BYTES, ATTACHMENT_HARD_MAX_COUNT } from '../config/attachments';
 import { canonicalizeCrispKeywordRules } from '../config/crisp-keywords';
+import { canonicalizeCrispWelcomeConfig } from '../config/crisp-welcome';
 import { SafeErrorCode } from '../core/error-taxonomy';
 import { SafeError } from '../core/errors';
 import { RuntimeConfigKey, RuntimeValueKind, TelegramSupportProfile } from './types';
@@ -114,6 +115,11 @@ const definitions: RuntimeConfigDefinition[] = [
   { key: 'AI_OPERATOR_PAUSE_TIMEOUT_SECONDS', kind: 'PLAIN', label: 'AI 人工暂停超时', shortCode: 'aop', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 60, 86400 * 30, 'INVALID_AI_PAUSE_TIMEOUT') },
   { key: 'CRISP_KEYWORD_RULES', kind: 'PLAIN', label: 'Crisp 关键词回复', shortCode: 'kw', rollback: 'DEDICATED', highImpact: false, validate: value => {
     const normalized = canonicalizeCrispKeywordRules(value);
+    if (!normalized) throw new RuntimeConfigValidationError('RUNTIME_CONFIG_VALUE_INVALID');
+    return normalized;
+  } },
+  { key: 'CRISP_WELCOME_CONFIG', kind: 'PLAIN', label: 'Crisp 欢迎语', shortCode: 'cw', rollback: 'GENERIC', highImpact: false, validate: value => {
+    const normalized = canonicalizeCrispWelcomeConfig(value);
     if (!normalized) throw new RuntimeConfigValidationError('RUNTIME_CONFIG_VALUE_INVALID');
     return normalized;
   } },
