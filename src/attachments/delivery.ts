@@ -233,7 +233,8 @@ export async function deliverAttachmentToTelegram(
   row: AttachmentRow,
   threadRef: string,
   bytes: ArrayBuffer,
-  lifecycle?: OutboundAttemptLifecycle
+  lifecycle?: OutboundAttemptLifecycle,
+  options?: { disableNotification?: boolean }
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
