@@ -275,7 +275,7 @@ describe('Crisp basic bridge orchestration', () => {
         messageRef: '12345', actorRole: 'OPERATOR', content: 'Third party automation', automated: true
       }
     }, env);
-    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
+    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp', 'CRISP_OPERATOR');
     expect(conversationService.insertMessage).toHaveBeenCalled();
   });
 
@@ -313,7 +313,7 @@ describe('Crisp basic bridge orchestration', () => {
           actorRole: 'OPERATOR', content: 'Legitimate operator message', ...payload
         }
       }, env);
-      expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
+      expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp', 'CRISP_OPERATOR');
       expect(conversationService.insertMessage).toHaveBeenCalled();
       expect(outbound.executeOutboundOperation).toHaveBeenCalledWith(
         env, 'conv-crisp', 'telegram', 'SEND_MESSAGE', expect.any(Function),
