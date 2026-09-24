@@ -1,4 +1,5 @@
 import { Env } from '../../config/env';
+import { CrispDisplayIdentity } from '../../config/crisp-identities';
 import { ProviderDeliveryError, RetryableProcessingError, SafeError } from '../../core/errors';
 import {
   invalidVisibleSuccessError,
@@ -322,13 +323,19 @@ async function sendCrispMessage(
   }
 }
 
+export interface CrispMessageOptions {
+  identity?: CrispDisplayIdentity;
+  automated?: boolean;
+}
+
 export async function createCrispMessage(
   env: Env,
   websiteRef: string,
   sessionRef: string,
   content: string,
   outboundOperationId: string,
-  lifecycle?: OutboundAttemptLifecycle
+  lifecycle?: OutboundAttemptLifecycle,
+  options?: CrispMessageOptions
 ): Promise<{ messageId: string }> {
   const fingerprint = await crispFingerprintForOperation(outboundOperationId);
   const result = await sendCrispMessage(env, websiteRef, sessionRef, {
@@ -337,8 +344,8 @@ export async function createCrispMessage(
     origin: 'chat',
     content,
     fingerprint,
-    user: CRISP_AUTOMATED_USER,
-    automated: true
+    user: options?.identity || CRISP_AUTOMATED_USER,
+    automated: options?.automated ?? true
   }, outboundOperationId, lifecycle);
   return { messageId: result.fingerprint };
 }
