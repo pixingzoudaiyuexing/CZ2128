@@ -5,6 +5,7 @@ import { resolveEffectiveEnv } from '../src/runtime-config/resolver';
 import { setPlainOverride, setSecretOverride } from '../src/runtime-config/service';
 import { RuntimeDb, masterKey } from './helpers/runtime-db';
 import Worker from '../src/index';
+import { resolveCrispWelcome } from '../src/config/crisp-welcome';
 
 const adminPath = 'p'.repeat(43);
 const adminSecret = 's'.repeat(43);
@@ -483,4 +484,111 @@ describe('Telegram admin control plane', () => {
     expect(await decryptRuntimeSecret(masterKey(), 'AI_API_KEY', testEnv.DB.history[0].ciphertext, testEnv.DB.history[0].nonce))
       .toBe('history-private-secret');
   });
+
+  it('manages Crisp welcome text, explicit disable, re-enable and ENV restore through the Chinese UI', async () => {
+    const testEnv = env();
+    testEnv.CRISP_WELCOME_TEXT = 'ENV 默认欢迎语';
+    const fetchMock = defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(1800, 'p:crisp'), testEnv);
+    await handleAdminTelegramWebhook(callback(1801, 'p:cwelcome'), testEnv);
+    let sentBodies = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body)));
+    expect(sentBodies.at(-2).text).toContain('欢迎语：已启用');
+    expect(sentBodies.at(-2).reply_markup.inline_keyboard.flat().map((item: any) => item.text))
+      .toContain('👋 欢迎语');
+    expect(sentBodies.at(-1).text).toContain('状态：已启用');
+    expect(sentBodies.at(-1).text).toContain('ENV 默认欢迎语');
+
+    await begin(testEnv, 1802, 'e:cw');
+    await handleAdminTelegramWebhook(message(1803, '新的运行时欢迎语'), testEnv);
+    let effective = await resolveEffectiveEnv(testEnv);
+    expect(resolveCrispWelcome(effective)).toEqual({
+      status: 'ENABLED', text: '新的运行时欢迎语', source: 'D1'
+    });
+
+    await handleAdminTelegramWebhook(callback(1804, 'w:off'), testEnv);
+    effective = await resolveEffectiveEnv(testEnv);
+    expect(resolveCrispWelcome(effective)).toEqual({
+      status: 'DISABLED', text: '新的运行时欢迎语', source: 'D1'
+    });
+
+    await begin(testEnv, 1805, 'e:cw');
+    await handleAdminTelegramWebhook(message(1806, '停用期间修改后的欢迎语'), testEnv);
+    effective = await resolveEffectiveEnv(testEnv);
+    expect(resolveCrispWelcome(effective)).toEqual({
+      status: 'DISABLED', text: '停用期间修改后的欢迎语', source: 'D1'
+    });
+
+    await handleAdminTelegramWebhook(callback(1807, 'w:on'), testEnv);
+    effective = await resolveEffectiveEnv(testEnv);
+    expect(resolveCrispWelcome(effective)).toEqual({
+      status: 'ENABLED', text: '停用期间修改后的欢迎语', source: 'D1'
+    });
+
+    await handleAdminTelegramWebhook(callback(1808, 'x:cw'), testEnv);
+    effective = await resolveEffectiveEnv(testEnv);
+    expect(resolveCrispWelcome(effective)).toEqual({
+      status: 'ENABLED', text: 'ENV 默认欢迎语', source: 'ENV'
+    });
+    expect(testEnv.DB.history.filter((row: any) => row.key === 'CRISP_WELCOME_CONFIG').map((row: any) => row.version))
+      .toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('does not let unauthorized users or expired sessions modify Crisp welcome config', async () => {
+    const testEnv = env();
+    testEnv.CRISP_WELCOME_TEXT = 'ENV welcome';
+    defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(1810, 'w:off', { userId: 2001 }), testEnv);
+    expect(testEnv.DB.runtime).toHaveLength(0);
+
+    await begin(testEnv, 1811, 'e:cw');
+    testEnv.DB.sessions[0].expires_at = Math.floor(Date.now() / 1000) - 1;
+    await handleAdminTelegramWebhook(message(1812, 'stale session text'), testEnv);
+    expect(testEnv.DB.runtime).toHaveLength(0);
+  });
+
+  it('renders the current Crisp Picker menu read-only in Chinese without raw JSON', async () => {
+    const testEnv = env();
+    testEnv.CRISP_MENU_JSON = JSON.stringify({
+      picker: {
+        id: 'main',
+        text: '请选择服务',
+        choices: [
+          { value: 'plans', label: '查看套餐' },
+          { value: 'human', label: '人工客服' }
+        ]
+      },
+      options: [
+        { pickerId: 'main', value: 'plans', label: '查看套餐', response: '套餐说明' },
+        {
+          pickerId: 'main',
+          value: 'human',
+          label: '人工客服',
+          handoff: true,
+          next: { id: 'human-next', text: '请选择', choices: [{ value: 'urgent', label: '紧急' }] }
+        }
+      ]
+    });
+    const fetchMock = defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(1820, 'p:cmenu'), testEnv);
+
+    const body = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body))).at(-1);
+    expect(body.text).toContain('📋 客服菜单');
+    expect(body.text).toContain('顶层菜单标题：请选择服务');
+    expect(body.text).toContain('查看套餐');
+    expect(body.text).toContain('预设回复');
+    expect(body.text).toContain('进入下一级菜单');
+    expect(body.text).toContain('请求人工客服');
+    expect(body.text).toContain('本轮菜单仅提供只读查看');
+    expect(body.text).not.toContain('"picker"');
+    expect(body.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data))
+      .toEqual(['p:crisp']);
+  });
+
 });
