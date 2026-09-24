@@ -437,6 +437,17 @@ describe('Crisp first-event bootstrap continuation on real local D1', () => {
       response_http_status: 200
     });
 
+    await expect(handleQueueEvent(event, env)).rejects.toMatchObject({
+      code: 'CONCURRENCY_LEASE_HELD'
+    });
+    expect(await outbound(db, 'crisp_picker:%')).toMatchObject({
+      status: 'SENDING',
+      attempt_count: 1,
+      response_http_status: 200
+    });
+    expect(await receipt(db, event.eventId)).toMatchObject({ status: 'FAILED', attempt_count: 2 });
+    expect(providers.calls.filter(call => call.kind === 'crisp-picker')).toHaveLength(1);
+
     advance(31);
     await expect(handleQueueEvent(event, env)).rejects.toMatchObject({
       message: 'OUTBOUND_PRECONDITION_FAILED'
@@ -448,7 +459,7 @@ describe('Crisp first-event bootstrap continuation on real local D1', () => {
       response_http_status: 200,
       reconciliation_status: 'PENDING'
     });
-    expect(await receipt(db, event.eventId)).toMatchObject({ status: 'FAILED', attempt_count: 2 });
+    expect(await receipt(db, event.eventId)).toMatchObject({ status: 'FAILED', attempt_count: 3 });
     expect(providers.calls.filter(call => call.kind === 'crisp-picker')).toHaveLength(1);
   });
 });
