@@ -376,6 +376,33 @@ describe('Crisp basic bridge orchestration', () => {
       .not.toContain('crisp_welcome:new-unconfigured');
   });
 
+
+  it('keeps the Telegram bridge working when only Crisp welcome config is invalid', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'new-invalid-welcome', operator_thread_ref: '77'
+    } as any);
+    env.runtimeConfigSnapshot = {
+      values: {},
+      sources: { CRISP_WELCOME_CONFIG: 'D1' },
+      versions: { CRISP_WELCOME_CONFIG: 1 },
+      errors: { CRISP_WELCOME_CONFIG: 'RUNTIME_CONFIG_VALUE_INVALID' },
+      health: 'ERROR',
+      overrideCount: 1
+    } as any;
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:invalid-welcome',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'invalid-welcome', actorRole: 'CUSTOMER', content: 'Hello'
+      }
+    }, env);
+
+    const calls = vi.mocked(outbound.executeOutboundOperation).mock.calls;
+    expect(calls.some(call => call[2] === 'telegram' && call[5] === 'send_tg_crisp_invalid-welcome')).toBe(true);
+    expect(calls.some(call => call[5] === 'crisp_welcome:new-invalid-welcome')).toBe(false);
+  });
+
   it('keeps an explicit D1 welcome disable authoritative over ENV fallback', async () => {
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
       id: 'new-disabled', operator_thread_ref: null
