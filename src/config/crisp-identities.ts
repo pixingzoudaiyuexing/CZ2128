@@ -40,6 +40,7 @@ function identity(
   if (!nickname) throw new Error('Invalid Crisp display nickname');
   const configuredAvatar = snapshot?.values[avatarKey] ?? env[avatarKey];
   const avatar = configuredAvatar ? validateCrispAvatarUrl(configuredAvatar) : null;
+  if (configuredAvatar && !avatar) throw new Error('Invalid Crisp avatar URL');
   return { nickname, ...(avatar ? { avatar } : {}) };
 }
 
