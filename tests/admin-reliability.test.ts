@@ -81,9 +81,9 @@ describe('Admin Reliability Control Plane', () => {
 
     await handleAdminTelegramWebhook(callback(10, 'p:rel'), testEnv);
     const replies = fetchMock.mock.calls.filter(call => String(call[0]).includes('sendMessage')).map(call => String(call[1]?.body));
-    expect(replies[0]).toContain('Unresolved AMBIGUOUS: 2');
-    expect(replies[0]).toContain('Pending automatic outbound retries: 1');
-    expect(replies[0]).toContain('Manual resolutions: 1');
+    expect(replies[0]).toContain('未解决 AMBIGUOUS：2');
+    expect(replies[0]).toContain('等待自动重试的出站操作：1');
+    expect(replies[0]).toContain('人工处理完成：1');
     expect(replies[0]).toContain('AI FAILED_RETRYABLE: 1');
     expect(replies[0]).toContain('AI FAILED_FINAL: 1');
   });
@@ -104,12 +104,12 @@ describe('Admin Reliability Control Plane', () => {
     
     await handleAdminTelegramWebhook(callback(100, 'r:o:mark_begin'), testEnv);
     let replies = fetchMock.mock.calls.filter(call => String(call[0]).includes('sendMessage')).map(call => String(call[1]?.body));
-    expect(replies[0]).toContain('请输入该 CREATE_TOPIC 操作实际使用的 provider message/thread ref：');
+    expect(replies[0]).toContain('请输入该 CREATE_TOPIC 操作实际使用的 Provider message/thread ref：');
     
     fetchMock.mockClear();
     await handleAdminTelegramWebhook(message(101, '99'), testEnv);
     replies = fetchMock.mock.calls.filter(call => String(call[0]).includes('sendMessage')).map(call => String(call[1]?.body));
-    expect(replies[0]).toContain('CREATE_TOPIC provider ref 已暂存为: 99');
+    expect(replies[0]).toContain('CREATE_TOPIC Provider ref 已暂存为：99');
     
     const session = (await db.prepare('SELECT action FROM admin_sessions WHERE admin_user_id = ?').bind('1001').first()) as any;
     expect(session.action).toBe('RELIABILITY_MARK_CONFIRM');

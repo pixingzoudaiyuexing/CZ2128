@@ -104,13 +104,13 @@ function supportProfile(value: string): string {
 
 const definitions: RuntimeConfigDefinition[] = [
   { key: 'AI_BASE_URL', kind: 'PLAIN', label: 'AI API 地址', shortCode: 'ab', rollback: 'GENERIC', highImpact: false, validate: value => providerUrl(value, ['http:', 'https:'], false) },
-  { key: 'AI_MODEL', kind: 'PLAIN', label: 'AI Model', shortCode: 'am', rollback: 'GENERIC', highImpact: false, validate: value => boundedText(value, 1, 256, 'INVALID_AI_MODEL') },
-  { key: 'AI_API_KEY', kind: 'SECRET', label: 'AI API Key', shortCode: 'ak', rollback: 'GENERIC', highImpact: true, validate: value => boundedText(value, 1, 4096, 'INVALID_SECRET') },
-  { key: 'AI_SYSTEM_PROMPT', kind: 'PLAIN', label: 'AI System Prompt', shortCode: 'ap', rollback: 'GENERIC', highImpact: false, validate: value => boundedText(value, 1, 20000, 'INVALID_SYSTEM_PROMPT') },
+  { key: 'AI_MODEL', kind: 'PLAIN', label: 'AI 模型', shortCode: 'am', rollback: 'GENERIC', highImpact: false, validate: value => boundedText(value, 1, 256, 'INVALID_AI_MODEL') },
+  { key: 'AI_API_KEY', kind: 'SECRET', label: 'AI API 密钥', shortCode: 'ak', rollback: 'GENERIC', highImpact: true, validate: value => boundedText(value, 1, 4096, 'INVALID_SECRET') },
+  { key: 'AI_SYSTEM_PROMPT', kind: 'PLAIN', label: 'AI 系统提示词', shortCode: 'ap', rollback: 'GENERIC', highImpact: false, validate: value => boundedText(value, 1, 20000, 'INVALID_SYSTEM_PROMPT') },
   { key: 'AI_REQUEST_TIMEOUT_MS', kind: 'PLAIN', label: 'AI 请求超时', shortCode: 'at', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 5000, 120000, 'INVALID_AI_TIMEOUT') },
   { key: 'AI_CONTEXT_MAX_MESSAGES', kind: 'PLAIN', label: 'AI 上下文消息数', shortCode: 'acm', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1, 100, 'INVALID_AI_CONTEXT_MESSAGES') },
   { key: 'AI_CONTEXT_MAX_CHARS', kind: 'PLAIN', label: 'AI 上下文字符数', shortCode: 'acc', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1000, 100000, 'INVALID_AI_CONTEXT_CHARS') },
-  { key: 'AI_GENERATION_LEASE_SECONDS', kind: 'PLAIN', label: 'AI Generation Lease', shortCode: 'agl', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 10, 300, 'INVALID_AI_LEASE') },
+  { key: 'AI_GENERATION_LEASE_SECONDS', kind: 'PLAIN', label: 'AI 生成租约', shortCode: 'agl', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 10, 300, 'INVALID_AI_LEASE') },
   { key: 'AI_OPERATOR_PAUSE_TIMEOUT_SECONDS', kind: 'PLAIN', label: 'AI 人工暂停超时', shortCode: 'aop', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 60, 86400 * 30, 'INVALID_AI_PAUSE_TIMEOUT') },
   { key: 'CRISP_KEYWORD_RULES', kind: 'PLAIN', label: 'Crisp 关键词回复', shortCode: 'kw', rollback: 'DEDICATED', highImpact: false, validate: value => {
     const normalized = canonicalizeCrispKeywordRules(value);
@@ -123,9 +123,9 @@ const definitions: RuntimeConfigDefinition[] = [
     if (!/^-100\d{1,16}$/.test(normalized)) throw new RuntimeConfigValidationError('INVALID_TELEGRAM_GROUP');
     return normalized;
   } },
-  { key: 'CHATWOOT_API_URL', kind: 'PLAIN', label: 'Chatwoot API 地址', shortCode: 'cu', rollback: 'GENERIC', highImpact: true, validate: value => providerUrl(value, ['https:'], true) },
-  { key: 'CHATWOOT_API_TOKEN', kind: 'SECRET', label: 'Chatwoot API Token', shortCode: 'ct', rollback: 'GENERIC', highImpact: true, validate: value => boundedText(value, 1, 4096, 'INVALID_SECRET') },
-  { key: 'CHATWOOT_ATTACHMENT_ALLOWED_HOSTS', kind: 'PLAIN', label: 'Chatwoot 附件 Hosts', shortCode: 'ch', rollback: 'GENERIC', highImpact: false, validate: allowedHosts },
+  { key: 'CHATWOOT_API_URL', kind: 'PLAIN', label: '历史 Chatwoot API 地址', shortCode: 'cu', rollback: 'GENERIC', highImpact: true, validate: value => providerUrl(value, ['https:'], true) },
+  { key: 'CHATWOOT_API_TOKEN', kind: 'SECRET', label: '历史 Chatwoot API Token', shortCode: 'ct', rollback: 'GENERIC', highImpact: true, validate: value => boundedText(value, 1, 4096, 'INVALID_SECRET') },
+  { key: 'CHATWOOT_ATTACHMENT_ALLOWED_HOSTS', kind: 'PLAIN', label: '历史 Chatwoot 附件 Hosts', shortCode: 'ch', rollback: 'GENERIC', highImpact: false, validate: allowedHosts },
   { key: 'ATTACHMENT_MAX_BYTES', kind: 'PLAIN', label: '附件大小', shortCode: 'fb', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1, ATTACHMENT_HARD_MAX_BYTES, 'INVALID_ATTACHMENT_SIZE') },
   { key: 'ATTACHMENT_MAX_COUNT_PER_MESSAGE', kind: 'PLAIN', label: '单消息附件数', shortCode: 'fc', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1, ATTACHMENT_HARD_MAX_COUNT, 'INVALID_ATTACHMENT_COUNT') },
   { key: 'ATTACHMENT_TTL_SECONDS', kind: 'PLAIN', label: '附件 TTL', shortCode: 'ft', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 60, 86400, 'INVALID_ATTACHMENT_TTL') },

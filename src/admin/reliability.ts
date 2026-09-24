@@ -37,35 +37,35 @@ function safeDisplay(value: string | number | null, maximum = 96): string {
 }
 
 const REDRIVE_REASON_LABELS: Record<DlqAiRedriveReason, string> = {
-  ELIGIBLE: 'eligible',
-  RECEIPT_NOT_FOUND: 'receipt missing',
-  RECEIPT_RESOLVED: 'resolved',
-  NOT_AI_TRIGGER: 'not AI trigger',
-  RECEIPT_MALFORMED: 'receipt malformed',
-  EVENT_ID_INVALID: 'payload not reconstructable',
-  CONVERSATION_MISSING: 'conversation missing',
-  MESSAGE_MISSING: 'message missing',
-  STALE_TRIGGER: 'stale trigger',
-  AI_RUN_MISSING: 'AI run missing',
-  AI_RUN_IDENTITY_MISMATCH: 'AI run mismatch',
-  AI_RUN_STATE_INELIGIBLE: 'AI run state ineligible',
-  AI_RETRY_NOT_DUE: 'retry deadline not reached',
-  AI_ATTEMPTS_EXHAUSTED: 'attempts exhausted',
-  AI_PAUSED: 'AI paused',
-  AI_SCOPE_DENIED: 'AI test scope denied',
-  HANDOFF_EPOCH_CHANGED: 'handoff epoch changed',
-  ACTIVE_GENERATION: 'active generation',
-  EVENT_RECEIPT_MISSING: 'event receipt missing',
-  EVENT_RECEIPT_ACTIVE: 'active processing',
-  EVENT_RECEIPT_PROCESSED: 'already processed',
-  EVENT_RECEIPT_INCONSISTENT: 'event receipt inconsistent',
-  OUTBOUND_EVIDENCE_MISSING: 'historical outbound target evidence missing',
-  OUTBOUND_ACTIVE: 'outbound active',
-  OUTBOUND_RETRY_NOT_DUE: 'outbound retry not due',
-  OUTBOUND_ATTEMPTS_EXHAUSTED: 'outbound attempts exhausted',
-  OUTBOUND_AMBIGUOUS: 'outbound ambiguous; use reconciliation/manual retry',
-  OUTBOUND_FINAL: 'outbound final',
-  OUTBOUND_INCONSISTENT: 'outbound state inconsistent'
+  ELIGIBLE: '可执行',
+  RECEIPT_NOT_FOUND: '未找到 DLQ 回执',
+  RECEIPT_RESOLVED: '已解决',
+  NOT_AI_TRIGGER: '不是 AI trigger',
+  RECEIPT_MALFORMED: 'DLQ 回执格式异常',
+  EVENT_ID_INVALID: '无法重建事件 payload',
+  CONVERSATION_MISSING: '会话不存在',
+  MESSAGE_MISSING: '消息不存在',
+  STALE_TRIGGER: '触发已过期',
+  AI_RUN_MISSING: 'AI run 不存在',
+  AI_RUN_IDENTITY_MISMATCH: 'AI run 身份不匹配',
+  AI_RUN_STATE_INELIGIBLE: 'AI run 状态不允许',
+  AI_RETRY_NOT_DUE: '尚未到重试时间',
+  AI_ATTEMPTS_EXHAUSTED: '尝试次数已耗尽',
+  AI_PAUSED: 'AI 已暂停',
+  AI_SCOPE_DENIED: 'AI 测试范围不允许',
+  HANDOFF_EPOCH_CHANGED: '人工接管 epoch 已变化',
+  ACTIVE_GENERATION: '当前仍有生成任务',
+  EVENT_RECEIPT_MISSING: '事件回执不存在',
+  EVENT_RECEIPT_ACTIVE: '事件仍在处理中',
+  EVENT_RECEIPT_PROCESSED: '事件已经处理',
+  EVENT_RECEIPT_INCONSISTENT: '事件回执状态不一致',
+  OUTBOUND_EVIDENCE_MISSING: '缺少历史出站目标证据',
+  OUTBOUND_ACTIVE: '出站操作仍处于活动状态',
+  OUTBOUND_RETRY_NOT_DUE: '出站操作尚未到重试时间',
+  OUTBOUND_ATTEMPTS_EXHAUSTED: '出站尝试次数已耗尽',
+  OUTBOUND_AMBIGUOUS: '出站结果为 AMBIGUOUS，请使用核对或手动重试',
+  OUTBOUND_FINAL: '出站操作已终结',
+  OUTBOUND_INCONSISTENT: '出站状态不一致'
 };
 
 async function showDlqList(
@@ -84,8 +84,8 @@ async function showDlqList(
   ).all<AdminDlqReceipt>();
   const receipts = rows.results || [];
   if (receipts.length === 0) {
-    await reply(bootstrap, ctx, mode === 'OPEN' ? 'No open DLQ receipts.' : 'No DLQ receipts found.', [
-      [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+    await reply(bootstrap, ctx, mode === 'OPEN' ? '当前没有 OPEN 的 DLQ 回执。' : '没有找到 DLQ 回执。', [
+      [{ text: '返回可靠性管理', callback_data: 'p:rel' }]
     ]);
     return mode === 'OPEN' ? 'REL_DLQ_OPEN' : 'REL_DLQ_RECENT';
   }
@@ -103,17 +103,17 @@ async function showDlqList(
 
   const lines = receipts.map((receipt, index) => [
     `${index + 1}. ${receipt.status} ${safeDisplay(receipt.event_source, 24)} / ${safeDisplay(receipt.event_type, 40)}`,
-    `Event: ${safeDisplay(receipt.source_event_ref, 80)}`,
-    `Seen: ${receipt.last_seen_at} | Deliveries: ${receipt.delivery_count}`
+    `事件：${safeDisplay(receipt.source_event_ref, 80)}`,
+    `最后出现：${receipt.last_seen_at} | 投递次数：${receipt.delivery_count}`
   ].join('\n'));
   const buttons = receipts.map((receipt, index) => [{
     text: `${index + 1}. ${receipt.status} ${safeDisplay(receipt.event_type, 24)}`,
     callback_data: `r:d:${index}`
   }]);
-  await reply(bootstrap, ctx, `${mode === 'OPEN' ? 'Open' : 'Recent'} DLQ (Latest 10):\n\n${lines.join('\n\n')}`, [
+  await reply(bootstrap, ctx, `${mode === 'OPEN' ? 'OPEN' : '最近'} DLQ（最近 10 条）：\n\n${lines.join('\n\n')}`, [
     ...buttons,
-    [{ text: 'Refresh', callback_data: mode === 'OPEN' ? 'r:dlqo' : 'r:dlqr' }],
-    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+    [{ text: '刷新', callback_data: mode === 'OPEN' ? 'r:dlqo' : 'r:dlqr' }],
+    [{ text: '返回可靠性管理', callback_data: 'p:rel' }]
   ]);
   return mode === 'OPEN' ? 'REL_DLQ_OPEN' : 'REL_DLQ_RECENT';
 }
@@ -147,27 +147,27 @@ async function showDlqDetail(
   });
   await reply(bootstrap, ctx, [
     ...(alert ? [alert, ''] : []),
-    'DLQ Receipt',
+    'DLQ 回执',
     '',
     `ID: ${safeDisplay(receipt.id)}`,
-    `Status: ${receipt.status}`,
-    `Queue: ${safeDisplay(receipt.queue_name)}`,
-    `Source: ${safeDisplay(receipt.event_source)}`,
-    `Event ref: ${safeDisplay(receipt.source_event_ref, 256)}`,
-    `Event type: ${safeDisplay(receipt.event_type)}`,
-    `Conversation: ${safeDisplay(receipt.conversation_id)}`,
-    `Operation: ${safeDisplay(receipt.operation_id)}`,
-    `Error: ${safeDisplay(receipt.safe_error_code)}`,
-    `Deliveries: ${receipt.delivery_count}`,
-    `First seen: ${receipt.first_seen_at}`,
-    `Last seen: ${receipt.last_seen_at}`,
-    `Resolved at: ${safeDisplay(receipt.resolved_at)}`,
-    `AI redrive: ${eligibility.eligible ? 'ELIGIBLE' : `NOT ELIGIBLE (${REDRIVE_REASON_LABELS[eligibility.reason]})`}`
+    `状态：${receipt.status}`,
+    `Queue：${safeDisplay(receipt.queue_name)}`,
+    `来源：${safeDisplay(receipt.event_source)}`,
+    `事件引用：${safeDisplay(receipt.source_event_ref, 256)}`,
+    `事件类型：${safeDisplay(receipt.event_type)}`,
+    `会话：${safeDisplay(receipt.conversation_id)}`,
+    `操作：${safeDisplay(receipt.operation_id)}`,
+    `错误：${safeDisplay(receipt.safe_error_code)}`,
+    `投递次数：${receipt.delivery_count}`,
+    `首次出现：${receipt.first_seen_at}`,
+    `最后出现：${receipt.last_seen_at}`,
+    `解决时间：${safeDisplay(receipt.resolved_at)}`,
+    `AI 重放：${eligibility.eligible ? '可执行' : `不可执行（${REDRIVE_REASON_LABELS[eligibility.reason]}）`}`
   ].join('\n'), [
-    ...(eligibility.eligible ? [[{ text: 'Redrive AI', callback_data: 'r:dr' }]] : []),
-    [{ text: 'Refresh', callback_data: 'r:dd' }],
+    ...(eligibility.eligible ? [[{ text: '重放 AI', callback_data: 'r:dr' }]] : []),
+    [{ text: '刷新', callback_data: 'r:dd' }],
     [{ text: '返回 DLQ', callback_data: mode === 'OPEN' ? 'r:dlqo' : 'r:dlqr' }],
-    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+    [{ text: '返回可靠性管理', callback_data: 'p:rel' }]
   ]);
   return 'REL_DLQ_DETAIL';
 }
@@ -178,24 +178,24 @@ async function showDlqQuarantine(env: Env, bootstrap: AdminBootstrap, ctx: Admin
   const lines = quarantine.entries.map((entry, index) => [
     `${index + 1}. ${entry.state}`,
     `ID: ${safeDisplay(entry.quarantineId)}`,
-    `Canonical receipt: ${safeDisplay(entry.canonicalReceiptId)}`,
-    `Source/type: ${safeDisplay(entry.eventSource, 24)} / ${safeDisplay(entry.eventType, 40)}`,
-    `Queue attempts: ${safeDisplay(entry.queueAttempts)}`,
-    `Message time: ${safeDisplay(entry.messageTimestamp)}`,
-    `Uploaded: ${entry.uploadedAt}`,
-    `Reason: ${entry.reason}`
+    `Canonical 回执：${safeDisplay(entry.canonicalReceiptId)}`,
+    `来源/类型：${safeDisplay(entry.eventSource, 24)} / ${safeDisplay(entry.eventType, 40)}`,
+    `Queue 尝试次数：${safeDisplay(entry.queueAttempts)}`,
+    `消息时间：${safeDisplay(entry.messageTimestamp)}`,
+    `上传时间：${entry.uploadedAt}`,
+    `原因：${entry.reason}`
   ].join('\n'));
   const text = [
-    'Terminal DLQ Quarantine',
+    '终态 DLQ 隔离区',
     '',
-    `Visible objects: ${count}`,
-    `Invalid sanitized metadata: ${quarantine.invalidMetadataCount}`,
+    `可见对象：${count}`,
+    `无效的脱敏元数据：${quarantine.invalidMetadataCount}`,
     '',
-    ...(lines.length > 0 ? lines : ['No sanitized quarantine evidence found.'])
+    ...(lines.length > 0 ? lines : ['没有找到脱敏后的隔离证据。'])
   ].join('\n\n');
   await reply(bootstrap, ctx, text, [
-    [{ text: 'Refresh', callback_data: 'r:dlqq' }],
-    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+    [{ text: '刷新', callback_data: 'r:dlqq' }],
+    [{ text: '返回可靠性管理', callback_data: 'p:rel' }]
   ]);
   return 'REL_DLQ_QUARANTINE';
 }
@@ -238,27 +238,27 @@ export async function showReliabilityMain(env: Env, bootstrap: AdminBootstrap, c
   ).bind(now - 86400, now - 86400).first<{ open_count: number; recent_count: number; latest_at: number }>();
 
   const text = [
-    `🛡 Reliability Control Plane`,
+    `🛡 可靠性管理`,
     ``,
-    `Unresolved AMBIGUOUS: ${unresolvedAmbiguous?.c || 0}`,
-    `Pending automatic outbound retries: ${pendingRetries?.c || 0}`,
-    `Manual resolutions: ${manualResolved?.c || 0}`,
+    `未解决 AMBIGUOUS：${unresolvedAmbiguous?.c || 0}`,
+    `等待自动重试的出站操作：${pendingRetries?.c || 0}`,
+    `人工处理完成：${manualResolved?.c || 0}`,
     `AI FAILED_RETRYABLE: ${aiRetryable?.c || 0}`,
     `AI RETRY_EXHAUSTED: ${aiExhausted?.c || 0}`,
     `AI FAILED_FINAL: ${aiFinal?.c || 0}`,
     `DLQ OPEN: ${dlqSummary?.open_count || 0}`,
-    `DLQ last 24h: ${dlqSummary?.recent_count || 0}`,
-    `DLQ latest: ${dlqSummary?.latest_at || 'N/A'}`
+    `DLQ 最近 24 小时：${dlqSummary?.recent_count || 0}`,
+    `DLQ 最近时间：${dlqSummary?.latest_at || 'N/A'}`
   ].join('\n');
 
   await reply(bootstrap, ctx, text, [
-    [{ text: '⚠️ Uncertain Deliveries', callback_data: 'r:unc' }],
-    [{ text: '🔎 Lookup Operation', callback_data: 'r:look' }],
-    [{ text: '🤖 AI Reliability', callback_data: 'r:ai' }],
-    [{ text: '📜 Reliability Audit', callback_data: 'r:aud' }],
-    [{ text: '☠️ Open DLQ', callback_data: 'r:dlqo' }, { text: 'Recent DLQ', callback_data: 'r:dlqr' }],
-    [{ text: 'Terminal Quarantine', callback_data: 'r:dlqq' }],
-    [{ text: '🔄 Refresh', callback_data: 'p:rel' }],
+    [{ text: '⚠️ 不确定投递', callback_data: 'r:unc' }],
+    [{ text: '🔎 查询 Operation', callback_data: 'r:look' }],
+    [{ text: '🤖 AI 可靠性', callback_data: 'r:ai' }],
+    [{ text: '📜 可靠性审计', callback_data: 'r:aud' }],
+    [{ text: '☠️ OPEN DLQ', callback_data: 'r:dlqo' }, { text: '最近 DLQ', callback_data: 'r:dlqr' }],
+    [{ text: '终态隔离区', callback_data: 'r:dlqq' }],
+    [{ text: '🔄 刷新', callback_data: 'p:rel' }],
     [{ text: '返回', callback_data: 'm' }]
   ]);
 }
@@ -308,7 +308,7 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
         ctx,
         context.receiptId,
         mode,
-        `Redrive unavailable: ${REDRIVE_REASON_LABELS[eligibility.reason]}`
+        `AI 重放不可用：${REDRIVE_REASON_LABELS[eligibility.reason]}`
       );
     }
     await saveAdminSession(env, {
@@ -316,14 +316,14 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
       action: 'RELIABILITY_DLQ_REDRIVE_CONFIRM'
     });
     await reply(bootstrap, ctx, [
-      'Confirm AI redrive request?',
+      '确认请求 AI 重放？',
       '',
-      `Receipt: ${safeDisplay(context.receiptId)}`,
-      `Event: ${safeDisplay(eligibility.event?.eventId || null, 256)}`,
-      'The receipt remains OPEN until canonical processing succeeds.'
+      `回执：${safeDisplay(context.receiptId)}`,
+      `事件：${safeDisplay(eligibility.event?.eventId || null, 256)}`,
+      '在 canonical 处理成功前，该回执会继续保持 OPEN。'
     ].join('\n'), [
-      [{ text: 'Confirm Redrive', callback_data: 'r:dy' }],
-      [{ text: 'Cancel', callback_data: 'r:dn' }]
+      [{ text: '确认重放', callback_data: 'r:dy' }],
+      [{ text: '取消', callback_data: 'r:dn' }]
     ]);
     return 'REL_DLQ_REDRIVE_CONFIRM_BEGIN';
   }
@@ -336,7 +336,7 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
     const mode = context.mode === 'RECENT' ? 'RECENT' : 'OPEN';
     if (typeof context.receiptId !== 'string') return showDlqList(env, bootstrap, ctx, mode);
     if (action === 'dn') {
-      return showDlqDetail(env, bootstrap, ctx, context.receiptId, mode, 'Redrive cancelled.');
+      return showDlqDetail(env, bootstrap, ctx, context.receiptId, mode, '已取消 AI 重放。');
     }
     const result = await requestDlqAiRedrive(
       env,
@@ -345,10 +345,10 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
       ctx.updateId
     );
     const alert = result.status === 'ENQUEUED'
-      ? 'AI redrive requested.'
+      ? '已请求 AI 重放。'
       : result.status === 'ALREADY_REQUESTED'
-        ? 'This Admin command was already recorded.'
-        : `Redrive unavailable: ${REDRIVE_REASON_LABELS[result.eligibility.reason]}`;
+        ? '这条管理员命令已经记录，无需重复提交。'
+        : `AI 重放不可用：${REDRIVE_REASON_LABELS[result.eligibility.reason]}`;
     return showDlqDetail(env, bootstrap, ctx, context.receiptId, mode, alert);
   }
   if (action === 'unc') {
@@ -357,14 +357,14 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
     ).all<{ id: string; destination_provider: string; operation_type: string; subject_type: string }>();
     
     if (!ops.results || ops.results.length === 0) {
-      await reply(bootstrap, ctx, 'No uncertain deliveries found.', [[{ text: '返回', callback_data: 'p:rel' }]]);
+      await reply(bootstrap, ctx, '没有发现不确定投递。', [[{ text: '返回', callback_data: 'p:rel' }]]);
       return 'REL_UNC';
     }
     
     const lines = ops.results.map(o => `${o.id}\n${o.destination_provider} ${o.operation_type} (${o.subject_type})`);
     
-    await reply(bootstrap, ctx, `Uncertain Deliveries (Top 10):\n\n${lines.join('\n\n')}\n\nPlease use "Lookup Operation" and paste the ID.`, [
-      [{ text: '🔎 Lookup Operation', callback_data: 'r:look' }],
+    await reply(bootstrap, ctx, `不确定投递（最多 10 条）：\n\n${lines.join('\n\n')}\n\n请使用“查询 Operation”并粘贴对应 ID。`, [
+      [{ text: '🔎 查询 Operation', callback_data: 'r:look' }],
       [{ text: '返回', callback_data: 'p:rel' }]
     ]);
     return 'REL_UNC';
@@ -385,14 +385,14 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
     ).all<any>();
     
     if (!runs.results || runs.results.length === 0) {
-      await reply(bootstrap, ctx, 'No AI reliability issues found.', [[{ text: '返回', callback_data: 'p:rel' }]]);
+      await reply(bootstrap, ctx, '没有发现 AI 可靠性问题。', [[{ text: '返回', callback_data: 'p:rel' }]]);
       return 'REL_AI';
     }
     
     const lines = runs.results.map(r => 
-      `${r.trigger_event_ref}\nConv: ${r.conversation_id}\nStatus: ${r.status} (attempt ${r.attempt_count})\nNext: ${r.next_retry_at}\nError: ${r.last_error}\nUpdated: ${r.updated_at}`
+      `${r.trigger_event_ref}\n会话：${r.conversation_id}\n状态：${r.status}（尝试 ${r.attempt_count}）\n下次重试：${r.next_retry_at}\n错误：${r.last_error}\n更新时间：${r.updated_at}`
     );
-    await reply(bootstrap, ctx, `AI Reliability Issues (Top 10):\n\n${lines.join('\n\n')}`, [
+    await reply(bootstrap, ctx, `AI 可靠性问题（最多 10 条）：\n\n${lines.join('\n\n')}`, [
       [{ text: '返回', callback_data: 'p:rel' }]
     ]);
     return 'REL_AI';
@@ -404,14 +404,14 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
     ).all<any>();
     
     if (!audits.results || audits.results.length === 0) {
-      await reply(bootstrap, ctx, 'No reliability audit logs found.', [[{ text: '返回', callback_data: 'p:rel' }]]);
+      await reply(bootstrap, ctx, '没有找到可靠性审计记录。', [[{ text: '返回', callback_data: 'p:rel' }]]);
       return 'REL_AUD';
     }
     
     const lines = audits.results.map(a => 
-      `${a.created_at} | ${a.action} (${a.reason_code})\nEntity: ${a.entity_type} ${a.entity_id}\nActor: ${a.actor_type} ${a.actor_ref}\nState: ${a.old_state} -> ${a.new_state}`
+      `${a.created_at} | ${a.action}（${a.reason_code}）\n实体：${a.entity_type} ${a.entity_id}\n操作人：${a.actor_type} ${a.actor_ref}\n状态：${a.old_state} -> ${a.new_state}`
     );
-    await reply(bootstrap, ctx, `Reliability Audit (Latest 10):\n\n${lines.join('\n\n')}`, [
+    await reply(bootstrap, ctx, `可靠性审计（最近 10 条）：\n\n${lines.join('\n\n')}`, [
       [{ text: '返回', callback_data: 'p:rel' }]
     ]);
     return 'REL_AUD';
@@ -428,7 +428,7 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
       'RELIABILITY_RETRY_CONFIRM'
     ]);
     if (!session || !session.context_json || !operationSessions.has(session.action)) {
-      await reply(bootstrap, ctx, 'Session expired or invalid.', [[{ text: '返回', callback_data: 'p:rel' }]]);
+      await reply(bootstrap, ctx, '会话已过期或无效。', [[{ text: '返回', callback_data: 'p:rel' }]]);
       return 'REL_EXPIRED';
     }
     const { operationId, providerRef } = JSON.parse(session.context_json);
@@ -437,7 +437,7 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
       if (session.action !== 'RELIABILITY_INSPECT') return await showOperationDetails(env, bootstrap, ctx, operationId, '操作无效：状态不匹配');
       try {
         await reconcileOutboundOperation(env, operationId);
-        await reply(bootstrap, ctx, 'Reconciliation triggered.');
+        await reply(bootstrap, ctx, '已触发投递核对。');
       } catch (e: any) {
         await reply(bootstrap, ctx, `操作失败：${safeErrorCode(e)}`);
       }
@@ -450,12 +450,12 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
       const op = await env.DB.prepare('SELECT operation_type FROM outbound_operations WHERE id = ?').bind(operationId).first<{ operation_type: string }>();
       if (op?.operation_type === 'CREATE_TOPIC') {
         await saveAdminSession(env, { ...session, action: 'RELIABILITY_MARK_PROVIDER_REF' });
-        await reply(bootstrap, ctx, '请输入该 CREATE_TOPIC 操作实际使用的 provider message/thread ref：');
+        await reply(bootstrap, ctx, '请输入该 CREATE_TOPIC 操作实际使用的 Provider message/thread ref：');
         return 'REL_MARK_PROV_REF';
       }
       
       await saveAdminSession(env, { ...session, action: 'RELIABILITY_MARK_CONFIRM' });
-      await reply(bootstrap, ctx, `确认将此操作标记为已送达 (Mark Delivered)？\n\n原因: OPERATOR_CONFIRMED_DELIVERY`, [
+      await reply(bootstrap, ctx, `确认将此操作标记为已送达？\n\n原因：OPERATOR_CONFIRMED_DELIVERY`, [
         [{ text: '确认标记已送达', callback_data: 'r:o:mark_yes' }],
         [{ text: '取消', callback_data: 'r:o:cancel_action' }]
       ]);
@@ -464,12 +464,12 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
 
     if (cmd === 'mark_yes') {
       if (session.action !== 'RELIABILITY_MARK_CONFIRM') {
-         await reply(bootstrap, ctx, '操作无效：Confirmation session mismatch.');
+         await reply(bootstrap, ctx, '操作无效：确认会话状态不匹配。');
          return await showOperationDetails(env, bootstrap, ctx, operationId);
       }
       try {
         await manualMarkDelivered(env, operationId, { type: 'ADMIN', ref: ctx.userId }, 'OPERATOR_CONFIRMED_DELIVERY', providerRef);
-        await reply(bootstrap, ctx, 'Marked as delivered.');
+        await reply(bootstrap, ctx, '已标记为送达。');
       } catch (e: any) {
         await reply(bootstrap, ctx, `操作失败：${safeErrorCode(e)}`);
       }
@@ -481,7 +481,7 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
       if (session.action !== 'RELIABILITY_INSPECT') return await showOperationDetails(env, bootstrap, ctx, operationId, '操作无效：状态不匹配');
       
       await saveAdminSession(env, { ...session, action: 'RELIABILITY_CANCEL_CONFIRM' });
-      await reply(bootstrap, ctx, `确认取消此操作 (Cancel)？\n此操作不再继续发送，但不代表外部未送达。\n\n原因: OPERATOR_CANCELLED`, [
+      await reply(bootstrap, ctx, `确认取消此操作？\n此操作不再继续发送，但不代表外部未送达。\n\n原因：OPERATOR_CANCELLED`, [
         [{ text: '确认取消操作', callback_data: 'r:o:cancel_yes' }],
         [{ text: '取消', callback_data: 'r:o:cancel_action' }]
       ]);
@@ -490,12 +490,12 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
 
     if (cmd === 'cancel_yes') {
       if (session.action !== 'RELIABILITY_CANCEL_CONFIRM') {
-         await reply(bootstrap, ctx, '操作无效：Confirmation session mismatch.');
+         await reply(bootstrap, ctx, '操作无效：确认会话状态不匹配。');
          return await showOperationDetails(env, bootstrap, ctx, operationId);
       }
       try {
         await manualCancel(env, operationId, { type: 'ADMIN', ref: ctx.userId }, 'OPERATOR_CANCELLED');
-        await reply(bootstrap, ctx, 'Cancelled.');
+        await reply(bootstrap, ctx, '已取消。');
       } catch (e: any) {
         await reply(bootstrap, ctx, `操作失败：${safeErrorCode(e)}`);
       }
@@ -516,12 +516,12 @@ export async function processReliabilityCallback(env: Env, bootstrap: AdminBoots
     
     if (cmd === 'retry_yes') {
       if (session.action !== 'RELIABILITY_RETRY_CONFIRM') {
-         await reply(bootstrap, ctx, '操作无效：Confirmation session mismatch.');
+         await reply(bootstrap, ctx, '操作无效：确认会话状态不匹配。');
          return await showOperationDetails(env, bootstrap, ctx, operationId);
       }
       try {
         await manualRetryOutboundOperation(env, operationId, { type: 'ADMIN', ref: ctx.userId }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK');
-        await reply(bootstrap, ctx, 'Retry executed.');
+        await reply(bootstrap, ctx, '已执行手动重试。');
       } catch (e: any) {
         await reply(bootstrap, ctx, `操作失败：${safeErrorCode(e)}`);
       }
@@ -549,7 +549,7 @@ export async function processReliabilityMessage(env: Env, bootstrap: AdminBootst
 
   if (session.action === 'RELIABILITY_LOOKUP') {
     if (!text || text.length > 100 || /[\u0000-\u001f\u007f]/.test(text)) {
-      await reply(bootstrap, ctx, 'Invalid ID format.');
+      await reply(bootstrap, ctx, 'ID 格式无效。');
       return 'RELIABILITY_LOOKUP_FAILED';
     }
     return await showOperationDetails(env, bootstrap, ctx, text);
@@ -557,7 +557,7 @@ export async function processReliabilityMessage(env: Env, bootstrap: AdminBootst
   
   if (session.action === 'RELIABILITY_MARK_PROVIDER_REF') {
     if (!text || !/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text)) || Number(text) <= 0) {
-      await reply(bootstrap, ctx, 'Invalid provider ref format.');
+      await reply(bootstrap, ctx, 'Provider ref 格式无效。');
       return 'RELIABILITY_MARK_PROV_REF_FAILED';
     }
     
@@ -570,7 +570,7 @@ export async function processReliabilityMessage(env: Env, bootstrap: AdminBootst
       context_json: JSON.stringify(context)
     });
     
-    await reply(bootstrap, ctx, `CREATE_TOPIC provider ref 已暂存为: ${text}\n\n确认将此操作标记为已送达 (Mark Delivered)？\n\n原因: OPERATOR_CONFIRMED_DELIVERY`, [
+    await reply(bootstrap, ctx, `CREATE_TOPIC Provider ref 已暂存为：${text}\n\n确认将此操作标记为已送达？\n\n原因：OPERATOR_CONFIRMED_DELIVERY`, [
       [{ text: '确认标记已送达', callback_data: 'r:o:mark_yes' }],
       [{ text: '取消', callback_data: 'r:o:cancel_action' }]
     ]);
@@ -583,7 +583,7 @@ export async function processReliabilityMessage(env: Env, bootstrap: AdminBootst
 export async function showOperationDetails(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, operationId: string, alert?: string): Promise<string> {
   const op = await env.DB.prepare('SELECT * FROM outbound_operations WHERE id = ?').bind(operationId).first<OutboundOperation>();
   if (!op) {
-    await reply(bootstrap, ctx, 'Operation not found.');
+    await reply(bootstrap, ctx, '未找到该 Operation。');
     await clearAdminSession(env, ctx.userId);
     return 'REL_OP_NOT_FOUND';
   }
@@ -605,16 +605,16 @@ export async function showOperationDetails(env: Env, bootstrap: AdminBootstrap, 
   const text = [
     ...(alert ? [`⚠️ ${alert}`, ``] : []),
     `ID: ${op.id}`,
-    `Conversation: ${op.conversation_id}`,
-    `Provider: ${op.destination_provider}`,
-    `Type: ${op.operation_type}`,
-    `Status: ${op.status}`,
-    `Recon Status: ${op.reconciliation_status}`,
-    `Subject: ${op.subject_type} / ${op.subject_ref}`,
-    `Parent ID: ${op.parent_operation_id || 'N/A'}`,
-    `Child ID: ${childText}`,
-    `Provider msg ref: ${op.provider_message_ref || 'N/A'}`,
-    `Attempts: ${op.attempt_count}`,
+    `会话：${op.conversation_id}`,
+    `Provider：${op.destination_provider}`,
+    `类型：${op.operation_type}`,
+    `状态：${op.status}`,
+    `核对状态：${op.reconciliation_status}`,
+    `业务对象：${op.subject_type} / ${op.subject_ref}`,
+    `父 Operation ID：${op.parent_operation_id || 'N/A'}`,
+    `子 Operation ID：${childText}`,
+    `Provider 消息引用：${op.provider_message_ref || 'N/A'}`,
+    `尝试次数：${op.attempt_count}`,
     `request_started_at: ${op.request_started_at}`,
     `response_observed_at: ${op.response_observed_at}`,
     `response_http_status: ${op.response_http_status}`,
@@ -626,10 +626,10 @@ export async function showOperationDetails(env: Env, bootstrap: AdminBootstrap, 
   ].join('\n');
 
   await reply(bootstrap, ctx, text, [
-    [{ text: '🔄 Reconcile', callback_data: 'r:o:recon' }, { text: 'Refresh', callback_data: 'r:o:refresh' }],
-    [{ text: '✅ Mark Delivered', callback_data: 'r:o:mark_begin' }, { text: '🚫 Cancel', callback_data: 'r:o:cancel_begin' }],
-    [{ text: '⚠️ Manual Retry', callback_data: 'r:o:retry_begin' }],
-    [{ text: '返回 Reliability', callback_data: 'p:rel' }]
+    [{ text: '🔄 核对投递', callback_data: 'r:o:recon' }, { text: '刷新', callback_data: 'r:o:refresh' }],
+    [{ text: '✅ 标记已送达', callback_data: 'r:o:mark_begin' }, { text: '🚫 取消操作', callback_data: 'r:o:cancel_begin' }],
+    [{ text: '⚠️ 手动重试', callback_data: 'r:o:retry_begin' }],
+    [{ text: '返回可靠性管理', callback_data: 'p:rel' }]
   ]);
   return 'REL_INSPECT';
 }

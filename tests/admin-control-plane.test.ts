@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleAdminTelegramWebhook } from '../src/admin/handler';
 import { decryptRuntimeSecret } from '../src/runtime-config/crypto';
 import { resolveEffectiveEnv } from '../src/runtime-config/resolver';
-import { setSecretOverride } from '../src/runtime-config/service';
+import { setPlainOverride, setSecretOverride } from '../src/runtime-config/service';
 import { RuntimeDb, masterKey } from './helpers/runtime-db';
 import Worker from '../src/index';
 
@@ -127,8 +127,15 @@ describe('Telegram admin control plane', () => {
     expect(testEnv.DB.receipts[0]).toMatchObject({ status: 'PROCESSED', action: 'MAIN' });
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.text).toBe('CZ2128 控制中心');
-    expect(body.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data))
-      .toEqual(expect.arrayContaining(['p:ai', 'p:tg', 'p:cw', 'p:att', 'p:sys', 'p:hist']));
+    const buttons = body.reply_markup.inline_keyboard.flat();
+    expect(buttons.map((item: any) => item.text)).toEqual([
+      '🤖 AI 设置', '💬 Telegram 设置', '🔵 Crisp 设置', '📎 附件设置',
+      '💡 关键词回复', '🛡 可靠性管理', '⚙️ 系统状态', '📜 操作历史'
+    ]);
+    expect(buttons.map((item: any) => item.callback_data)).toEqual([
+      'p:ai', 'p:tg', 'p:crisp', 'p:att', 'p:kw', 'p:rel', 'p:sys', 'p:hist'
+    ]);
+    expect(buttons.map((item: any) => item.callback_data)).not.toContain('p:cw');
   });
 
   it('reports a safe bootstrap error when the master key is missing', async () => {
@@ -201,22 +208,19 @@ describe('Telegram admin control plane', () => {
     });
     await begin(testEnv, 50, 'e:ak');
     await handleAdminTelegramWebhook(message(51, secretValue), testEnv);
-    expect(sentTexts.join('\n')).toContain('could not be deleted');
+    expect(sentTexts.join('\n')).toContain('未能自动删除');
     expect(sentTexts.join('\n')).not.toContain(secretValue);
   });
 
-  it.each([
-    ['AI candidate', 'e:am', 'runtime-model', 'https://ai.example/', 401],
-    ['Chatwoot candidate', 'e:ct', 'runtime-chatwoot-token', 'https://chatwoot.example/api/v1/profile', 403]
-  ] as const)('keeps active config unchanged when %s validation fails', async (_label, action, value, failingUrl, status) => {
+  it('keeps active config unchanged when AI candidate validation fails', async () => {
     const testEnv = env();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
       const target = String(url);
-      if (target === failingUrl || target.startsWith(failingUrl)) return new Response('private body', { status });
+      if (target.startsWith('https://ai.example/')) return new Response('private body', { status: 401 });
       return ok(true);
     });
-    await begin(testEnv, status, action);
-    await handleAdminTelegramWebhook(message(status + 1000, value), testEnv);
+    await begin(testEnv, 401, 'e:am');
+    await handleAdminTelegramWebhook(message(1401, 'runtime-model'), testEnv);
     expect(testEnv.DB.runtime).toHaveLength(0);
   });
 
@@ -237,27 +241,89 @@ describe('Telegram admin control plane', () => {
     expect((await resolveEffectiveEnv(testEnv)).AI_BASE_URL).toBe('https://new-ai.example/v1');
   });
 
-  it('validates and confirms a Chatwoot API URL before activation', async () => {
+  it('shows Crisp bootstrap status without exposing sensitive values or Chatwoot settings', async () => {
     const testEnv = env();
-    const sentTexts: string[] = [];
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init) => {
-      const target = String(url);
-      if (target.endsWith('/api/v1/profile')) {
-        expect(new Headers(init?.headers).get('api_access_token')).toBe('cw-token');
-        return new Response('{}', { status: 200 });
-      }
-      if (target.endsWith('/sendMessage')) sentTexts.push(JSON.parse(String(init?.body)).text);
-      return ok(true);
-    });
-    await begin(testEnv, 1500, 'e:cu');
-    await handleAdminTelegramWebhook(message(1501, 'https://new-chatwoot.example'), testEnv);
+    testEnv.CRISP_WEBSITE_ID = 'private-website-id';
+    testEnv.CRISP_API_IDENTIFIER = 'private-identifier';
+    testEnv.CRISP_API_KEY = 'private-api-key';
+    testEnv.CRISP_WEBHOOK_SECRET = 'private-webhook-secret';
+    const fetchMock = defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(1500, 'p:crisp'), testEnv);
+
+    const body = JSON.parse(String(fetchMock.mock.calls.find(call => String(call[0]).endsWith('/sendMessage'))?.[1]?.body));
+    expect(body.text).toContain('Crisp 客服设置');
+    expect(body.text).toContain('网站 ID：已配置');
+    expect(body.text).toContain('API 身份标识：已配置');
+    expect(body.text).toContain('API 密钥：已配置');
+    expect(body.text).toContain('Webhook 签名密钥：已配置');
+    expect(body.text).not.toContain('private-website-id');
+    expect(body.text).not.toContain('private-identifier');
+    expect(body.text).not.toContain('private-api-key');
+    expect(body.text).not.toContain('private-webhook-secret');
+    expect(body.text).not.toContain('Chatwoot');
     expect(testEnv.DB.runtime).toHaveLength(0);
-    expect(sentTexts.join('\n')).toContain('不会自动重配外部 webhook');
-    await handleAdminTelegramWebhook(callback(1502, 'c:yes'), testEnv);
-    expect(testEnv.DB.runtime[0]).toMatchObject({
-      key: 'CHATWOOT_API_URL', value_text: 'https://new-chatwoot.example', version: 1
-    });
-    expect(fetchMock.mock.calls.some(call => String(call[0]) === 'https://new-chatwoot.example/api/v1/profile')).toBe(true);
+  });
+
+  it.each(['p:cw', 'p:cwr', 'e:cu', 'e:ct', 'e:ch', 'x:cu', 'x:ct', 'x:ch'])(
+    'blocks legacy Chatwoot callback %s without opening a mutation session',
+    async action => {
+      const testEnv = env();
+      const fetchMock = defaultTelegramMock();
+      await handleAdminTelegramWebhook(callback(1510 + action.length, action), testEnv);
+      const replies = fetchMock.mock.calls
+        .filter(call => String(call[0]).endsWith('/sendMessage'))
+        .map(call => JSON.parse(String(call[1]?.body)).text).join('\n');
+      expect(replies).toContain('当前仅支持 Crisp，旧 Chatwoot 配置入口已停用');
+      expect(testEnv.DB.runtime).toHaveLength(0);
+      expect(testEnv.DB.sessions).toHaveLength(0);
+    }
+  );
+
+  it.each(['SET', 'CONFIRM_SET', 'CONFIRM_RESTORE', 'CONFIRM_ROLLBACK'])(
+    'blocks a legacy Chatwoot %s session before any configuration mutation',
+    async action => {
+      const testEnv = env();
+      const fetchMock = defaultTelegramMock();
+      testEnv.DB.sessions.push({
+        admin_user_id: '1001', action, target: 'CHATWOOT_API_URL', expected_version: 0,
+        candidate_value_text: action === 'CONFIRM_SET' ? 'https://blocked.example' : null,
+        candidate_ciphertext: null, candidate_nonce: null, context_json: null,
+        expires_at: Math.floor(Date.now() / 1000) + 600, updated_at: 1
+      });
+      if (action === 'SET') {
+        await handleAdminTelegramWebhook(message(1600 + action.length, 'https://blocked.example'), testEnv);
+      } else {
+        await handleAdminTelegramWebhook(callback(1600 + action.length, 'c:yes'), testEnv);
+      }
+      const replies = fetchMock.mock.calls
+        .filter(call => String(call[0]).endsWith('/sendMessage'))
+        .map(call => JSON.parse(String(call[1]?.body)).text).join('\n');
+      expect(replies).toContain('当前仅支持 Crisp，旧 Chatwoot 配置入口已停用');
+      expect(testEnv.DB.runtime).toHaveLength(0);
+      expect(testEnv.DB.sessions).toHaveLength(0);
+    }
+  );
+
+  it('preserves historical Chatwoot config and blocks rollback from history', async () => {
+    const testEnv = env();
+    await setPlainOverride(testEnv, 'CHATWOOT_ATTACHMENT_ALLOWED_HOSTS', 'files.example', 0, 'seed', 'seed-1');
+    const historyId = testEnv.DB.history[0].id;
+    const fetchMock = defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(1700, `rb:${historyId}`), testEnv);
+    await handleAdminTelegramWebhook(callback(1701, 'p:hist'), testEnv);
+
+    expect(testEnv.DB.runtime).toHaveLength(1);
+    expect(testEnv.DB.runtime[0]).toMatchObject({ key: 'CHATWOOT_ATTACHMENT_ALLOWED_HOSTS', version: 1 });
+    expect(testEnv.DB.history).toHaveLength(1);
+    const sentBodies = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body)));
+    expect(sentBodies.map(body => body.text).join('\n')).toContain('历史 Chatwoot 记录');
+    expect(sentBodies.map(body => body.text).join('\n')).toContain('当前仅支持 Crisp，旧 Chatwoot 配置入口已停用');
+    const callbackData = sentBodies.flatMap(body => body.reply_markup?.inline_keyboard?.flat().map((item: any) => item.callback_data) || []);
+    expect(callbackData).not.toContain(`rb:${historyId}`);
   });
 
   it.each([
@@ -411,7 +477,7 @@ describe('Telegram admin control plane', () => {
     const sent = fetchMock.mock.calls
       .filter(call => String(call[0]).endsWith('/sendMessage'))
       .map(call => String(call[1]?.body)).join('\n');
-    expect(sent).toContain('SECRET UPDATED');
+    expect(sent).toContain('密钥已更新');
     expect(sent).not.toContain('history-private-secret');
     expect(sent).not.toContain(testEnv.DB.history[0].ciphertext);
     expect(await decryptRuntimeSecret(masterKey(), 'AI_API_KEY', testEnv.DB.history[0].ciphertext, testEnv.DB.history[0].nonce))
