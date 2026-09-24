@@ -145,4 +145,45 @@ describe('Crisp keyword Admin Bot flow', () => {
     expect(rules(db)!.rules[0].keyword).toBe('one');
     expect(db.sessions[0]).toMatchObject({ action: 'KEYWORD_EDIT_KEYWORD' });
   });
+  it('paginates 100 rules into bounded pages and hides add at the limit', async () => {
+    const db = new RuntimeDb();
+    const config = {
+      version: 1,
+      rules: Array.from({ length: 100 }, (_, index) => ({
+        id: `kw_${String(index + 1).padStart(16, '0')}`,
+        keyword: `keyword-${index + 1}`,
+        reply: `reply-${index + 1}`,
+        enabled: true
+      }))
+    };
+    db.runtime.push({
+      key: 'CRISP_KEYWORD_RULES',
+      value_kind: 'PLAIN',
+      value_text: JSON.stringify(config),
+      ciphertext: null,
+      nonce: null,
+      version: 1,
+      updated_by: 'seed',
+      updated_at: 1
+    });
+    const testEnv = env(db);
+    const fetchMock = telegramMock();
+
+    await handleAdminTelegramWebhook(callback(50, 'p:kw'), testEnv);
+    await handleAdminTelegramWebhook(callback(51, 'k:p:9'), testEnv);
+
+    const sends = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String((call[1] as RequestInit).body)));
+    const last = sends.at(-1);
+    expect(last.text).toContain('规则：100/100');
+    expect(last.text).toContain('第 10/10 页');
+    expect(last.text).toContain('91. ✅ keyword-91');
+    expect(last.text).toContain('100. ✅ keyword-100');
+    expect(last.text).not.toContain('keyword-90');
+    expect(last.reply_markup.inline_keyboard.flat().some((button: any) => button.callback_data === 'k:add')).toBe(false);
+    expect(last.reply_markup.inline_keyboard.flat().some((button: any) => button.callback_data === 'k:p:8')).toBe(true);
+    expect(last.text.length).toBeLessThan(4096);
+  });
+
 });
