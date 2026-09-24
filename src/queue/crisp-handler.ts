@@ -497,6 +497,11 @@ async function resolveWelcomeOperation(
       return { text, subjectRef: existing.subject_ref! };
     }
     if (existing.subject_ref === `crisp-welcome:${conversationId}`) {
+      if (bootstrapIntent?.kind === 'LEGACY_UNKNOWN') {
+        return settleUnrecoverableWelcomeOperation(
+          env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_HISTORY_UNRECOVERABLE'
+        );
+      }
       if (bootstrapIntent?.kind === 'D1' || bootstrapIntent?.kind === 'NONE') {
         return settleUnrecoverableWelcomeOperation(
           env, existing, conversationId, websiteRef, sessionRef, 'CRISP_WELCOME_LEGACY_CONFIG_CHANGED'
@@ -533,6 +538,9 @@ async function resolveWelcomeOperation(
 
   if (bootstrapIntent) {
     if (bootstrapIntent.kind === 'NONE') return null;
+    if (bootstrapIntent.kind === 'LEGACY_UNKNOWN') {
+      throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+    }
     if (bootstrapIntent.kind === 'D1') {
       const text = await historicalWelcomeText(env, bootstrapIntent.version);
       if (!text) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
