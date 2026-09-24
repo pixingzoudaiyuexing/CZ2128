@@ -86,9 +86,12 @@ async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext,
   if (code === 'cw') {
     const menu = parseCrispMenu(env.CRISP_MENU_JSON);
     const welcome = resolveCrispWelcome(env, menu?.welcome);
+    const expectedVersion = welcome.source === 'D1'
+      ? Number(env.runtimeConfigSnapshot?.versions.CRISP_WELCOME_CONFIG || 0)
+      : 0;
     await saveAdminSession(env, {
       admin_user_id: ctx.userId, action: 'CRISP_WELCOME_SET', target: 'CRISP_WELCOME_CONFIG',
-      expected_version: await currentRuntimeVersion(env, 'CRISP_WELCOME_CONFIG'),
+      expected_version: expectedVersion,
       candidate_value_text: null, candidate_ciphertext: null, candidate_nonce: null,
       context_json: JSON.stringify({ enabled: welcome.status !== 'DISABLED' && welcome.status !== 'ERROR' })
     });
@@ -268,7 +271,9 @@ async function setCrispWelcomeEnabled(
       : '欢迎语未配置，请先设置欢迎语。');
     return enabled ? 'CRISP_WELCOME_ENABLE_NOOP' : 'CRISP_WELCOME_DISABLE_NOOP';
   }
-  const expectedVersion = await currentRuntimeVersion(env, 'CRISP_WELCOME_CONFIG');
+  const expectedVersion = welcome.source === 'D1'
+    ? Number(env.runtimeConfigSnapshot?.versions.CRISP_WELCOME_CONFIG || 0)
+    : 0;
   await setPlainOverride(
     env,
     'CRISP_WELCOME_CONFIG',
