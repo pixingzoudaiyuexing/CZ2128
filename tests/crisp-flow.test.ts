@@ -450,15 +450,19 @@ describe('Crisp basic bridge orchestration', () => {
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
       id: 'new-inflight', operator_thread_ref: null
     } as any);
-    vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
-      id: 'crisp_welcome:new-inflight',
-      conversation_id: 'new-inflight',
-      destination_provider: 'crisp',
-      operation_type: 'SEND_MESSAGE',
-      status: 'PENDING',
-      subject_type: 'MESSAGE',
-      subject_ref: 'crisp-welcome:v1'
-    } as any);
+    vi.mocked(outbound.getOutboundOperation).mockImplementation(async (_env: any, operationId: string) =>
+      operationId === 'crisp_welcome:new-inflight'
+        ? {
+            id: 'crisp_welcome:new-inflight',
+            conversation_id: 'new-inflight',
+            destination_provider: 'crisp',
+            operation_type: 'SEND_MESSAGE',
+            status: 'PENDING',
+            subject_type: 'MESSAGE',
+            subject_ref: 'crisp-welcome:v1'
+          } as any
+        : null
+    );
     vi.mocked(crispApi.createCrispMessage).mockResolvedValue({ messageId: 'welcome-1' } as any);
     vi.mocked(outbound.executeOutboundOperation).mockImplementation(async (...args: any[]) => {
       if (args[5] === 'crisp_welcome:new-inflight') {
@@ -490,15 +494,19 @@ describe('Crisp basic bridge orchestration', () => {
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
       id: 'legacy-inflight', operator_thread_ref: null
     } as any);
-    vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
-      id: 'crisp_welcome:legacy-inflight',
-      conversation_id: 'legacy-inflight',
-      destination_provider: 'crisp',
-      operation_type: 'SEND_MESSAGE',
-      status: 'PENDING',
-      subject_type: 'MESSAGE',
-      subject_ref: 'crisp-welcome:legacy-inflight'
-    } as any);
+    vi.mocked(outbound.getOutboundOperation).mockImplementation(async (_env: any, operationId: string) =>
+      operationId === 'crisp_welcome:legacy-inflight'
+        ? {
+            id: 'crisp_welcome:legacy-inflight',
+            conversation_id: 'legacy-inflight',
+            destination_provider: 'crisp',
+            operation_type: 'SEND_MESSAGE',
+            status: 'PENDING',
+            subject_type: 'MESSAGE',
+            subject_ref: 'crisp-welcome:legacy-inflight'
+          } as any
+        : null
+    );
 
     await expect(processCrispEvent({
       version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:legacy-inflight',
