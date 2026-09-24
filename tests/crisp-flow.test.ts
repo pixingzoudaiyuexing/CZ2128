@@ -154,7 +154,7 @@ describe('Crisp basic bridge orchestration', () => {
         messageRef: '102', actorRole: 'OPERATOR', content: 'Human'
       }
     }, env);
-    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp');
+    expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp', 'CRISP_OPERATOR');
   });
 
   it('enqueues one stable AI trigger for configured ordinary Crisp customer text', async () => {
@@ -336,7 +336,8 @@ describe('Crisp basic bridge orchestration', () => {
     }, env);
     expect(conversationService.insertMessage).not.toHaveBeenCalled();
     expect(attachmentRepository.enqueueAttachmentJobs).toHaveBeenCalledWith(
-      env, expect.any(Object), 'conv-crisp', 'crisp', 'image-1', [attachment], 'telegram'
+      env, expect.any(Object), 'conv-crisp', 'crisp', 'image-1', [attachment], 'telegram', undefined,
+      JSON.stringify({ version: 1, disableNotification: false, controls: 'AI_TOGGLE_V1' })
     );
     expect(env.QUEUE.send).not.toHaveBeenCalled();
   });
