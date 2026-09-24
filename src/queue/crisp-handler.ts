@@ -7,7 +7,7 @@ import { Env } from '../config/env';
 import { checkAutoResume, pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
-import { RetryableProcessingError } from '../core/errors';
+import { RetryableProcessingError, SafeError } from '../core/errors';
 import { CrispEvent, CrispMessageEvent } from '../core/events';
 import { executeOutboundOperation, getOutboundOperation } from '../core/outbound-operations';
 import { buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
@@ -19,6 +19,8 @@ import {
   reconcileCrispLifecycleIdentity
 } from './crisp-lifecycle';
 import { processCrispKeywordReply } from './crisp-keyword-reply';
+import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
+import { getRuntimeHistoryVersion } from '../runtime-config/repository';
 
 export interface CrispMenuOption {
   pickerId: string;
@@ -79,6 +81,51 @@ export function parseCrispMenu(value: string | undefined): CrispMenuConfig | nul
   } catch {
     return null;
   }
+}
+
+const WELCOME_SUBJECT_PATTERN = /^crisp-welcome:v([1-9]\d*)$/;
+
+async function historicalWelcomeText(env: Env, version: number): Promise<string | null> {
+  const history = await getRuntimeHistoryVersion(env, 'CRISP_WELCOME_CONFIG', version);
+  if (!history?.value_text || history.value_kind !== 'PLAIN') return null;
+  return parseCrispWelcomeConfig(history.value_text)?.text || null;
+}
+
+async function resolveWelcomeOperation(
+  env: Env,
+  menu: CrispMenuConfig | null,
+  conversationId: string
+): Promise<{ text: string; subjectRef: string } | null> {
+  const operationId = `crisp_welcome:${conversationId}`;
+  const existing = await getOutboundOperation(env, operationId);
+  if (existing) {
+    const match = existing.subject_type === 'MESSAGE' && existing.subject_ref
+      ? WELCOME_SUBJECT_PATTERN.exec(existing.subject_ref)
+      : null;
+    if (match) {
+      const version = Number(match[1]);
+      const text = Number.isSafeInteger(version) ? await historicalWelcomeText(env, version) : null;
+      if (!text) throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      return { text, subjectRef: existing.subject_ref! };
+    }
+    if (existing.subject_ref === `crisp-welcome:${conversationId}`) {
+      const legacy = resolveCrispWelcome(env, menu?.welcome);
+      if (legacy.source === 'D1') throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+      return legacy.status === 'ENABLED' && legacy.text
+        ? { text: legacy.text, subjectRef: existing.subject_ref }
+        : null;
+    }
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+
+  const welcome = resolveCrispWelcome(env, menu?.welcome);
+  if (welcome.status !== 'ENABLED' || !welcome.text) return null;
+  if (welcome.source === 'D1') {
+    const version = Number(env.runtimeConfigSnapshot?.versions.CRISP_WELCOME_CONFIG || 0);
+    if (!Number.isSafeInteger(version) || version < 1) return null;
+    return { text: welcome.text, subjectRef: `crisp-welcome:v${version}` };
+  }
+  return { text: welcome.text, subjectRef: `crisp-welcome:${conversationId}` };
 }
 
 async function sendCrispTextOperation(
@@ -289,11 +336,12 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
 
   const keywordHandled = await processCrispKeywordReply(event, env, conv);
   const menu = parseCrispMenu(env.CRISP_MENU_JSON);
-  if (!keywordHandled && !isOperator && wasNewConversation && (menu || env.CRISP_WELCOME_TEXT)) {
-    if (menu?.welcome || env.CRISP_WELCOME_TEXT) {
+  if (!keywordHandled && !isOperator && wasNewConversation) {
+    const welcome = await resolveWelcomeOperation(env, menu, conv.id);
+    if (welcome) {
       await sendCrispTextOperation(
         env, conv.id, payload.websiteRef, payload.sessionRef,
-        `crisp_welcome:${conv.id}`, menu?.welcome || env.CRISP_WELCOME_TEXT!, `crisp-welcome:${conv.id}`
+        `crisp_welcome:${conv.id}`, welcome.text, welcome.subjectRef
       );
     }
     if (menu?.picker) {
