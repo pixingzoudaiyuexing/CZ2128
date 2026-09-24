@@ -492,7 +492,7 @@ describe('Telegram admin control plane', () => {
 
     await handleAdminTelegramWebhook(callback(1800, 'p:crisp'), testEnv);
     await handleAdminTelegramWebhook(callback(1801, 'p:cwelcome'), testEnv);
-    let sentBodies = fetchMock.mock.calls
+    const sentBodies = fetchMock.mock.calls
       .filter(call => String(call[0]).endsWith('/sendMessage'))
       .map(call => JSON.parse(String(call[1]?.body)));
     expect(sentBodies.at(-2).text).toContain('欢迎语：已启用');
