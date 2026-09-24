@@ -576,8 +576,8 @@ async function sendCrispPickerOperation(
   sessionRef: string,
   operationId: string,
   picker: { id: string; text: string; choices: CrispPickerChoice[] }
-): Promise<void> {
-  await executeOutboundOperation(
+): Promise<{ status: string; providerMessageRef?: string }> {
+  return executeOutboundOperation(
     env,
     conversationId,
     'crisp',
@@ -596,12 +596,38 @@ async function sendCrispPickerOperation(
   );
 }
 
-async function currentEventAttemptCount(env: Env, event: CrispEvent): Promise<number> {
-  const receipt = await env.DB.prepare(
-    `SELECT attempt_count FROM event_receipts
-     WHERE source = 'crisp' AND source_event_ref = ? AND status = 'PROCESSING'`
-  ).bind(event.eventId).first<{ attempt_count: number }>();
-  return Number(receipt?.attempt_count || 0);
+async function processBootstrapPicker(
+  env: Env,
+  conversationId: string,
+  websiteRef: string,
+  sessionRef: string,
+  intent: CrispBootstrapPickerIntent | null,
+  menu: CrispMenuConfig | null
+): Promise<void> {
+  if (!intent) return;
+  const operationId = `crisp_picker:${conversationId}:${intent.id}`;
+  const existing = await getOutboundOperation(env, operationId);
+  if (existing && bootstrapOperationTerminal(existing)) return;
+  if (existing?.status === 'AMBIGUOUS') {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+
+  const currentHash = await pickerMenuHash(menu);
+  if (!menu?.picker || menu.picker.id !== intent.id || currentHash !== intent.menuHash) {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
+
+  const result = await sendCrispPickerOperation(
+    env,
+    conversationId,
+    websiteRef,
+    sessionRef,
+    operationId,
+    menu.picker
+  );
+  if (result.status !== 'SENT' && result.status !== 'FAILED_FINAL') {
+    throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
+  }
 }
 
 async function ensureTelegramTopic(
