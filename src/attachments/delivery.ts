@@ -14,6 +14,7 @@ import { TelegramMethod } from '../core/outbound-evidence';
 import { buildChatwootApiUrl } from '../adapters/chatwoot/url';
 import { createCrispMessage } from '../adapters/crisp/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
+import { CrispDisplayIdentity } from '../config/crisp-identities';
 import { isSafeInlineImageMime, isValidAttachmentToken } from '../core/attachments';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
@@ -156,10 +157,12 @@ export async function deliverAttachmentToCrisp(
   sessionRef: string,
   operationId: string,
   content: string,
-  lifecycle?: OutboundAttemptLifecycle
+  lifecycle?: OutboundAttemptLifecycle,
+  identity?: CrispDisplayIdentity
 ): Promise<{ providerMessageRef: string }> {
   const result = await createCrispMessage(
-    env, websiteRef, sessionRef, content, operationId, lifecycle
+    env, websiteRef, sessionRef, content, operationId, lifecycle,
+    identity ? { identity, automated: false } : undefined
   );
   return { providerMessageRef: result.messageId };
 }
@@ -172,7 +175,8 @@ export async function deliverAttachmentToChatwoot(
   conversationRef: string,
   operationId: string,
   bytes: ArrayBuffer,
-  lifecycle?: OutboundAttemptLifecycle
+  lifecycle?: OutboundAttemptLifecycle,
+  options?: { disableNotification?: boolean }
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
@@ -241,6 +245,7 @@ export async function deliverAttachmentToTelegram(
   const form = new FormData();
   form.set('chat_id', env.BOT_GROUP_ID);
   form.set('message_thread_id', threadRef);
+  if (options?.disableNotification) form.set('disable_notification', 'true');
   form.append(target.field, new Blob([bytes], { type: row.mime_type }), row.safe_filename);
   const request = await visibleFetch(
     'TELEGRAM',
