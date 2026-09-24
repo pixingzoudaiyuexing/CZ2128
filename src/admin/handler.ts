@@ -35,6 +35,8 @@ import { processReliabilityCallback, processReliabilityMessage, showReliabilityM
 import { processCrispKeywordCallback, processCrispKeywordMessage } from './crisp-keywords';
 import { safeErrorCode } from '../core/errors';
 import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './platform-policy';
+import { createCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
+import { parseCrispMenu } from '../queue/crisp-handler';
 
 function adminBootstrap(env: Env): AdminBootstrap | null {
   const token = env.ADMIN_TELEGRAM_BOT_TOKEN?.trim() || '';
@@ -81,6 +83,18 @@ function parseAdminContext(payload: any): AdminContext | null {
 }
 
 async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string): Promise<string> {
+  if (code === 'cw') {
+    const menu = parseCrispMenu(env.CRISP_MENU_JSON);
+    const welcome = resolveCrispWelcome(env, menu?.welcome);
+    await saveAdminSession(env, {
+      admin_user_id: ctx.userId, action: 'CRISP_WELCOME_SET', target: 'CRISP_WELCOME_CONFIG',
+      expected_version: await currentRuntimeVersion(env, 'CRISP_WELCOME_CONFIG'),
+      candidate_value_text: null, candidate_ciphertext: null, candidate_nonce: null,
+      context_json: JSON.stringify({ enabled: welcome.status !== 'DISABLED' && welcome.status !== 'ERROR' })
+    });
+    await reply(bootstrap, ctx, '请发送新的 Crisp 欢迎语正文（1–4000 字符）。');
+    return 'CRISP_WELCOME_SET_BEGIN';
+  }
   if (code === 'tbot') {
     await saveAdminSession(env, {
       admin_user_id: ctx.userId, action: 'ROTATE_BOT', target: 'TELEGRAM_SUPPORT_PROFILE',
@@ -216,6 +230,55 @@ async function processSetInput(
     (!deleted ? '\n密钥已保存，但 Telegram 中的原输入消息未能自动删除，请手动删除该消息。' : '')
   );
   return `SET_${key}`;
+}
+
+async function processCrispWelcomeInput(
+  env: Env,
+  bootstrap: AdminBootstrap,
+  ctx: AdminContext,
+  session: Awaited<ReturnType<typeof getAdminSession>>
+): Promise<string> {
+  if (!session || !ctx.text) throw new Error('ADMIN_INPUT_INVALID');
+  const state = JSON.parse(session.context_json || '{}') as { enabled?: boolean };
+  const value = createCrispWelcomeConfig(ctx.text, state.enabled !== false);
+  await setPlainOverride(
+    env,
+    'CRISP_WELCOME_CONFIG',
+    value,
+    session.expected_version,
+    ctx.userId,
+    ctx.updateId
+  );
+  await clearAdminSession(env, ctx.userId);
+  await reply(bootstrap, ctx, `欢迎语已保存，当前状态：${state.enabled === false ? '已停用' : '已启用'}。`);
+  return 'CRISP_WELCOME_SET';
+}
+
+async function setCrispWelcomeEnabled(
+  env: Env,
+  bootstrap: AdminBootstrap,
+  ctx: AdminContext,
+  enabled: boolean
+): Promise<string> {
+  const menu = parseCrispMenu(env.CRISP_MENU_JSON);
+  const welcome = resolveCrispWelcome(env, menu?.welcome);
+  if (!welcome.text) {
+    await reply(bootstrap, ctx, welcome.status === 'ERROR'
+      ? '欢迎语配置读取异常，已保持自动发送关闭。请先重新设置欢迎语。'
+      : '欢迎语未配置，请先设置欢迎语。');
+    return enabled ? 'CRISP_WELCOME_ENABLE_NOOP' : 'CRISP_WELCOME_DISABLE_NOOP';
+  }
+  const expectedVersion = await currentRuntimeVersion(env, 'CRISP_WELCOME_CONFIG');
+  await setPlainOverride(
+    env,
+    'CRISP_WELCOME_CONFIG',
+    createCrispWelcomeConfig(welcome.text, enabled),
+    expectedVersion,
+    ctx.userId,
+    ctx.updateId
+  );
+  await reply(bootstrap, ctx, enabled ? '欢迎语已启用。' : '欢迎语已停用。');
+  return enabled ? 'CRISP_WELCOME_ENABLED' : 'CRISP_WELCOME_DISABLED';
 }
 
 async function processBotToken(
@@ -363,11 +426,13 @@ async function processCallback(
     try { await answerAdminCallback(bootstrap.token, ctx.callbackId); } catch { /* mutation remains authoritative */ }
   }
   if (data === 'm') { await showMain(bootstrap, ctx); return 'MAIN'; }
-  if (/^p:(ai|air|tg|crisp|cw|cwr|att|attr|sys|hist|rel|kw)$/.test(data)) {
+  if (/^p:(ai|air|tg|crisp|cwelcome|cmenu|cw|cwr|att|attr|sys|hist|rel|kw)$/.test(data)) {
     const page = data.slice(2);
     await showPage(env, bootstrap, ctx, page);
     return `PAGE_${page.toUpperCase()}`;
   }
+  if (data === 'w:on') return setCrispWelcomeEnabled(env, bootstrap, ctx, true);
+  if (data === 'w:off') return setCrispWelcomeEnabled(env, bootstrap, ctx, false);
   if (data.startsWith('r:')) return await processReliabilityCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('k:')) return await processCrispKeywordCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2));
@@ -403,6 +468,7 @@ async function processMessage(
     return 'MAIN';
   }
   if (session.action === 'SET') return processSetInput(env, bootstrap, ctx, session);
+  if (session.action === 'CRISP_WELCOME_SET') return processCrispWelcomeInput(env, bootstrap, ctx, session);
   if (session.action === 'ROTATE_BOT') return processBotToken(env, bootstrap, ctx, session.expected_version);
   if (session.action === 'MIGRATE_GROUP') return processGroupInput(env, bootstrap, ctx, session.expected_version);
   if (session.action.startsWith('KEYWORD_')) return await processCrispKeywordMessage(env, bootstrap, ctx, session);
