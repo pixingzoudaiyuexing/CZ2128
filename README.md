@@ -170,3 +170,18 @@ npx wrangler r2 bucket lifecycle add cz2128-attachments attachment-retention att
 Review the bucket and lifecycle configuration before running these commands. Phase 3 development does not create or modify production Cloudflare resources. Real R2, Telegram and Chatwoot attachment flows require staging validation before production use.
 
 Pre-production attachment validation must cover real R2 write/multipart/read/Range/delete; Telegram `getFile` and every configured multipart send method; Chatwoot download redirects and `attachments[]`; proxy GET/HEAD/Range/headers; hourly cleanup; Queue/D1 concurrency; and peak memory under a 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` upload. The seven-day R2 lifecycle must be applied and verified. DNS rebinding through an explicitly trusted allowlisted hostname and extreme R2 I/O stalls beyond the event lease remain residual risks to validate operationally.
+
+## Crisp-12 - Legacy support UX parity
+
+PR #41 restores four bounded legacy support UX behaviors without changing the D1/Queue reliability model:
+
+- Crisp customer text forwarded to Telegram carries fixed 开启 AI / 关闭 AI buttons. Callback data never contains conversation, group or topic IDs; the Worker resolves the target from the clicked Bot message's durable outbound ledger entry.
+- AI pause provenance is persisted as CRISP_OPERATOR, TELEGRAM_OPERATOR, or MANUAL. Legacy PAUSED_OPERATOR rows with no source retain the old normal-notification behavior.
+- Telegram customer-message notification defaults are Crisp takeover = silent, Telegram takeover = normal, manual AI-off = silent. Optional runtime/env keys TELEGRAM_NOTIFY_CRISP_OPERATOR, TELEGRAM_NOTIFY_TELEGRAM_OPERATOR, and TELEGRAM_NOTIFY_MANUAL_OFF accept only normal or silent.
+- Crisp human and AI display identities are independent. Defaults are 人工客服 and 智能客服; optional HTTPS avatars and nickname overrides use CRISP_OPERATOR_NICKNAME, CRISP_OPERATOR_AVATAR_URL, CRISP_AI_NICKNAME, and CRISP_AI_AVATAR_URL. Avatar URLs are sent to Crisp as metadata only and are never fetched by the Worker.
+- System Welcome, keyword and Picker messages retain the existing CZ2128 automated identity. Human/AI identity is frozen in outbound_operations.request_options_json at first operation creation, so retries do not change sender after a config edit.
+- Customer Telegram notification/button options are frozen at first outbound preparation. Attachment rows retain the same notification snapshot at discovery time so later attachment Queue processing cannot reselect a newer session state.
+- Crisp keyword rules remain version 1 normalized complete-text exact matches. The maximum is 100 rules with a 500,000-character serialized-config ceiling and 10 rules per Admin page. D1 Runtime Config allows up to 1,000,000 plain characters so the bounded config and history fit safely.
+- Migration 0008_crisp_legacy_ux.sql is forward-only: it adds pause provenance and frozen request-option evidence, then rebuilds Runtime Config/history with the larger bounded plain-value limit. Existing rows/history are copied; no conversation/config reset occurs.
+
+See CRISP-12-STAGING-ACCEPTANCE.md for the post-review one-shot real UI acceptance plan. That plan is not deployment authorization.
