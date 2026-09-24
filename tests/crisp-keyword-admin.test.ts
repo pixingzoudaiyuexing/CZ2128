@@ -49,7 +49,7 @@ function callback(updateId: number, data: string, userId = 1001) {
 }
 
 function telegramMock() {
-  return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
     new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 })
   );
 }
