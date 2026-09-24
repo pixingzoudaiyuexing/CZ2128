@@ -22,6 +22,14 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npx wrangler d1 migrations apply cz2128-db --local
+      - name: Check exact PR diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA"
+          git diff --check "$BASE_SHA...$HEAD_SHA"
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
