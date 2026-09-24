@@ -581,7 +581,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
     convId,
     helpdeskProvider,
     'SEND_MESSAGE',
-    async (opId, lifecycle, operation) => {
+    async (opId, lifecycle) => {
       if (env.hooks?.beforeAiDispatchPreflight) {
         await env.hooks.beforeAiDispatchPreflight(env, convId);
       }
@@ -663,7 +663,7 @@ export async function processAiTrigger(event: AiTriggerEvent, env: Env): Promise
             String(opId),
             lifecycle,
             (() => {
-              const frozenIdentity = parseCrispIdentityRequestOptions(operation.request_options_json);
+              const frozenIdentity = parseCrispIdentityRequestOptions(lifecycle.requestOptionsJson);
               return frozenIdentity ? { identity: frozenIdentity, automated: true } : undefined;
             })()
           )
