@@ -596,7 +596,7 @@ export async function finalizeNeverStartedOutboundOperation(
   audit: FinalizeNeverStartedOutboundAudit
 ): Promise<{ operation: OutboundOperation; changed: boolean }> {
   if (
-    (expected.status !== 'PENDING' && expected.status !== 'FAILED_RETRYABLE') ||
+    expected.status !== 'PENDING' ||
     expected.attempt_count !== 0 ||
     expected.provider_message_ref !== null ||
     expected.request_started_at !== null ||
