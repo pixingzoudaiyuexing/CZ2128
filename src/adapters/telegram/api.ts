@@ -64,12 +64,20 @@ async function callTelegram(env: Env, method: string, body: Record<string, unkno
   }
 }
 
+export interface TelegramSendMessageOptions {
+  disableNotification?: boolean;
+  replyMarkup?: {
+    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+  };
+}
+
 export async function sendTelegramMessage(
   env: Env,
   chatId: string,
   messageThreadId: string | null,
   text: string,
-  lifecycle?: OutboundAttemptLifecycle
+  lifecycle?: OutboundAttemptLifecycle,
+  options?: TelegramSendMessageOptions
 ): Promise<{ messageId: string }> {
   const body: Record<string, unknown> = {
     chat_id: chatId,
@@ -78,6 +86,8 @@ export async function sendTelegramMessage(
   if (messageThreadId) {
     body.message_thread_id = messageThreadId;
   }
+  if (options?.disableNotification) body.disable_notification = true;
+  if (options?.replyMarkup) body.reply_markup = options.replyMarkup;
 
   const data = await callTelegram(env, 'sendMessage', body, lifecycle);
   if (data.result?.message_id === undefined || data.result?.message_id === null) {
@@ -130,4 +140,16 @@ export async function reopenTelegramTopic(
   };
 
   await callTelegram(env, 'reopenForumTopic', body, lifecycle);
+}
+
+export async function answerTelegramCallbackQuery(
+  env: Env,
+  callbackQueryId: string,
+  text: string
+): Promise<void> {
+  await callTelegram(env, 'answerCallbackQuery', {
+    callback_query_id: callbackQueryId,
+    text: Array.from(text).slice(0, 180).join(''),
+    show_alert: false
+  });
 }
