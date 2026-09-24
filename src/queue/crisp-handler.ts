@@ -164,6 +164,13 @@ async function settleUnrecoverableWelcomeOperation(
   if (operation.status === 'SENT' || operation.status === 'FAILED_FINAL') {
     return null;
   }
+  if (
+    operation.status === 'AMBIGUOUS' &&
+    (operation.reconciliation_status === 'CONFIRMED_SENT' ||
+      operation.reconciliation_status === 'MANUAL_MARK_DELIVERED')
+  ) {
+    return null;
+  }
   if (operation.status === 'SENDING' || operation.status === 'AMBIGUOUS') {
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
   }
@@ -191,10 +198,13 @@ async function resolveWelcomeOperation(
   menu: CrispMenuConfig | null,
   conversationId: string,
   websiteRef: string,
-  sessionRef: string
+  sessionRef: string,
+  existingOverride?: OutboundOperation | null
 ): Promise<{ text: string; subjectRef: string } | null> {
   const operationId = `crisp_welcome:${conversationId}`;
-  const existing = await getOutboundOperation(env, operationId);
+  const existing = existingOverride === undefined
+    ? await getOutboundOperation(env, operationId)
+    : existingOverride;
   if (existing) {
     const match = existing.subject_type === 'MESSAGE' && existing.subject_ref
       ? WELCOME_SUBJECT_PATTERN.exec(existing.subject_ref)
@@ -290,6 +300,14 @@ async function sendCrispPickerOperation(
       targetEvidence: buildCrispTargetEvidence(websiteRef, sessionRef)
     }
   );
+}
+
+async function currentEventAttemptCount(env: Env, event: CrispEvent): Promise<number> {
+  const receipt = await env.DB.prepare(
+    `SELECT attempt_count FROM event_receipts
+     WHERE source = 'crisp' AND source_event_ref = ? AND status = 'PROCESSING'`
+  ).bind(event.eventId).first<{ attempt_count: number }>();
+  return Number(receipt?.attempt_count || 0);
 }
 
 async function ensureTelegramTopic(
@@ -445,9 +463,18 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
 
   const keywordHandled = await processCrispKeywordReply(event, env, conv);
   const menu = parseCrispMenu(env.CRISP_MENU_JSON);
-  if (!keywordHandled && !isOperator && wasNewConversation) {
+  let retryWelcomeOperation: OutboundOperation | null = null;
+  if (!keywordHandled && !isOperator && !wasNewConversation && await currentEventAttemptCount(env, event) > 1) {
+    retryWelcomeOperation = await getOutboundOperation(env, `crisp_welcome:${conv.id}`);
+  }
+  if (!keywordHandled && !isOperator && (wasNewConversation || retryWelcomeOperation)) {
     const welcome = await resolveWelcomeOperation(
-      env, menu, conv.id, payload.websiteRef, payload.sessionRef
+      env,
+      menu,
+      conv.id,
+      payload.websiteRef,
+      payload.sessionRef,
+      retryWelcomeOperation || undefined
     );
     if (welcome) {
       const welcomeResult = await sendCrispTextOperation(
@@ -458,7 +485,7 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
         throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
       }
     }
-    if (menu?.picker) {
+    if (wasNewConversation && menu?.picker) {
       await sendCrispPickerOperation(
         env, conv.id, payload.websiteRef, payload.sessionRef,
         `crisp_picker:${conv.id}:${menu.picker.id}`, menu.picker
