@@ -98,6 +98,24 @@ describe('Crisp welcome runtime config', () => {
     });
   });
 
+  it('does not fall back to old ENV or menu Welcome when the runtime table cannot be read', async () => {
+    const testEnv = env();
+    testEnv.DB = { prepare: () => { throw new Error('D1 unavailable'); } } as any;
+
+    const effective = await resolveEffectiveEnv(testEnv);
+
+    expect(effective.CRISP_WELCOME_TEXT).toBe('ENV welcome');
+    expect(effective.runtimeConfigSnapshot).toMatchObject({
+      health: 'ERROR',
+      sources: { CRISP_WELCOME_CONFIG: 'D1' },
+      errors: { RUNTIME_CONFIG: 'RUNTIME_CONFIG_READ_FAILED' }
+    });
+    expect(resolveCrispWelcome(effective, 'Menu welcome')).toEqual({
+      status: 'ERROR',
+      source: 'D1'
+    });
+  });
+
   it('fails closed when the D1 welcome payload is invalid', async () => {
     const testEnv = env();
     testEnv.DB.runtime.push({
