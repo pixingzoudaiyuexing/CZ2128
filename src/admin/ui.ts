@@ -8,6 +8,8 @@ import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
 import { showKeywordRulesPage } from './crisp-keywords';
 import { parseCrispKeywordRules } from '../config/crisp-keywords';
 import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './platform-policy';
+import { parseCrispMenu } from '../queue/crisp-handler';
+import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
 
 const mainKeyboard: AdminKeyboard = [
   [{ text: '🤖 AI 设置', callback_data: 'p:ai' }, { text: '💬 Telegram 设置', callback_data: 'p:tg' }],
@@ -34,6 +36,50 @@ function valueLine(env: Env, key: RuntimeConfigKey, masked = false): string {
 
 function configured(value: string | undefined): string {
   return value?.trim() ? '已配置' : '未配置';
+}
+
+function welcomeStatusLabel(status: ReturnType<typeof resolveCrispWelcome>['status']): string {
+  if (status === 'ENABLED') return '已启用';
+  if (status === 'DISABLED') return '已停用';
+  if (status === 'ERROR') return '读取异常（已关闭自动发送）';
+  return '未配置';
+}
+
+function welcomeSourceLabel(source: ReturnType<typeof resolveCrispWelcome>['source']): string {
+  if (source === 'D1') return 'D1 运行时配置';
+  if (source === 'MENU') return 'ENV：CRISP_MENU_JSON';
+  if (source === 'ENV') return 'ENV：CRISP_WELCOME_TEXT';
+  return '无';
+}
+
+function menuActionLabel(option: ReturnType<typeof parseCrispMenu> extends infer _T ? any : never): string {
+  const actions: string[] = [];
+  if (option?.response) actions.push('预设回复');
+  if (option?.next) actions.push('进入下一级菜单');
+  if (option?.handoff) actions.push('请求人工客服');
+  return actions.length ? actions.join(' + ') : '无自动动作';
+}
+
+function menuSummary(value: string | undefined): string {
+  if (!value?.trim()) return '客服菜单：未配置';
+  const menu = parseCrispMenu(value);
+  if (!menu) return '客服菜单：已配置，但格式无效（不会发送 Picker）';
+  const lines = [
+    '客服菜单：已配置',
+    `顶层菜单标题：${menu.picker?.text || '未配置'}`,
+    `包含下一级菜单：${menu.options?.some(option => !!option.next) ? '是' : '否'}`,
+    `包含人工客服动作：${menu.options?.some(option => !!option.handoff) ? '是' : '否'}`,
+    '',
+    '现有选项：'
+  ];
+  if (!menu.options?.length) {
+    lines.push('无已映射业务动作的选项');
+  } else {
+    for (const option of menu.options) {
+      lines.push(`• ${option.label}（菜单：${option.pickerId}）→ ${menuActionLabel(option)}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 export async function showMain(bootstrap: AdminBootstrap, ctx: AdminContext): Promise<void> {
@@ -96,16 +142,54 @@ export async function showPage(
     return;
   }
   if (page === 'crisp') {
+    const menu = parseCrispMenu(env.CRISP_MENU_JSON);
+    const welcome = resolveCrispWelcome(env, menu?.welcome);
     await reply(bootstrap, ctx, [
-      'Crisp 客服设置',
+      '🔵 Crisp 设置',
+      '',
+      `欢迎语：${welcomeStatusLabel(welcome.status)}`,
+      `客服菜单：${env.CRISP_MENU_JSON?.trim() ? (menu ? '已配置' : '配置无效') : '未配置'}`,
       '',
       `网站 ID：${configured(env.CRISP_WEBSITE_ID)}`,
       `API 身份标识：${configured(env.CRISP_API_IDENTIFIER)}`,
       `API 密钥：${configured(env.CRISP_API_KEY)}`,
       `Webhook 签名密钥：${configured(env.CRISP_WEBHOOK_SECRET)}`,
       '',
-      '以上项目由 Worker ENV / Secret 管理，本页面仅显示配置状态。'
-    ].join('\n'), [[{ text: '返回主菜单', callback_data: 'm' }]]);
+      '身份凭据仍由 Worker ENV / Secret 管理，不能通过本 Bot 修改。'
+    ].join('\n'), [
+      [{ text: '👋 欢迎语', callback_data: 'p:cwelcome' }, { text: '📋 客服菜单', callback_data: 'p:cmenu' }],
+      [{ text: '返回主菜单', callback_data: 'm' }]
+    ]);
+    return;
+  }
+  if (page === 'cwelcome') {
+    const menu = parseCrispMenu(env.CRISP_MENU_JSON);
+    const welcome = resolveCrispWelcome(env, menu?.welcome);
+    const currentText = welcome.text || '未配置';
+    await reply(bootstrap, ctx, [
+      '👋 Crisp 欢迎语',
+      '',
+      `状态：${welcomeStatusLabel(welcome.status)}`,
+      `配置来源：${welcomeSourceLabel(welcome.source)}`,
+      '',
+      '当前正文：',
+      currentText
+    ].join('\n'), [
+      [{ text: welcome.text ? '修改欢迎语' : '设置欢迎语', callback_data: 'e:cw' }],
+      [{ text: '启用欢迎语', callback_data: 'w:on' }, { text: '停用欢迎语', callback_data: 'w:off' }],
+      [{ text: '恢复 ENV 默认配置', callback_data: 'x:cw' }],
+      [{ text: '返回 Crisp 设置', callback_data: 'p:crisp' }]
+    ]);
+    return;
+  }
+  if (page === 'cmenu') {
+    await reply(bootstrap, ctx, [
+      '📋 客服菜单',
+      '',
+      menuSummary(env.CRISP_MENU_JSON),
+      '',
+      '本轮菜单仅提供只读查看。当前 Picker selection 仍按 pickerId + value 读取当前配置；在加入版本绑定前开放编辑会让历史按钮存在动作漂移风险。'
+    ].join('\n'), [[{ text: '返回 Crisp 设置', callback_data: 'p:crisp' }]]);
     return;
   }
   if (page === 'cw') {
@@ -164,7 +248,12 @@ export async function showPage(
           ? '已恢复 ENV'
           : row.key === 'CRISP_KEYWORD_RULES'
             ? `关键词规则：${parseCrispKeywordRules(row.value_text || '')?.rules.length ?? '无效'} 条`
-            : row.value_text;
+            : row.key === 'CRISP_WELCOME_CONFIG'
+              ? (() => {
+                  const welcome = parseCrispWelcomeConfig(row.value_text || '');
+                  return welcome ? `欢迎语：${welcome.enabled ? '已启用' : '已停用'}\n${welcome.text}` : '欢迎语配置无效';
+                })()
+              : row.value_text;
       const prefix = isLegacyChatwootRuntimeKey(row.key) ? '历史 Chatwoot 记录\n' : '';
       return `${prefix}#${row.id} ${new Date(row.created_at * 1000).toISOString()}\n${row.key} ${row.action} v${row.version}\n操作人：${row.actor_user_id}\n${value}`;
     });
