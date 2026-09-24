@@ -34,6 +34,7 @@ export interface ExecuteOutboundOperationOptions {
   parentOperationId?: string;
   subject: OutboundSubjectIdentity;
   targetEvidence: OutboundTargetEvidence;
+  requestOptions?: Record<string, unknown>;
 }
 
 export class OutboundOperationIdentityCollisionError extends Error {
@@ -94,6 +95,7 @@ export async function prepareOutboundOperation(
   options: ExecuteOutboundOperationOptions
 ): Promise<OutboundOperation | null> {
   const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
+  const requestOptionsJson = options.requestOptions === undefined ? null : JSON.stringify(options.requestOptions);
   let operation = await getOutboundOperation(env, deterministicOperationId);
   if (!operation && options.allowCreate === false) return null;
 
@@ -102,8 +104,8 @@ export async function prepareOutboundOperation(
     await env.DB.prepare(
       `INSERT INTO outbound_operations
        (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-        subject_type, subject_ref, target_evidence_json, parent_operation_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subject_type, subject_ref, target_evidence_json, parent_operation_id, request_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`
     ).bind(
       deterministicOperationId,
@@ -116,7 +118,8 @@ export async function prepareOutboundOperation(
       options.subject.type,
       options.subject.ref,
       targetEvidenceJson,
-      options.parentOperationId || null
+      options.parentOperationId || null,
+      requestOptionsJson
     ).run();
     operation = await loadOperation(env, deterministicOperationId);
   }
@@ -241,13 +244,18 @@ export async function executeOutboundOperation(
   conversationId: string,
   destinationProvider: string,
   operationType: string,
-  action: (operationId: string, lifecycle: OutboundAttemptLifecycle) => Promise<{ providerMessageRef?: string }>,
+  action: (
+    operationId: string,
+    lifecycle: OutboundAttemptLifecycle,
+    operation: OutboundOperation
+  ) => Promise<{ providerMessageRef?: string }>,
   deterministicOperationId: string,
   options: ExecuteOutboundOperationOptions
 ): Promise<{ status: string; providerMessageRef?: string }> {
   const id = deterministicOperationId;
   const now = Math.floor(Date.now() / 1000);
   const targetEvidenceJson = serializeTargetEvidence(options.targetEvidence);
+  const requestOptionsJson = options.requestOptions === undefined ? null : JSON.stringify(options.requestOptions);
   let op = await getOutboundOperation(env, id);
   if (!op && options.allowCreate === false) {
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED');
@@ -256,12 +264,13 @@ export async function executeOutboundOperation(
     await env.DB.prepare(
       `INSERT INTO outbound_operations
        (id, conversation_id, destination_provider, operation_type, status, created_at, updated_at,
-        subject_type, subject_ref, target_evidence_json, parent_operation_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subject_type, subject_ref, target_evidence_json, parent_operation_id, request_options_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`
     ).bind(
       id, conversationId, destinationProvider, operationType, 'PENDING', now, now,
-      options.subject.type, options.subject.ref, targetEvidenceJson, options.parentOperationId || null
+      options.subject.type, options.subject.ref, targetEvidenceJson, options.parentOperationId || null,
+      requestOptionsJson
     ).run();
     op = await loadOperation(env, id);
   }
@@ -431,7 +440,7 @@ export async function executeOutboundOperation(
   };
 let result: { providerMessageRef?: string };
   try {
-    result = await action(id, lifecycle);
+    result = await action(id, lifecycle, op);
   } catch (error: unknown) {
     if (error instanceof RetryableProcessingError && error.code === 'CONCURRENCY_CAS_CONFLICT') {
       logger.warn('Stale owner detected during request lifecycle, exiting safely', { operation_id: id });
