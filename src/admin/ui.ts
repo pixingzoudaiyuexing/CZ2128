@@ -142,6 +142,7 @@ export async function showPage(
       `手动关闭 AI 通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_MANUAL_OFF')}`,
       [
         [{ text: '轮换客服 Bot', callback_data: 'e:tbot' }, { text: '迁移客服群', callback_data: 'e:tgroup' }],
+        [{ text: '刷新客服 Bot Webhook', callback_data: 't:tgw' }],
         [edit('Crisp 接管通知', 'tnc'), edit('Telegram 接管通知', 'tnt')],
         [edit('手动关闭通知', 'tnm')],
         [{ text: '恢复 ENV 默认值', callback_data: 'p:tgr' }],

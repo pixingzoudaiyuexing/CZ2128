@@ -443,6 +443,19 @@ async function processCallback(
   if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3));
+  if (data === 't:tgw') {
+    if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_SECRET_PATH || !env.TELEGRAM_WEBHOOK_SECRET) {
+      throw new Error('SUPPORT_BOT_UNAVAILABLE');
+    }
+    await setSupportWebhook(
+      env.TELEGRAM_BOT_TOKEN,
+      `${origin}/webhooks/telegram/${env.TELEGRAM_SECRET_PATH}`,
+      env.TELEGRAM_WEBHOOK_SECRET,
+      { dropPendingUpdates: false }
+    );
+    await reply(bootstrap, ctx, '客服 Bot Webhook 已刷新，消息与 AI 按钮回调均已启用。');
+    return 'TELEGRAM_SUPPORT_WEBHOOK_REFRESH';
+  }
   if (data === 't:ai') {
     await testAiCandidate(env);
     await reply(bootstrap, ctx, 'AI 健康检查通过。');

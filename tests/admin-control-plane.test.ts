@@ -417,6 +417,39 @@ describe('Telegram admin control plane', () => {
     expect(callbackData).not.toContain(`rb:${historyId}`);
   });
 
+  it('refreshes the current support webhook with callback_query enabled and no Runtime Config mutation', async () => {
+    const testEnv = env();
+    const fetchMock = defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(55, 'p:tg'), testEnv);
+    const telegramPage = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body)))
+      .find(body => body.text.startsWith('Telegram 设置'));
+    expect(telegramPage.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data))
+      .toContain('t:tgw');
+
+    await handleAdminTelegramWebhook(callback(56, 't:tgw'), testEnv);
+
+    const setWebhookCalls = fetchMock.mock.calls
+      .filter(call => String(call[0]).includes(`${testEnv.TELEGRAM_BOT_TOKEN}/setWebhook`));
+    expect(setWebhookCalls).toHaveLength(1);
+    expect(JSON.parse(String(setWebhookCalls[0][1]?.body))).toMatchObject({
+      url: 'https://worker.example/webhooks/telegram/old-path',
+      secret_token: 'old-secret',
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
+      drop_pending_updates: false
+    });
+    expect(testEnv.DB.runtime).toHaveLength(0);
+    expect(testEnv.DB.history).toHaveLength(0);
+    expect(testEnv.DB.sessions).toHaveLength(0);
+
+    const replies = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body)).text);
+    expect(replies).toContain('客服 Bot Webhook 已刷新，消息与 AI 按钮回调均已启用。');
+  });
+
   it.each([
     ['getMe', '/getMe', { ok: false, error_code: 401 }],
     ['group validation', '/getChat', { ok: true, result: { type: 'group', is_forum: false } }]
@@ -494,7 +527,10 @@ describe('Telegram admin control plane', () => {
       .filter(call => String(call[0]).includes(`${newToken}/setWebhook`))).toHaveLength(1);
     const setWebhookCall = vi.mocked(globalThis.fetch).mock.calls
       .find(call => String(call[0]).includes(`${newToken}/setWebhook`));
-    expect(JSON.parse(String(setWebhookCall?.[1]?.body))).toMatchObject({ drop_pending_updates: true });
+    expect(JSON.parse(String(setWebhookCall?.[1]?.body))).toMatchObject({
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
+      drop_pending_updates: true
+    });
 
     testEnv.QUEUE = { send: vi.fn(async () => undefined) };
     const update = {
