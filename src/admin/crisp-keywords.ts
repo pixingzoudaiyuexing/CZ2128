@@ -12,7 +12,7 @@ import {
 import { Env } from '../config/env';
 import { SafeError } from '../core/errors';
 import { clearAdminSession, getAdminSession, saveAdminSession } from '../runtime-config/repository';
-import { setPlainOverride } from '../runtime-config/service';
+import { restoreEnvOverride, setPlainOverride } from '../runtime-config/service';
 import { AdminSessionRow } from '../runtime-config/types';
 import { sendAdminMessage } from './telegram';
 import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
@@ -20,22 +20,27 @@ import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
 const CONFIG_KEY = 'CRISP_KEYWORD_RULES' as const;
 export const CRISP_KEYWORD_ADMIN_PAGE_SIZE = 10;
 
-function configState(env: Env): { config: CrispKeywordRulesConfig; version: number } {
+function configState(env: Env): { config: CrispKeywordRulesConfig; version: number; source: 'ENV' | 'D1' } {
   const snapshot = env.runtimeConfigSnapshot;
   if (snapshot?.errors.RUNTIME_CONFIG || snapshot?.errors.CRISP_KEYWORD_RULES) {
     throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
   }
   const raw = snapshot?.values.CRISP_KEYWORD_RULES;
   const version = Number(snapshot?.versions.CRISP_KEYWORD_RULES || 0);
+  const source = snapshot?.sources.CRISP_KEYWORD_RULES || 'ENV';
   if (!raw) {
-    if (version !== 0) throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
-    return { config: emptyCrispKeywordRules(), version: 0 };
+    if (source === 'D1' || version !== 0) throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
+    return { config: emptyCrispKeywordRules(), version: 0, source };
   }
   const config = parseCrispKeywordRules(raw);
-  if (!config || !Number.isSafeInteger(version) || version < 1) {
+  if (
+    !config ||
+    !Number.isSafeInteger(version) ||
+    (source === 'D1' ? version < 1 : version !== 0)
+  ) {
     throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
   }
-  return { config, version };
+  return { config, version, source };
 }
 
 async function send(
@@ -117,11 +122,12 @@ export async function showKeywordRulesPage(
   if (state.config.rules.length < CRISP_KEYWORD_RULES_MAX_COUNT) {
     keyboard.push([{ text: '➕ 添加规则', callback_data: 'k:add' }]);
   }
+  keyboard.push([{ text: '♻️ 恢复 ENV 规则', callback_data: 'k:env' }]);
   keyboard.push([{ text: '返回', callback_data: 'm' }]);
   await send(
     bootstrap,
     ctx,
-    `Crisp 关键词自动回复\n\n规则：${state.config.rules.length}/${CRISP_KEYWORD_RULES_MAX_COUNT}，启用：${enabled}，第 ${page + 1}/${pageCount} 页\n\n` +
+    `Crisp 关键词自动回复\n\n配置来源：${state.source}\n规则：${state.config.rules.length}/${CRISP_KEYWORD_RULES_MAX_COUNT}，启用：${enabled}，第 ${page + 1}/${pageCount} 页\n\n` +
       (lines.join('\n') || '当前没有规则。未配置规则时不会产生关键词自动回复。'),
     keyboard
   );
@@ -193,7 +199,43 @@ export async function processCrispKeywordCallback(
     await send(bootstrap, ctx, '已取消删除。', [[{ text: '返回规则列表', callback_data: 'p:kw' }]]);
     return 'KEYWORD_DELETE_CANCEL';
   }
-  const { config, version } = configState(env);
+  if (action === 'envn') {
+    const session = await getAdminSession(env, ctx.userId);
+    if (!session || session.action !== 'KEYWORD_RESTORE_ENV_CONFIRM' || session.target !== CONFIG_KEY) {
+      throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
+    }
+    await clearAdminSession(env, ctx.userId);
+    await send(bootstrap, ctx, '已取消恢复 ENV 规则。', [[{ text: '返回规则列表', callback_data: 'p:kw' }]]);
+    return 'KEYWORD_RESTORE_ENV_CANCEL';
+  }
+  const { config, version, source } = configState(env);
+  if (action === 'env') {
+    if (source === 'ENV') {
+      await send(bootstrap, ctx, '当前已经使用 ENV 关键词配置。', [[{ text: '返回规则列表', callback_data: 'p:kw' }]]);
+      return 'KEYWORD_RESTORE_ENV_NOOP';
+    }
+    await beginSession(env, ctx, 'KEYWORD_RESTORE_ENV_CONFIRM', version);
+    await send(
+      bootstrap,
+      ctx,
+      '确认移除当前 Crisp 关键词 D1 覆盖配置并恢复 ENV 规则？\n当前 D1 中的规则将不再生效，之后将使用服务器 ENV 中的关键词配置。',
+      [[
+        { text: '确认恢复', callback_data: 'k:envy' },
+        { text: '取消', callback_data: 'k:envn' }
+      ]]
+    );
+    return 'KEYWORD_RESTORE_ENV_BEGIN';
+  }
+  if (action === 'envy') {
+    const session = await getAdminSession(env, ctx.userId);
+    if (!session || session.action !== 'KEYWORD_RESTORE_ENV_CONFIRM' || session.target !== CONFIG_KEY) {
+      throw new SafeError('RUNTIME_CONFIG_VALUE_INVALID');
+    }
+    await restoreEnvOverride(env, CONFIG_KEY, session.expected_version, ctx.userId, ctx.updateId);
+    await clearAdminSession(env, ctx.userId);
+    await send(bootstrap, ctx, 'Crisp 关键词规则已恢复 ENV。', [[{ text: '返回关键词页面', callback_data: 'p:kw' }]]);
+    return 'KEYWORD_RESTORE_ENV';
+  }
   const pageMatch = /^p:(\d{1,2})$/.exec(action);
   if (pageMatch) {
     await showKeywordRulesPage(env, bootstrap, ctx, Number(pageMatch[1]));

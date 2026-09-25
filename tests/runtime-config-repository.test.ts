@@ -61,6 +61,27 @@ describe('runtime config repository', () => {
     await expect(setPlainOverride(testEnv, 'AI_MODEL', 'new-runtime', 0, '1', '32')).resolves.toBe(3);
   });
 
+  it('rejects stale Restore ENV CAS and preserves the newer runtime value', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    await setPlainOverride(testEnv, 'AI_MODEL', 'first', 0, '1', '33');
+    await setPlainOverride(testEnv, 'AI_MODEL', 'newer', 1, '2', '34');
+    await expect(restoreEnvOverride(testEnv, 'AI_MODEL', 1, '1', '35'))
+      .rejects.toBeInstanceOf(RuntimeConfigConflictError);
+    expect(db.runtime[0]).toMatchObject({ key: 'AI_MODEL', value_text: 'newer', version: 2 });
+    expect(db.history.filter(row => row.action === 'RESTORE_ENV')).toHaveLength(0);
+  });
+
+  it('permits only the dedicated Crisp keyword workflow to use Restore ENV while other dedicated keys remain blocked', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    await setPlainOverride(testEnv, 'CRISP_KEYWORD_RULES', '{"version":1,"rules":[]}', 0, '1', '36');
+    await expect(restoreEnvOverride(testEnv, 'CRISP_KEYWORD_RULES', 1, '1', '37')).resolves.toBe(2);
+    expect(db.history.at(-1)).toMatchObject({ key: 'CRISP_KEYWORD_RULES', action: 'RESTORE_ENV', is_deleted: 1 });
+    await expect(restoreEnvOverride(testEnv, 'BOT_GROUP_ID', 1, '1', '38'))
+      .rejects.toThrow('DEDICATED_WORKFLOW_REQUIRED');
+  });
+
   it('rolls plain and encrypted secret history forward as new versions', async () => {
     const db = new RuntimeDb();
     const testEnv = env(db);

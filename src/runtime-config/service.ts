@@ -79,7 +79,7 @@ export async function restoreEnvOverride(
   actorUserId: string,
   sourceUpdateId: string
 ): Promise<number> {
-  if (getRuntimeConfigDefinition(key).rollback === 'DEDICATED') {
+  if (getRuntimeConfigDefinition(key).rollback === 'DEDICATED' && key !== 'CRISP_KEYWORD_RULES') {
     throw new Error('DEDICATED_WORKFLOW_REQUIRED');
   }
   return removeRuntimeConfig(env, key, expectedVersion, actorUserId, sourceUpdateId);
