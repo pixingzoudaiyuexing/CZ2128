@@ -188,7 +188,7 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
         const res = destinationProvider === 'crisp'
           ? await createCrispMessage(
               env, conv.helpdesk_account_ref, conv.helpdesk_conversation_ref, content, String(opId), lifecycle,
-              frozenIdentity ? { identity: frozenIdentity, automated: true } : undefined
+              frozenIdentity ? { identity: frozenIdentity, automated: false } : undefined
             )
           : await createChatwootMessage(
               env,
