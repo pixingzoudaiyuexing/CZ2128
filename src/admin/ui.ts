@@ -10,12 +10,14 @@ import { parseCrispKeywordRules } from '../config/crisp-keywords';
 import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './platform-policy';
 import { parseCrispMenu } from '../queue/crisp-handler';
 import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
+import { showKnowledgePage } from './knowledge';
 
 const mainKeyboard: AdminKeyboard = [
-  [{ text: '🤖 AI 设置', callback_data: 'p:ai' }, { text: '💬 Telegram 设置', callback_data: 'p:tg' }],
-  [{ text: '🔵 Crisp 设置', callback_data: 'p:crisp' }, { text: '📎 附件设置', callback_data: 'p:att' }],
-  [{ text: '💡 关键词回复', callback_data: 'p:kw' }, { text: '🛡 可靠性管理', callback_data: 'p:rel' }],
-  [{ text: '⚙️ 系统状态', callback_data: 'p:sys' }, { text: '📜 操作历史', callback_data: 'p:hist' }]
+  [{ text: '🤖 AI 设置', callback_data: 'p:ai' }, { text: '📚 AI 知识库', callback_data: 'p:kb' }],
+  [{ text: '💬 Telegram 设置', callback_data: 'p:tg' }, { text: '🔵 Crisp 设置', callback_data: 'p:crisp' }],
+  [{ text: '📎 附件设置', callback_data: 'p:att' }, { text: '💡 关键词回复', callback_data: 'p:kw' }],
+  [{ text: '🛡 可靠性管理', callback_data: 'p:rel' }, { text: '⚙️ 系统状态', callback_data: 'p:sys' }],
+  [{ text: '📜 操作历史', callback_data: 'p:hist' }]
 ];
 
 export async function reply(
@@ -101,6 +103,10 @@ export async function showPage(
   }
   if (page === 'kw') {
     await showKeywordRulesPage(env, bootstrap, ctx);
+    return;
+  }
+  if (page === 'kb') {
+    await showKnowledgePage(env, bootstrap, ctx);
     return;
   }
   if (page === 'ai') {

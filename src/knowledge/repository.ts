@@ -1,4 +1,5 @@
 import { Env } from '../config/env';
+import { SafeError } from '../core/errors';
 
 export const KNOWLEDGE_MAX_ENTRIES = 500;
 export const KNOWLEDGE_TITLE_MAX_CHARS = 120;
@@ -29,7 +30,7 @@ export interface KnowledgeMatch {
 
 function boundedText(value: string, max: number): string {
   const normalized = value.normalize('NFKC').replace(/\u0000/g, '').trim();
-  if (!normalized || Array.from(normalized).length > max) throw new Error('KNOWLEDGE_VALUE_INVALID');
+  if (!normalized || Array.from(normalized).length > max) throw new SafeError('KNOWLEDGE_VALUE_INVALID');
   return normalized;
 }
 
@@ -138,12 +139,12 @@ export async function createKnowledgeEntry(
   sourceUpdateId: string
 ): Promise<KnowledgeEntryRow> {
   const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM knowledge_entries').first<{ count: number }>();
-  if (Number(count?.count || 0) >= KNOWLEDGE_MAX_ENTRIES) throw new Error('KNOWLEDGE_LIMIT');
+  if (Number(count?.count || 0) >= KNOWLEDGE_MAX_ENTRIES) throw new SafeError('KNOWLEDGE_LIMIT');
 
   const title = sanitizeKnowledgeTitle(titleInput);
   const body = sanitizeKnowledgeBody(bodyInput);
   const searchTerms = buildKnowledgeSearchTerms(title + '\n' + body);
-  if (!searchTerms) throw new Error('KNOWLEDGE_VALUE_INVALID');
+  if (!searchTerms) throw new SafeError('KNOWLEDGE_VALUE_INVALID');
   const id = generateKnowledgeId();
   const now = Math.floor(Date.now() / 1000);
 
@@ -161,7 +162,7 @@ export async function createKnowledgeEntry(
   ]);
 
   const row = await getKnowledgeEntry(env, id);
-  if (!row) throw new Error('KNOWLEDGE_PERSIST_FAILED');
+  if (!row) throw new SafeError('KNOWLEDGE_PERSIST_FAILED');
   return row;
 }
 
@@ -193,9 +194,9 @@ async function updateWithHistory(
         WHERE id = ? AND version = ?`
     ).bind(action, actorUserId, sourceUpdateId, now, id, nextVersion)
   ]);
-  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) throw new Error('KNOWLEDGE_VERSION_CONFLICT');
+  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
   const row = await getKnowledgeEntry(env, id);
-  if (!row) throw new Error('KNOWLEDGE_PERSIST_FAILED');
+  if (!row) throw new SafeError('KNOWLEDGE_PERSIST_FAILED');
   return row;
 }
 
@@ -209,7 +210,7 @@ export async function updateKnowledgeEntry(
   sourceUpdateId: string
 ): Promise<KnowledgeEntryRow> {
   const current = await getKnowledgeEntry(env, id);
-  if (!current || current.version !== expectedVersion) throw new Error('KNOWLEDGE_VERSION_CONFLICT');
+  if (!current || current.version !== expectedVersion) throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
   return updateWithHistory(
     env,
     id,
@@ -232,7 +233,7 @@ export async function setKnowledgeEntryEnabled(
   sourceUpdateId: string
 ): Promise<KnowledgeEntryRow> {
   const current = await getKnowledgeEntry(env, id);
-  if (!current || current.version !== expectedVersion) throw new Error('KNOWLEDGE_VERSION_CONFLICT');
+  if (!current || current.version !== expectedVersion) throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
   return updateWithHistory(
     env,
     id,
@@ -264,5 +265,5 @@ export async function deleteKnowledgeEntry(
     ).bind(actorUserId, sourceUpdateId, now, id, expectedVersion),
     env.DB.prepare('DELETE FROM knowledge_entries WHERE id = ? AND version = ?').bind(id, expectedVersion)
   ]);
-  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) throw new Error('KNOWLEDGE_VERSION_CONFLICT');
+  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
 }

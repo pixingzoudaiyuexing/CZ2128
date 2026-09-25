@@ -147,11 +147,11 @@ describe('Telegram admin control plane', () => {
     expect(body.text).toBe('CZ2128 控制中心');
     const buttons = body.reply_markup.inline_keyboard.flat();
     expect(buttons.map((item: any) => item.text)).toEqual([
-      '🤖 AI 设置', '💬 Telegram 设置', '🔵 Crisp 设置', '📎 附件设置',
-      '💡 关键词回复', '🛡 可靠性管理', '⚙️ 系统状态', '📜 操作历史'
+      '🤖 AI 设置', '📚 AI 知识库', '💬 Telegram 设置', '🔵 Crisp 设置',
+      '📎 附件设置', '💡 关键词回复', '🛡 可靠性管理', '⚙️ 系统状态', '📜 操作历史'
     ]);
     expect(buttons.map((item: any) => item.callback_data)).toEqual([
-      'p:ai', 'p:tg', 'p:crisp', 'p:att', 'p:kw', 'p:rel', 'p:sys', 'p:hist'
+      'p:ai', 'p:kb', 'p:tg', 'p:crisp', 'p:att', 'p:kw', 'p:rel', 'p:sys', 'p:hist'
     ]);
     expect(buttons.map((item: any) => item.callback_data)).not.toContain('p:cw');
   });
