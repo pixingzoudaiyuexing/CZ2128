@@ -54,7 +54,7 @@ The following are intentionally deferred:
 
 - Custom replacement for the Chatwoot customer widget
 - Modifying/forking Chatwoot source code
-- Full RAG/vector knowledge base
+- Full embedding/vector RAG beyond the bounded D1 FTS5 knowledge-retrieval MVP
 - Automatic permanent learning from every operator answer
 - Multi-channel support beyond Telegram
 - Multi-helpdesk support beyond Chatwoot

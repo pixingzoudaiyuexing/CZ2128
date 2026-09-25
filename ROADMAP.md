@@ -347,17 +347,26 @@ Phase 4B-5 is a documentation-only closure for reliability operations, migration
 
 ## Phase 5 — Knowledge / RAG
 
-Goal: add knowledge retrieval without coupling it to the helpdesk platform.
+Goal: add reviewed knowledge retrieval without coupling it to the helpdesk platform.
 
-Scope to be designed later:
+Phase 5 MVP:
 
-- knowledge source model
-- chunking/indexing strategy
-- retrieval quality evaluation
-- citations/internal provenance
-- safe fallback when knowledge confidence is low
+- D1 is the canonical knowledge store.
+- Knowledge entries have stable IDs, enabled/disabled state, optimistic versions and append-only mutation history.
+- D1 FTS5 provides bounded full-text retrieval with multilingual search terms; no separate vector resource or embedding provider is required for the MVP.
+- The latest customer text retrieves at most a small bounded set of enabled entries.
+- Retrieved content is inserted into AI context as reference-only data with internal provenance and prompt-injection resistance.
+- Retrieval failure safely falls back to the existing system prompt + recent conversation context.
+- The private Telegram Admin Bot provides reviewed add/edit/enable/disable/delete workflows with update dedupe, short-lived sessions, confirmation where destructive and version-CAS mutation fencing.
+- Automatic publication from operator replies is explicitly excluded from Phase 5 and remains Phase 6.
 
-Do not start until Phases 1–4 are stable.
+Later upgrade criteria:
+
+- add semantic/vector retrieval only if measured FTS5 quality or corpus scale is insufficient;
+- preserve the same provider-independent AI context interface;
+- add retrieval-quality evaluation before claiming full RAG parity.
+
+This MVP does not claim embedding/vector RAG or automatic learning.
 
 ## Phase 6 — Human Learning Workflow
 

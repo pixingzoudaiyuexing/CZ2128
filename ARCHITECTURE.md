@@ -345,10 +345,13 @@ Recommended behavior:
 - Enforce a configurable message/token budget.
 - Include normalized customer metadata only when explicitly configured.
 - System policy is separate from customer/business knowledge.
+- Reviewed customer/business knowledge is stored in D1 and retrieved through a bounded FTS5 index.
+- Retrieved knowledge is injected as a separate reference-only system context after the configured system policy; knowledge content is never treated as executable instructions.
+- Retrieval failure degrades to the existing recent-conversation context rather than blocking human support or AI processing.
 - Attachments enter context only through safe textual metadata unless a future multimodal feature explicitly handles them.
-- Do not build vector RAG in V1.
+- Embedding/vector RAG remains deferred until corpus size or measured retrieval quality justifies a separate vector resource.
 
-A later knowledge layer can add retrieval without changing the AI-provider interface.
+The AI-provider interface remains unchanged; retrieval is a context-building concern.
 
 ## 8. Echo Prevention and Idempotency
 
@@ -594,7 +597,7 @@ Resolved:
 5. **One conversation remains one Telegram topic** in V1, with close/reopen lifecycle management.
 6. **Chatwoot outbound messages use stable source correlation (`source_id`) where supported**, plus D1 operation/message records.
 7. **R2 gateway proxy URLs remain the V1 attachment delivery model.**
-8. **Recent D1 messages are sufficient for V1 AI context; RAG is deferred.**
+8. **V1 AI context uses recent D1 messages plus optional reviewed D1 FTS5 knowledge retrieval; embedding/vector RAG remains deferred.**
 
 With these decisions frozen, Phase 1 implementation may begin.
 
