@@ -9,6 +9,7 @@ import {
   getAdminSession,
   getRuntimeConfig,
   getRuntimeHistory,
+  getRuntimeHistoryVersion,
   saveAdminSession
 } from '../runtime-config/repository';
 import { maskSecret, resolveEffectiveEnv } from '../runtime-config/resolver';
@@ -94,6 +95,139 @@ function parseAdminContext(payload: any): AdminContext | null {
     messageId: message.message_id,
     text: typeof message.text === 'string' && message.text.length <= 20000 ? message.text : undefined
   };
+}
+
+type BotRetirementCategory = 'OLD_SUPPORT' | 'LEGACY_ADMIN';
+
+interface BotRetirementContext {
+  previousSupportVersion: number;
+  pending: BotRetirementCategory[];
+}
+
+function assertRotationCandidateDistinct(
+  rawEnv: Env,
+  effectiveEnv: Env,
+  bootstrap: AdminBootstrap,
+  candidateToken: string
+): void {
+  const existingTokens = new Set([
+    effectiveEnv.TELEGRAM_BOT_TOKEN?.trim(),
+    bootstrap.token?.trim(),
+    rawEnv.ADMIN_TELEGRAM_BOT_TOKEN?.trim()
+  ].filter((value): value is string => !!value));
+  if (existingTokens.has(candidateToken)) throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
+}
+
+async function priorSupportToken(rawEnv: Env, previousSupportVersion: number): Promise<string | null> {
+  if (previousSupportVersion === 0) return rawEnv.TELEGRAM_BOT_TOKEN?.trim() || null;
+  const history = await getRuntimeHistoryVersion(rawEnv, 'TELEGRAM_SUPPORT_PROFILE', previousSupportVersion);
+  if (!history || history.value_kind !== 'SECRET' || !history.ciphertext || !history.nonce) {
+    throw new Error('HISTORY_SECRET_INVALID');
+  }
+  const plaintext = await decryptRuntimeSecret(
+    rawEnv.RUNTIME_CONFIG_MASTER_KEY || '',
+    'TELEGRAM_SUPPORT_PROFILE',
+    history.ciphertext,
+    history.nonce
+  );
+  return parseTelegramSupportProfile(plaintext).bot_token;
+}
+
+async function retireOldBotWebhooks(
+  newToken: string,
+  oldSupportToken: string | null | undefined,
+  legacyAdminToken: string | null | undefined,
+  only: BotRetirementCategory[] = ['OLD_SUPPORT', 'LEGACY_ADMIN']
+): Promise<BotRetirementCategory[]> {
+  const requested = new Set(only);
+  const grouped = new Map<string, Set<BotRetirementCategory>>();
+  const add = (category: BotRetirementCategory, token: string | null | undefined) => {
+    const normalized = token?.trim();
+    if (!requested.has(category) || !normalized || normalized === newToken) return;
+    const categories = grouped.get(normalized) || new Set<BotRetirementCategory>();
+    categories.add(category);
+    grouped.set(normalized, categories);
+  };
+  add('OLD_SUPPORT', oldSupportToken);
+  add('LEGACY_ADMIN', legacyAdminToken);
+
+  const failed = new Set<BotRetirementCategory>();
+  for (const [token, categories] of grouped) {
+    try {
+      await deleteSupportWebhook(token);
+    } catch {
+      for (const category of categories) failed.add(category);
+    }
+  }
+  return [...failed];
+}
+
+function retirementFailureText(pending: BotRetirementCategory[]): string {
+  const labels = pending.map(category => category === 'OLD_SUPPORT' ? '旧客服 Bot webhook' : '旧 Admin Bot webhook');
+  return [
+    '新 Bot 已激活，但旧 Bot webhook 退役未完全成功。',
+    `待重试：${labels.join('、')}`,
+    '当前新 Bot profile 保持权威，不会回滚，也不会重新执行 Bot 轮换。',
+    '如当前 Bot 已停用，请直接到新 Bot 发送 /start 后重试。'
+  ].join('\n');
+}
+
+async function saveRetirementRetrySession(
+  env: Env,
+  ctx: AdminContext,
+  activeVersion: number,
+  previousSupportVersion: number,
+  pending: BotRetirementCategory[]
+): Promise<void> {
+  await saveAdminSession(env, {
+    admin_user_id: ctx.userId,
+    action: 'RETIRE_BOT_WEBHOOKS',
+    target: 'TELEGRAM_SUPPORT_PROFILE',
+    expected_version: activeVersion,
+    candidate_value_text: null,
+    candidate_ciphertext: null,
+    candidate_nonce: null,
+    context_json: JSON.stringify({ previousSupportVersion, pending })
+  }, 86400);
+}
+
+async function retryBotRetirement(
+  rawEnv: Env,
+  env: Env,
+  bootstrap: AdminBootstrap,
+  ctx: AdminContext
+): Promise<string> {
+  const session = await getAdminSession(env, ctx.userId);
+  if (!session || session.action !== 'RETIRE_BOT_WEBHOOKS') throw new Error('CONFIRMATION_SESSION_MISSING');
+  const currentVersion = await currentRuntimeVersion(rawEnv, 'TELEGRAM_SUPPORT_PROFILE');
+  if (currentVersion !== session.expected_version) throw new Error('RUNTIME_CONFIG_VERSION_CONFLICT');
+  const parsed = JSON.parse(session.context_json || '{}') as Partial<BotRetirementContext>;
+  const previousSupportVersion = Number(parsed.previousSupportVersion);
+  const pending = Array.isArray(parsed.pending)
+    ? parsed.pending.filter((value): value is BotRetirementCategory => value === 'OLD_SUPPORT' || value === 'LEGACY_ADMIN')
+    : [];
+  if (!Number.isSafeInteger(previousSupportVersion) || previousSupportVersion < 0 || pending.length === 0) {
+    throw new Error('CONFIRMATION_INVALID');
+  }
+
+  const oldSupportToken = await priorSupportToken(rawEnv, previousSupportVersion);
+  const failed = await retireOldBotWebhooks(
+    env.TELEGRAM_BOT_TOKEN || '',
+    oldSupportToken,
+    rawEnv.ADMIN_TELEGRAM_BOT_TOKEN,
+    pending
+  );
+  if (failed.length > 0) {
+    await saveRetirementRetrySession(rawEnv, ctx, session.expected_version, previousSupportVersion, failed);
+    await reply(bootstrap, ctx, retirementFailureText(failed), [[
+      { text: '重试旧 Bot Webhook 退役', callback_data: 't:trr' }
+    ]]);
+    return 'BOT_ROTATION_RETIREMENT_INCOMPLETE';
+  }
+
+  await clearAdminSession(rawEnv, ctx.userId);
+  await reply(bootstrap, ctx, '旧 Bot webhook 退役已完成；当前仅新 Bot 接收 CZ2128 Telegram 更新。');
+  return 'BOT_ROTATION_RETIREMENT_COMPLETE';
 }
 
 async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string): Promise<string> {
@@ -301,30 +435,22 @@ async function setCrispWelcomeEnabled(
 }
 
 async function processBotToken(
+  rawEnv: Env,
   env: Env,
   bootstrap: AdminBootstrap,
   ctx: AdminContext,
   expectedVersion: number
 ): Promise<string> {
   if (!ctx.text || ctx.messageId === undefined) throw new Error('ADMIN_INPUT_INVALID');
-  const deleted = await deleteAdminInput(bootstrap.token, ctx.chatId, ctx.messageId);
   const token = ctx.text.trim();
-  const legacyAdminToken = env.ADMIN_TELEGRAM_BOT_TOKEN?.trim();
-  if (token === bootstrap.token || (legacyAdminToken && token === legacyAdminToken)) {
-    throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
-  }
+  assertRotationCandidateDistinct(rawEnv, env, bootstrap, token);
+  const deleted = await deleteAdminInput(bootstrap.token, ctx.chatId, ctx.messageId);
   const groupId = env.BOT_GROUP_ID || undefined;
   const bot = await validateSupportBot(token, groupId);
-  const webhookPath = generateOpaqueSecret(32);
-  let webhookSecret = generateOpaqueSecret(32);
-  while (webhookSecret === webhookPath) webhookSecret = generateOpaqueSecret(32);
-  const profile = JSON.stringify({
-    bot_token: token,
-    webhook_secret: webhookSecret,
-    webhook_path: webhookPath
-  });
   const encrypted = await encryptRuntimeSecret(
-    env.RUNTIME_CONFIG_MASTER_KEY || '', 'TELEGRAM_SUPPORT_PROFILE', validateRuntimeValue('TELEGRAM_SUPPORT_PROFILE', profile)
+    env.RUNTIME_CONFIG_MASTER_KEY || '',
+    'TELEGRAM_SUPPORT_PROFILE',
+    JSON.stringify({ bot_token: token })
   );
   await saveAdminSession(env, {
     admin_user_id: ctx.userId, action: 'CONFIRM_BOT', target: 'TELEGRAM_SUPPORT_PROFILE',
@@ -333,7 +459,7 @@ async function processBotToken(
     context_json: JSON.stringify({ username: bot.username?.slice(0, 64) || '已验证', deleteFailed: !deleted })
   });
   await reply(bootstrap, ctx,
-    `新客服 Bot 已验证：${bot.username ? `@${bot.username}` : '已验证'}。确认轮换并创建全新的 Webhook 身份？` +
+    `新客服 Bot 已验证：${bot.username ? `@${bot.username}` : '已验证'}。\n\n确认后：\n- 新 Bot 将立即接管后台和客服群\n- 当前客服 Bot webhook 将停用\n- 旧 Admin Bot webhook 将停用` +
     (!deleted ? '\n输入消息未能自动删除，请手动删除。' : ''),
     [[{ text: '确认轮换', callback_data: 'c:yes' }, { text: '取消', callback_data: 'c:no' }]]
   );
@@ -377,7 +503,6 @@ async function confirmSession(
     await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
     return 'CHATWOOT_ADMIN_DISABLED';
   }
-  let completionWarning = '';
   if (session.action === 'CONFIRM_SET') {
     if (!session.candidate_value_text) throw new Error('CONFIRMATION_INVALID');
     await setPlainOverride(env, session.target as RuntimeConfigKey, session.candidate_value_text, session.expected_version, ctx.userId, ctx.updateId);
@@ -399,40 +524,69 @@ async function confirmSession(
     await migrateTelegramGroup(env, session.candidate_value_text, session.expected_version, ctx.userId, ctx.updateId);
   } else if (session.action === 'CONFIRM_BOT') {
     if (!session.candidate_ciphertext || !session.candidate_nonce) throw new Error('CONFIRMATION_INVALID');
-    const plaintext = await decryptRuntimeSecret(
+    const candidateEnvelope = await decryptRuntimeSecret(
       rawEnv.RUNTIME_CONFIG_MASTER_KEY || '',
       'TELEGRAM_SUPPORT_PROFILE',
       session.candidate_ciphertext,
       session.candidate_nonce
     );
-    const profile = parseTelegramSupportProfile(plaintext);
-    await validateSupportBot(profile.bot_token, env.BOT_GROUP_ID || undefined);
-    await setSupportWebhook(
-      profile.bot_token,
-      `${origin}/webhooks/telegram/${profile.webhook_path}`,
-      profile.webhook_secret
-    );
+    let candidateToken = '';
     try {
-      await setSecretOverride(
-        rawEnv, 'TELEGRAM_SUPPORT_PROFILE', plaintext, session.expected_version,
+      const parsed = JSON.parse(candidateEnvelope);
+      candidateToken = typeof parsed?.bot_token === 'string' ? parsed.bot_token.trim() : '';
+    } catch {
+      throw new Error('CONFIRMATION_INVALID');
+    }
+    if (!candidateToken) throw new Error('CONFIRMATION_INVALID');
+    assertRotationCandidateDistinct(rawEnv, env, bootstrap, candidateToken);
+    await validateSupportBot(candidateToken, env.BOT_GROUP_ID || undefined);
+
+    const webhookPath = generateOpaqueSecret(32);
+    let webhookSecret = generateOpaqueSecret(32);
+    while (webhookSecret === webhookPath) webhookSecret = generateOpaqueSecret(32);
+    const profile = validateRuntimeValue('TELEGRAM_SUPPORT_PROFILE', JSON.stringify({
+      bot_token: candidateToken,
+      webhook_secret: webhookSecret,
+      webhook_path: webhookPath
+    }));
+    await setSupportWebhook(
+      candidateToken,
+      `${origin}/webhooks/telegram/${webhookPath}`,
+      webhookSecret
+    );
+
+    let activeVersion: number;
+    try {
+      activeVersion = await setSecretOverride(
+        rawEnv, 'TELEGRAM_SUPPORT_PROFILE', profile, session.expected_version,
         ctx.userId, ctx.updateId, 'BOT_ROTATE'
       );
     } catch (error) {
-      try { await deleteSupportWebhook(profile.bot_token); } catch { /* new inactive bot remains fail-safe */ }
+      try { await deleteSupportWebhook(candidateToken); } catch { /* new inactive bot remains fail-safe */ }
       throw error;
     }
-    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_TOKEN !== profile.bot_token) {
-      try {
-        await deleteSupportWebhook(env.TELEGRAM_BOT_TOKEN);
-      } catch {
-        completionWarning = '\n新客服 Bot 已启用，但旧 Bot webhook 未能删除；旧 webhook identity 已失效。';
-      }
+
+    const failed = await retireOldBotWebhooks(
+      candidateToken,
+      env.TELEGRAM_BOT_TOKEN,
+      rawEnv.ADMIN_TELEGRAM_BOT_TOKEN
+    );
+    if (failed.length > 0) {
+      await saveRetirementRetrySession(rawEnv, ctx, activeVersion, session.expected_version, failed);
+      await reply(bootstrap, ctx, retirementFailureText(failed), [[
+        { text: '重试旧 Bot Webhook 退役', callback_data: 't:trr' }
+      ]]);
+      return 'BOT_ROTATION_RETIREMENT_INCOMPLETE';
     }
+
+    await clearAdminSession(rawEnv, ctx.userId);
+    await reply(bootstrap, ctx, '轮换完成：新 Bot 已立即接管后台和客服群；旧客服 Bot 与旧 Admin Bot webhook 已停用。');
+    return 'BOT_ROTATION_SUCCESS';
   } else {
     throw new Error('UNKNOWN_CONFIRMATION');
   }
   await clearAdminSession(env, ctx.userId);
-  await reply(bootstrap, ctx, `操作已确认并完成。${completionWarning}`);
+  await reply(bootstrap, ctx, '操作已确认并完成。');
   return session.action;
 }
 
@@ -476,6 +630,7 @@ async function processCallback(
       : '客服 Bot Webhook 已刷新，消息与 AI 按钮回调均已启用。');
     return 'TELEGRAM_SUPPORT_WEBHOOK_REFRESH';
   }
+  if (data === 't:trr') return retryBotRetirement(rawEnv, env, bootstrap, ctx);
   if (data === 't:ai') {
     await testAiCandidate(env);
     await reply(bootstrap, ctx, 'AI 健康检查通过。');
@@ -491,11 +646,20 @@ async function processCallback(
 }
 
 async function processMessage(
+  rawEnv: Env,
   env: Env,
   bootstrap: AdminBootstrap,
   ctx: AdminContext
 ): Promise<string> {
   if (ctx.text === '/start' || ctx.text === '/menu') {
+    const pendingRetirement = await getAdminSession(env, ctx.userId);
+    if (pendingRetirement?.action === 'RETIRE_BOT_WEBHOOKS') {
+      await showMain(bootstrap, ctx);
+      await reply(bootstrap, ctx, '检测到旧 Bot webhook 退役尚未完成。新 Bot 已保持 active，可直接重试剩余退役。', [[
+        { text: '重试旧 Bot Webhook 退役', callback_data: 't:trr' }
+      ]]);
+      return 'MAIN_RETIREMENT_PENDING';
+    }
     await clearAdminSession(env, ctx.userId);
     await showMain(bootstrap, ctx);
     return 'MAIN';
@@ -508,7 +672,7 @@ async function processMessage(
   if (session.action === 'SET') return processSetInput(env, bootstrap, ctx, session);
   if (session.action === 'CRISP_WELCOME_SET') return processCrispWelcomeInput(env, bootstrap, ctx, session);
   if (session.action === 'ROTATE_BOT') {
-    return processBotToken(env, bootstrap, ctx, session.expected_version);
+    return processBotToken(rawEnv, env, bootstrap, ctx, session.expected_version);
   }
   if (session.action === 'MIGRATE_GROUP') return processGroupInput(env, bootstrap, ctx, session.expected_version);
   if (session.action.startsWith('KEYWORD_')) return await processCrispKeywordMessage(env, bootstrap, ctx, session);
@@ -537,7 +701,7 @@ async function processAdminTelegramPayload(
     }
     action = ctx.callbackData
       ? await processCallback(rawEnv, effectiveEnv, bootstrap, ctx, origin)
-      : await processMessage(effectiveEnv, bootstrap, ctx);
+      : await processMessage(rawEnv, effectiveEnv, bootstrap, ctx);
     await completeAdminUpdate(rawEnv, ctx.updateId, action);
   } catch (error) {
     const code = safeErrorCode(error);

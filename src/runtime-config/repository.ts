@@ -254,9 +254,11 @@ export async function getAdminSession(env: Env, userId: string): Promise<AdminSe
 
 export async function saveAdminSession(
   env: Env,
-  session: Omit<AdminSessionRow, 'expires_at' | 'updated_at'>
+  session: Omit<AdminSessionRow, 'expires_at' | 'updated_at'>,
+  ttlSeconds = 600
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  const ttl = Math.min(Math.max(Math.floor(ttlSeconds), 60), 86400);
   await env.DB.prepare(
     `INSERT INTO admin_sessions
      (admin_user_id, action, target, expected_version, candidate_value_text,
@@ -275,7 +277,7 @@ export async function saveAdminSession(
   ).bind(
     session.admin_user_id, session.action, session.target, session.expected_version,
     session.candidate_value_text, session.candidate_ciphertext, session.candidate_nonce,
-    session.context_json, now + 600, now
+    session.context_json, now + ttl, now
   ).run();
 }
 
