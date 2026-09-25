@@ -126,13 +126,14 @@ export async function validateSupportBot(
 export async function setSupportWebhook(
   token: string,
   url: string,
-  secretToken: string
+  secretToken: string,
+  options: { dropPendingUpdates?: boolean } = {}
 ): Promise<void> {
   await telegramCall(token, 'setWebhook', {
     url,
     secret_token: secretToken,
-    allowed_updates: ['message', 'edited_message'],
-    drop_pending_updates: true
+    allowed_updates: ['message', 'edited_message', 'callback_query'],
+    drop_pending_updates: options.dropPendingUpdates ?? true
   });
 }
 
