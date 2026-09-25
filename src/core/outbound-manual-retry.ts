@@ -300,7 +300,7 @@ async function prepareMessageRetry(
           message.text_content!,
           operationId,
           lifecycle,
-          frozenIdentity ? { identity: frozenIdentity, automated: true } : undefined
+          frozenIdentity ? { identity: frozenIdentity, automated: false } : undefined
         );
         return { providerMessageRef: response.messageId };
       }
@@ -611,6 +611,16 @@ function creationGuard(
        )`
     );
     params.push(targetEvidence.accountRef, targetEvidence.conversationRef);
+  } else if (targetEvidence.provider === 'crisp') {
+    clauses.push(
+      `AND EXISTS (
+         SELECT 1 FROM conversations c
+         WHERE c.id = outbound_operations.conversation_id
+           AND c.helpdesk_provider = 'crisp'
+           AND c.helpdesk_account_ref = ? AND c.helpdesk_conversation_ref = ?
+       )`
+    );
+    params.push(targetEvidence.websiteRef, targetEvidence.sessionRef);
   } else if (parent.operation_type === 'CREATE_TOPIC') {
     clauses.push(
       `AND EXISTS (

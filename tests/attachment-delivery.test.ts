@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deliverAttachmentToChatwoot,
+  deliverAttachmentToCrisp,
   deliverAttachmentToTelegram,
   loadAttachmentBuffer
 } from '../src/attachments/delivery';
@@ -53,6 +54,32 @@ describe('attachment multipart delivery', () => {
   });
 
   afterEach(() => vi.restoreAllMocks());
+
+  it('marks Telegram human attachment messages to Crisp as non-automated while preserving identity', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ data: { fingerprint: 123 } }), { status: 200 })
+    );
+    await deliverAttachmentToCrisp(
+      {
+        CRISP_API_IDENTIFIER: 'identifier',
+        CRISP_API_KEY: 'key'
+      } as any,
+      'website-1',
+      'session-1',
+      'attachment_crisp:att-human',
+      'Attachment from human operator',
+      undefined,
+      { nickname: '人工客服', avatar: 'https://cdn.example/operator.png' }
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body).toMatchObject({
+      type: 'text',
+      from: 'operator',
+      automated: false,
+      user: { nickname: '人工客服', avatar: 'https://cdn.example/operator.png' }
+    });
+  });
 
   it('uploads Chatwoot attachments[] with source_id correlation', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 44 }), { status: 200 }));

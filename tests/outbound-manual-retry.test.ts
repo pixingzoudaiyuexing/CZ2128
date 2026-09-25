@@ -170,6 +170,96 @@ describe('manual retry child operations', () => {
     db.close();
   });
 
+  it('keeps a Telegram human identity non-automated when manually retrying to Crisp', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `UPDATE conversations
+       SET helpdesk_provider = 'crisp', helpdesk_account_ref = 'website-1',
+           helpdesk_conversation_ref = 'session-1'
+       WHERE id = 'conv'`
+    ).run();
+    const env = {
+      ...makeEnv(db),
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as Env;
+    await seedParent(db, buildCrispTargetEvidence('website-1', 'session-1'), {
+      provider: 'crisp',
+      subjectRef: 'telegram:9:tg-message-5'
+    });
+    const frozenIdentity = JSON.stringify({
+      version: 1,
+      crispIdentity: {
+        nickname: '人工客服',
+        avatar: 'https://cdn.example/operator.png'
+      }
+    });
+    await db.prepare(
+      'UPDATE outbound_operations SET request_options_json = ? WHERE id = ?'
+    ).bind(frozenIdentity, 'parent-op').run();
+    await seedMessage(db, 'telegram', '9:tg-message-5', 'human retry');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ data: { fingerprint: 903 } }), { status: 200 })
+    );
+
+    const result = await manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    );
+    const childId = await manualRetryChildId('parent-op');
+    const child = await loadOperation(db, childId);
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+
+    expect(requestBody).toMatchObject({
+      type: 'text',
+      from: 'operator',
+      content: 'human retry',
+      automated: false,
+      user: {
+        nickname: '人工客服',
+        avatar: 'https://cdn.example/operator.png'
+      }
+    });
+    expect(child.request_options_json).toBe(frozenIdentity);
+    expect(result).toMatchObject({ childOperationId: childId, childStatus: 'SENT' });
+    db.close();
+  });
+
+  it.each([
+    ['website', 'website-2', 'session-1'],
+    ['session', 'website-1', 'session-2']
+  ] as const)('blocks changed Crisp %s before manual-retry child creation', async (_label, website, session) => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    await db.prepare(
+      `UPDATE conversations
+       SET helpdesk_provider = 'crisp', helpdesk_account_ref = ?,
+           helpdesk_conversation_ref = ?
+       WHERE id = 'conv'`
+    ).bind(website, session).run();
+    const env = {
+      ...makeEnv(db),
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as Env;
+    await seedParent(db, buildCrispTargetEvidence('website-1', 'session-1'), {
+      provider: 'crisp',
+      subjectRef: 'telegram:9:tg-message-6'
+    });
+    await seedMessage(db, 'telegram', '9:tg-message-6', 'human retry');
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    await expect(manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    )).rejects.toMatchObject({ code: 'OUTBOUND_MANUAL_RETRY_TARGET_CHANGED' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await db.prepare('SELECT COUNT(*) AS count FROM outbound_operations WHERE parent_operation_id = ?')
+      .bind('parent-op').first<{ count: number }>()).toEqual({ count: 0 });
+    db.close();
+  });
+
   it.each([
     ['missing message', false, 'conv', 'telegram'],
     ['wrong conversation', true, 'other-conv', 'telegram'],

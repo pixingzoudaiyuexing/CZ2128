@@ -200,7 +200,7 @@ describe('Crisp basic bridge orchestration', () => {
     expect(env.QUEUE.send).not.toHaveBeenCalled();
   });
 
-  it('suppresses a Crisp operator echo only when durable outbound evidence matches', async () => {
+  it('suppresses a non-automated Crisp operator echo when exact durable outbound evidence matches', async () => {
     vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
       id: 'send_crisp_0:9', conversation_id: 'conv-crisp', destination_provider: 'crisp',
       operation_type: 'SEND_MESSAGE', status: 'SENT', provider_message_ref: 'provider-99', request_started_at: 100
@@ -209,7 +209,7 @@ describe('Crisp basic bridge orchestration', () => {
       version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:echo',
       payload: {
         websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
-        messageRef: 'provider-99', actorRole: 'OPERATOR', content: 'Reply', automated: true,
+        messageRef: 'provider-99', actorRole: 'OPERATOR', content: 'Reply',
         operationMarker: 'send_crisp_0:9'
       }
     }, env);
@@ -289,13 +289,6 @@ describe('Crisp basic bridge orchestration', () => {
           operation_type: 'SEND_MESSAGE', status: 'SENT', provider_message_ref: 'different-provider-ref', request_started_at: 100
         }
       },
-      {
-        payload: { messageRef: 'marker-only', operationMarker: 'send_crisp_0:9' },
-        operation: {
-          id: 'send_crisp_0:9', conversation_id: 'conv-crisp', destination_provider: 'crisp',
-          operation_type: 'SEND_MESSAGE', status: 'SENT', provider_message_ref: 'marker-only', request_started_at: 100
-        }
-      },
       { payload: { messageRef: 'human' }, operation: null }
     ]) {
       const payload = testCase.payload;
@@ -357,13 +350,32 @@ describe('Crisp basic bridge orchestration', () => {
     expect(outbound.executeOutboundOperation).not.toHaveBeenCalled();
   });
 
-  it('uses Crisp as the Telegram reply destination for Crisp conversations', async () => {
+  it('sends Telegram human replies to Crisp with the frozen human identity and automated=false', async () => {
+    vi.mocked(crispApi.createCrispMessage).mockResolvedValue({ messageId: 'crisp-human-1' } as any);
+    vi.mocked(outbound.executeOutboundOperation).mockImplementationOnce(async (...args: any[]) => {
+      const action = args[4];
+      const options = args[6];
+      await action(args[5], {
+        requestOptionsJson: JSON.stringify(options.requestOptions),
+        requestStarted: vi.fn(),
+        responseObserved: vi.fn()
+      });
+      return { status: 'SENT', providerMessageRef: 'crisp-human-1' } as any;
+    });
+
     await processTelegramEvent({
       version: 1, source: 'telegram', type: 'message_created', eventId: 'tg:1',
       payload: { supportProfileVersion: 0, updateRef: '1', messageRef: '9', threadRef: '77', content: 'Reply' }
     }, env);
-    expect(outbound.executeOutboundOperation).toHaveBeenCalledWith(
-      env, 'conv-crisp', 'crisp', 'SEND_MESSAGE', expect.any(Function), 'send_crisp_0:9', expect.any(Object)
+
+    expect(crispApi.createCrispMessage).toHaveBeenCalledWith(
+      env,
+      'website-1',
+      'session-1',
+      'Reply',
+      'send_crisp_0:9',
+      expect.any(Object),
+      { identity: { nickname: '人工客服' }, automated: false }
     );
   });
 

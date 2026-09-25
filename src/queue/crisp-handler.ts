@@ -713,7 +713,7 @@ async function isOwnCrispEcho(
   conversationId: string,
   payload: CrispMessageEvent['payload']
 ): Promise<boolean> {
-  if (payload.actorRole !== 'OPERATOR' || payload.automated !== true) return false;
+  if (payload.actorRole !== 'OPERATOR') return false;
 
   if (payload.operationMarker) {
     const operation = await getOutboundOperation(env, payload.operationMarker);
