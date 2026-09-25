@@ -20,7 +20,7 @@ const ctx = {
 };
 
 function telegramMock() {
-  return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
     new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 })
   );
 }
