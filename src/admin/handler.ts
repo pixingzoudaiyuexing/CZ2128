@@ -57,7 +57,7 @@ function adminBootstrap(env: Env): AdminBootstrap | null {
 function unifiedAdminBootstrap(rawEnv: Env, effectiveEnv: Env): AdminBootstrap | null {
   const token = effectiveEnv.TELEGRAM_BOT_TOKEN?.trim() || '';
   const ids = (rawEnv.ADMIN_TELEGRAM_USER_IDS || '').split(',').map(value => value.trim()).filter(Boolean);
-  if (!token || ids.length === 0 || ids.some(id => !/^[1-9]\\d{0,19}$/.test(id))) return null;
+  if (!token || ids.length === 0 || ids.some(id => !/^[1-9]\d{0,19}$/.test(id))) return null;
   return {
     token,
     path: effectiveEnv.TELEGRAM_SECRET_PATH?.trim() || '',
