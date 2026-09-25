@@ -51,7 +51,20 @@ function adminBootstrap(env: Env): AdminBootstrap | null {
     !/^[A-Za-z0-9_-]{32,128}$/.test(webhookSecret) ||
     ids.length === 0 || ids.some(id => !/^[1-9]\d{0,19}$/.test(id))
   ) return null;
-  return { token, path, webhookSecret, userIds: new Set(ids) };
+  return { token, path, webhookSecret, userIds: new Set(ids), mode: 'LEGACY' };
+}
+
+function unifiedAdminBootstrap(rawEnv: Env, effectiveEnv: Env): AdminBootstrap | null {
+  const token = effectiveEnv.TELEGRAM_BOT_TOKEN?.trim() || '';
+  const ids = (rawEnv.ADMIN_TELEGRAM_USER_IDS || '').split(',').map(value => value.trim()).filter(Boolean);
+  if (!token || ids.length === 0 || ids.some(id => !/^[1-9]\\d{0,19}$/.test(id))) return null;
+  return {
+    token,
+    path: effectiveEnv.TELEGRAM_SECRET_PATH?.trim() || '',
+    webhookSecret: effectiveEnv.TELEGRAM_WEBHOOK_SECRET?.trim() || '',
+    userIds: new Set(ids),
+    mode: 'UNIFIED'
+  };
 }
 
 function parseAdminContext(payload: any): AdminContext | null {
@@ -497,6 +510,47 @@ async function processMessage(
   throw new Error('CONFIRMATION_REQUIRED');
 }
 
+async function processAdminTelegramPayload(
+  payload: any,
+  rawEnv: Env,
+  effectiveEnv: Env,
+  bootstrap: AdminBootstrap,
+  origin: string,
+  rejectSharedIdentity = false
+): Promise<Response> {
+  const ctx = parseAdminContext(payload);
+  if (!ctx || !bootstrap.userIds.has(ctx.userId)) return new Response('Accepted', { status: 200 });
+  if (!await claimAdminUpdate(rawEnv, ctx.updateId, ctx.userId)) return new Response('Accepted', { status: 200 });
+
+  let action = 'UNKNOWN';
+  try {
+    validateMasterKey(rawEnv.RUNTIME_CONFIG_MASTER_KEY);
+    if (rejectSharedIdentity && effectiveEnv.TELEGRAM_BOT_TOKEN && effectiveEnv.TELEGRAM_BOT_TOKEN === bootstrap.token) {
+      throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
+    }
+    action = ctx.callbackData
+      ? await processCallback(rawEnv, effectiveEnv, bootstrap, ctx, origin)
+      : await processMessage(effectiveEnv, bootstrap, ctx);
+    await completeAdminUpdate(rawEnv, ctx.updateId, action);
+  } catch (error) {
+    const code = safeErrorCode(error);
+    await completeAdminUpdate(rawEnv, ctx.updateId, action, code);
+    try { await reply(bootstrap, ctx, `操作失败：${code}`); } catch { /* webhook acknowledgement remains safe */ }
+  }
+  return new Response('Accepted', { status: 200 });
+}
+
+export async function handleAdminTelegramUpdate(
+  payload: any,
+  rawEnv: Env,
+  effectiveEnv: Env,
+  origin: string
+): Promise<Response> {
+  const bootstrap = unifiedAdminBootstrap(rawEnv, effectiveEnv);
+  if (!bootstrap) return new Response('Accepted', { status: 200 });
+  return processAdminTelegramPayload(payload, rawEnv, effectiveEnv, bootstrap, origin);
+}
+
 export async function handleAdminTelegramWebhook(request: Request, env: Env): Promise<Response> {
   const bootstrap = adminBootstrap(env);
   if (!bootstrap) return new Response('Not Found', { status: 404 });
@@ -511,25 +565,6 @@ export async function handleAdminTelegramWebhook(request: Request, env: Env): Pr
   } catch {
     return new Response('Malformed update', { status: 400 });
   }
-  const ctx = parseAdminContext(payload);
-  if (!ctx || !bootstrap.userIds.has(ctx.userId)) return new Response('Accepted', { status: 200 });
-  if (!await claimAdminUpdate(env, ctx.updateId, ctx.userId)) return new Response('Accepted', { status: 200 });
-
-  let action = 'UNKNOWN';
-  try {
-    validateMasterKey(env.RUNTIME_CONFIG_MASTER_KEY);
-    const effectiveEnv = await resolveEffectiveEnv(env);
-    if (effectiveEnv.TELEGRAM_BOT_TOKEN && effectiveEnv.TELEGRAM_BOT_TOKEN === bootstrap.token) {
-      throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
-    }
-    action = ctx.callbackData
-      ? await processCallback(env, effectiveEnv, bootstrap, ctx, url.origin)
-      : await processMessage(effectiveEnv, bootstrap, ctx);
-    await completeAdminUpdate(env, ctx.updateId, action);
-  } catch (error) {
-    const code = safeErrorCode(error);
-    await completeAdminUpdate(env, ctx.updateId, action, code);
-    try { await reply(bootstrap, ctx, `操作失败：${code}`); } catch { /* webhook acknowledgement remains safe */ }
-  }
-  return new Response('Accepted', { status: 200 });
+  const effectiveEnv = await resolveEffectiveEnv(env);
+  return processAdminTelegramPayload(payload, env, effectiveEnv, bootstrap, url.origin, true);
 }

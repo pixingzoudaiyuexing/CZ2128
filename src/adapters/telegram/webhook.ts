@@ -3,9 +3,9 @@ export async function verifyTelegramWebhook(
   pathSegment: string,
   secretPath: string,
   secretToken: string,
-  botGroupId: string
+  botGroupId?: string
 ): Promise<{ valid: boolean; payload?: any; updateId?: string }> {
-  if (!secretPath || !secretToken || !botGroupId) {
+  if (!secretPath || !secretToken) {
     return { valid: false };
   }
 
@@ -28,7 +28,7 @@ export async function verifyTelegramWebhook(
   const message = payload.message || payload.edited_message;
   const callbackMessage = payload.callback_query?.message;
   const chat = message?.chat || callbackMessage?.chat;
-  if ((message || callbackMessage) && (!chat || String(chat.id) !== botGroupId)) {
+  if (botGroupId && (message || callbackMessage) && (!chat || String(chat.id) !== botGroupId)) {
     return { valid: false };
   }
 

@@ -3,6 +3,7 @@ export interface AdminBootstrap {
   path: string;
   webhookSecret: string;
   userIds: ReadonlySet<string>;
+  mode?: 'LEGACY' | 'UNIFIED';
 }
 
 export interface AdminContext {

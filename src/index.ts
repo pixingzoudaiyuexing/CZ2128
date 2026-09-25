@@ -22,7 +22,7 @@ import {
 import { handleAttachmentProxy } from './attachments/proxy';
 import { cleanupExpiredAttachments } from './attachments/cleanup';
 import { AttachmentDescriptor } from './core/attachments';
-import { handleAdminTelegramWebhook } from './admin/handler';
+import { handleAdminTelegramUpdate, handleAdminTelegramWebhook } from './admin/handler';
 import { resolveEffectiveEnv } from './runtime-config/resolver';
 import { boundedQueueRetryDelay } from './core/retry';
 import { captureDlqMessage } from './queue/dlq-consumer';
@@ -311,8 +311,7 @@ export default {
         request,
         pathSegment,
         effectiveEnv.TELEGRAM_SECRET_PATH,
-        effectiveEnv.TELEGRAM_WEBHOOK_SECRET,
-        effectiveEnv.BOT_GROUP_ID
+        effectiveEnv.TELEGRAM_WEBHOOK_SECRET
       );
 
       if (!valid) {
@@ -321,6 +320,16 @@ export default {
 
       if (!updateId) {
         return new Response('Malformed update', { status: 400 });
+      }
+
+      const telegramMessage = payload.message || payload.edited_message;
+      const telegramCallbackMessage = payload.callback_query?.message;
+      const telegramChat = telegramMessage?.chat || telegramCallbackMessage?.chat;
+      if (telegramChat?.type === 'private') {
+        return handleAdminTelegramUpdate(payload, env, effectiveEnv, url.origin);
+      }
+      if (!telegramChat || String(telegramChat.id) !== effectiveEnv.BOT_GROUP_ID) {
+        return new Response('Ignored', { status: 200 });
       }
 
       const supportProfileVersion = effectiveEnv.runtimeConfigSnapshot?.versions.TELEGRAM_SUPPORT_PROFILE ?? 0;

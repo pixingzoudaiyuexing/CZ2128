@@ -139,16 +139,20 @@ export async function showPage(
     return;
   }
   if (page === 'tg') {
+    const unified = bootstrap.mode === 'UNIFIED';
+    const identityActions = unified
+      ? [{ text: '迁移客服群', callback_data: 'e:tgroup' }]
+      : [{ text: '轮换客服 Bot', callback_data: 'e:tbot' }, { text: '迁移客服群', callback_data: 'e:tgroup' }];
     await reply(bootstrap, ctx,
-      `Telegram 设置\n\n客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n` +
+      `Telegram 设置\n\n${unified ? '模式：单 Bot（私聊 = 后台管理；客服群 = 对话）\n' : ''}客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n` +
       `配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_SUPPORT_PROFILE')}\n\n` +
       `${valueLine(env, 'BOT_GROUP_ID')}\n\nBot Token：${maskSecret(env.TELEGRAM_BOT_TOKEN)}\n\n` +
       `Crisp 接管通知：${env.TELEGRAM_NOTIFY_CRISP_OPERATOR || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_CRISP_OPERATOR')}\n` +
       `Telegram 接管通知：${env.TELEGRAM_NOTIFY_TELEGRAM_OPERATOR || 'normal（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR')}\n` +
       `手动关闭 AI 通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_MANUAL_OFF')}`,
       [
-        [{ text: '轮换客服 Bot', callback_data: 'e:tbot' }, { text: '迁移客服群', callback_data: 'e:tgroup' }],
-        [{ text: '刷新客服 Bot Webhook', callback_data: 't:tgw' }],
+        identityActions,
+        [{ text: unified ? '刷新 Bot Webhook' : '刷新客服 Bot Webhook', callback_data: 't:tgw' }],
         [edit('Crisp 接管通知', 'tnc'), edit('Telegram 接管通知', 'tnt')],
         [edit('手动关闭通知', 'tnm')],
         [{ text: '恢复 ENV 默认值', callback_data: 'p:tgr' }],
