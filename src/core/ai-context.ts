@@ -1,5 +1,7 @@
 import { Env } from '../config/env';
 import { AIConfig } from '../config/ai';
+import { logger } from '../observability/logger';
+import { renderKnowledgeContext, searchKnowledge } from '../knowledge/repository';
 
 export interface AIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -52,11 +54,27 @@ export async function buildAIContext(
     charCount += text.length;
   }
 
+  const latestCustomerText = messages.results.find(row => row.actor_role === 'CUSTOMER')?.text_content || '';
+  let knowledgeContext: string | null = null;
+  if (latestCustomerText) {
+    try {
+      knowledgeContext = renderKnowledgeContext(await searchKnowledge(env, latestCustomerText));
+    } catch {
+      logger.warn('Knowledge retrieval failed; continuing without knowledge context', {
+        conversation_id: convId,
+        error_category: 'KNOWLEDGE_RETRIEVAL_FAILED',
+        provider: 'D1',
+        stage: 'AI_CONTEXT'
+      });
+    }
+  }
+
   // Reverse to chronological order (oldest -> newest)
   selected.reverse();
 
-  // Prepend system prompt
+  // Keep the configured policy first, then inject bounded knowledge as reference-only context.
   selected.unshift({ role: 'system', content: config.systemPrompt });
+  if (knowledgeContext) selected.splice(1, 0, { role: 'system', content: knowledgeContext });
 
   return selected;
 }
