@@ -63,6 +63,17 @@ function keywordSnapshot(config: CrispKeywordRulesConfig, version = 1) {
   } as any;
 }
 
+function envKeywordSnapshot(config: CrispKeywordRulesConfig) {
+  return {
+    values: { CRISP_KEYWORD_RULES: JSON.stringify(config) },
+    sources: { CRISP_KEYWORD_RULES: 'ENV', TELEGRAM_SUPPORT_PROFILE: 'ENV', BOT_GROUP_ID: 'ENV' },
+    versions: {},
+    errors: {},
+    health: 'AVAILABLE',
+    overrideCount: 0
+  } as any;
+}
+
 function event(messageRef: string, content: string, extra: Record<string, unknown> = {}) {
   return {
     version: 1 as const,
@@ -122,6 +133,49 @@ describe('Crisp keyword reply orchestration', () => {
     expect(keywordCalls).toHaveLength(1);
     expect(keywordCalls[0][6]).toMatchObject({ subject: { type: 'MESSAGE', ref: `crisp-keyword:v1:${RULE_ID}` } });
     expect(env.QUEUE.send).not.toHaveBeenCalled();
+  });
+
+  it('uses a legal ENV keyword fallback and freezes its rule identity with a content fingerprint', async () => {
+    env.runtimeConfigSnapshot = envKeywordSnapshot(rules('ENV keyword', 'ENV reply'));
+
+    await processCrispEvent(event('kw-env-1', 'ENV keyword'), env);
+
+    const keywordCall = vi.mocked(outbound.executeOutboundOperation).mock.calls
+      .find(call => call[2] === 'crisp' && String(call[5]).startsWith('crisp_keyword:'));
+    expect(keywordCall).toBeTruthy();
+    expect(keywordCall?.[6]).toMatchObject({
+      subject: {
+        type: 'MESSAGE',
+        ref: expect.stringMatching(/^crisp-keyword:env:kw_0000000000000001:[a-f0-9]{64}$/)
+      }
+    });
+  });
+
+  it('retries an ENV keyword operation only while the current ENV rule matches its frozen fingerprint', async () => {
+    env.runtimeConfigSnapshot = envKeywordSnapshot(rules('ENV retry', 'stable reply'));
+    await processCrispEvent(event('kw-env-2', 'ENV retry'), env);
+    const subjectRef = vi.mocked(outbound.executeOutboundOperation).mock.calls
+      .find(call => call[2] === 'crisp')?.[6]?.subject.ref as string;
+    expect(subjectRef).toMatch(/^crisp-keyword:env:/);
+
+    vi.mocked(outbound.executeOutboundOperation).mockClear();
+    vi.mocked(outbound.getOutboundOperation).mockResolvedValue({
+      id: 'existing-env', conversation_id: 'conv-crisp', destination_provider: 'crisp',
+      operation_type: 'SEND_MESSAGE', status: 'PENDING', subject_type: 'MESSAGE', subject_ref: subjectRef
+    } as any);
+    vi.mocked(outbound.executeOutboundOperation).mockImplementation(async (...args: any[]) => {
+      if (args[2] === 'crisp') await args[4](args[5], { requestStarted: vi.fn(), responseObserved: vi.fn() });
+      return { status: 'SENT', providerMessageRef: 'p1' } as any;
+    });
+
+    await processCrispEvent(event('kw-env-2', 'ENV retry'), env);
+    expect(crispApi.createCrispMessage).toHaveBeenCalledWith(
+      env, 'website-1', 'session-1', 'stable reply', expect.any(String), expect.any(Object)
+    );
+
+    env.runtimeConfigSnapshot = envKeywordSnapshot(rules('ENV retry', 'changed reply'));
+    await expect(processCrispEvent(event('kw-env-2', 'ENV retry'), env))
+      .rejects.toThrow('OUTBOUND_PRECONDITION_FAILED');
   });
 
   it('matches ASCII case-insensitively after trimming while remaining exact', async () => {

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleAdminTelegramWebhook } from '../src/admin/handler';
 import { parseCrispKeywordRules } from '../src/config/crisp-keywords';
+import { resolveEffectiveEnv } from '../src/runtime-config/resolver';
+import { setPlainOverride } from '../src/runtime-config/service';
 import { RuntimeDb, masterKey } from './helpers/runtime-db';
 
 const adminPath = 'p'.repeat(43);
@@ -57,6 +59,16 @@ function telegramMock() {
 function rules(db: RuntimeDb) {
   const row = db.runtime.find(item => item.key === 'CRISP_KEYWORD_RULES');
   return row ? parseCrispKeywordRules(row.value_text)! : null;
+}
+
+function config(rulesValue: Array<{ id: string; keyword: string; reply: string; enabled: boolean }>) {
+  return JSON.stringify({ version: 1, rules: rulesValue });
+}
+
+function sentBodies(fetchMock: ReturnType<typeof telegramMock>) {
+  return fetchMock.mock.calls
+    .filter(call => String(call[0]).endsWith('/sendMessage'))
+    .map(call => JSON.parse(String((call[1] as RequestInit).body)));
 }
 
 describe('Crisp keyword Admin Bot flow', () => {
@@ -145,6 +157,163 @@ describe('Crisp keyword Admin Bot flow', () => {
     expect(rules(db)!.rules[0].keyword).toBe('one');
     expect(db.sessions[0]).toMatchObject({ action: 'KEYWORD_EDIT_KEYWORD' });
   });
+  it('renders a reachable dedicated Restore ENV action and no-ops safely when ENV is already active', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    testEnv.CRISP_KEYWORD_RULES = config([{
+      id: 'kw_aaaaaaaaaaaaaaaa', keyword: 'env-keyword', reply: 'env-reply', enabled: true
+    }]);
+    const fetchMock = telegramMock();
+
+    await handleAdminTelegramWebhook(callback(45, 'p:kw'), testEnv);
+    await handleAdminTelegramWebhook(callback(46, 'k:env'), testEnv);
+
+    const bodies = sentBodies(fetchMock);
+    const page = bodies.find(body => body.text.startsWith('Crisp 关键词自动回复'));
+    expect(page.text).toContain('配置来源：ENV');
+    expect(page.text).toContain('env-keyword');
+    expect(page.reply_markup.inline_keyboard.flat().map((button: any) => button.callback_data)).toContain('k:env');
+    expect(bodies.at(-1).text).toContain('当前已经使用 ENV 关键词配置');
+    expect(db.runtime).toHaveLength(0);
+    expect(db.history).toHaveLength(0);
+    expect(db.sessions).toHaveLength(0);
+  });
+
+  it('restores the original non-empty ENV keyword rules after an Admin D1 override', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    testEnv.CRISP_KEYWORD_RULES = config([{
+      id: 'kw_bbbbbbbbbbbbbbbb', keyword: 'env-original', reply: 'original-reply', enabled: true
+    }]);
+    telegramMock();
+
+    await handleAdminTelegramWebhook(callback(60, 'k:add'), testEnv);
+    await handleAdminTelegramWebhook(message(61, 'temporary'), testEnv);
+    await handleAdminTelegramWebhook(message(62, 'temporary-reply'), testEnv);
+    expect(rules(db)?.rules.map(rule => rule.keyword)).toEqual(['env-original', 'temporary']);
+    expect((await resolveEffectiveEnv(testEnv)).runtimeConfigSnapshot?.sources.CRISP_KEYWORD_RULES).toBe('D1');
+
+    await handleAdminTelegramWebhook(callback(63, 'k:env'), testEnv);
+    expect(db.sessions[0]).toMatchObject({
+      action: 'KEYWORD_RESTORE_ENV_CONFIRM',
+      target: 'CRISP_KEYWORD_RULES',
+      expected_version: 1
+    });
+    await handleAdminTelegramWebhook(callback(64, 'k:envy'), testEnv);
+
+    const effective = await resolveEffectiveEnv(testEnv);
+    expect(db.runtime.some(row => row.key === 'CRISP_KEYWORD_RULES')).toBe(false);
+    expect(effective.runtimeConfigSnapshot?.sources.CRISP_KEYWORD_RULES).toBe('ENV');
+    expect(parseCrispKeywordRules(effective.runtimeConfigSnapshot?.values.CRISP_KEYWORD_RULES || '')?.rules.map(rule => rule.keyword))
+      .toEqual(['env-original']);
+    expect(db.history.at(-1)).toMatchObject({
+      key: 'CRISP_KEYWORD_RULES',
+      action: 'RESTORE_ENV',
+      is_deleted: 1,
+      actor_user_id: '1001',
+      source_update_id: '64'
+    });
+    expect(db.sessions).toHaveLength(0);
+  });
+
+  it('restores ENV after the last temporary rule is deleted and the D1 override is empty', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    testEnv.CRISP_KEYWORD_RULES = config([]);
+    telegramMock();
+
+    await handleAdminTelegramWebhook(callback(70, 'k:add'), testEnv);
+    await handleAdminTelegramWebhook(message(71, 'temporary-only'), testEnv);
+    await handleAdminTelegramWebhook(message(72, 'temporary-reply'), testEnv);
+    const id = rules(db)!.rules[0].id;
+    await handleAdminTelegramWebhook(callback(73, `k:d:${id}`), testEnv);
+    await handleAdminTelegramWebhook(callback(74, 'k:dy'), testEnv);
+
+    expect(rules(db)?.rules).toEqual([]);
+    expect((await resolveEffectiveEnv(testEnv)).runtimeConfigSnapshot?.sources.CRISP_KEYWORD_RULES).toBe('D1');
+
+    await handleAdminTelegramWebhook(callback(75, 'k:env'), testEnv);
+    await handleAdminTelegramWebhook(callback(76, 'k:envy'), testEnv);
+
+    const effective = await resolveEffectiveEnv(testEnv);
+    expect(db.runtime.some(row => row.key === 'CRISP_KEYWORD_RULES')).toBe(false);
+    expect(effective.runtimeConfigSnapshot?.sources.CRISP_KEYWORD_RULES).toBe('ENV');
+    expect(parseCrispKeywordRules(effective.runtimeConfigSnapshot?.values.CRISP_KEYWORD_RULES || '')?.rules).toEqual([]);
+  });
+
+  it('rejects a stale dedicated keyword restore without deleting the newer D1 version', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    const fetchMock = telegramMock();
+
+    await handleAdminTelegramWebhook(callback(80, 'k:add'), testEnv);
+    await handleAdminTelegramWebhook(message(81, 'one'), testEnv);
+    await handleAdminTelegramWebhook(message(82, 'reply-one'), testEnv);
+    await handleAdminTelegramWebhook(callback(83, 'k:env'), testEnv);
+    expect(db.sessions[0]).toMatchObject({ action: 'KEYWORD_RESTORE_ENV_CONFIRM', expected_version: 1 });
+
+    await setPlainOverride(
+      testEnv,
+      'CRISP_KEYWORD_RULES',
+      config([{ id: 'kw_cccccccccccccccc', keyword: 'newer', reply: 'newer-reply', enabled: true }]),
+      1,
+      'other-admin',
+      'other-update'
+    );
+    await handleAdminTelegramWebhook(callback(84, 'k:envy'), testEnv);
+
+    expect(db.runtime.find(row => row.key === 'CRISP_KEYWORD_RULES')).toMatchObject({ version: 2 });
+    expect(rules(db)?.rules[0].keyword).toBe('newer');
+    expect(db.history.filter(row => row.action === 'RESTORE_ENV')).toHaveLength(0);
+    expect(db.sessions[0]).toMatchObject({ action: 'KEYWORD_RESTORE_ENV_CONFIRM', expected_version: 1 });
+    expect(sentBodies(fetchMock).map(body => body.text).join('\n')).toContain('RUNTIME_CONFIG_VERSION_CONFLICT');
+  });
+
+  it('deduplicates a replayed keyword restore confirmation and writes one RESTORE_ENV history record', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    telegramMock();
+
+    await handleAdminTelegramWebhook(callback(90, 'k:add'), testEnv);
+    await handleAdminTelegramWebhook(message(91, 'one'), testEnv);
+    await handleAdminTelegramWebhook(message(92, 'reply'), testEnv);
+    await handleAdminTelegramWebhook(callback(93, 'k:env'), testEnv);
+    const confirmation = callback(94, 'k:envy');
+    await handleAdminTelegramWebhook(confirmation.clone() as any, testEnv);
+    await handleAdminTelegramWebhook(confirmation.clone() as any, testEnv);
+
+    expect(db.runtime.some(row => row.key === 'CRISP_KEYWORD_RULES')).toBe(false);
+    expect(db.history.filter(row => row.action === 'RESTORE_ENV')).toHaveLength(1);
+    expect(db.receipts.filter(row => row.update_id === '94')).toHaveLength(1);
+  });
+
+  it('rejects a forged keyword restore confirmation without a valid Admin session', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    const fetchMock = telegramMock();
+
+    await handleAdminTelegramWebhook(callback(95, 'k:envy'), testEnv);
+
+    expect(db.runtime).toHaveLength(0);
+    expect(db.history).toHaveLength(0);
+    expect(db.sessions).toHaveLength(0);
+    expect(sentBodies(fetchMock).map(body => body.text).join('\n')).toContain('RUNTIME_CONFIG_VALUE_INVALID');
+  });
+
+  it('keeps unauthorized users outside the dedicated keyword Restore ENV flow', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    const fetchMock = telegramMock();
+
+    await handleAdminTelegramWebhook(callback(95, 'k:env', 2002), testEnv);
+
+    expect(db.runtime).toHaveLength(0);
+    expect(db.history).toHaveLength(0);
+    expect(db.sessions).toHaveLength(0);
+    expect(db.receipts).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('paginates 100 rules into bounded pages and hides add at the limit', async () => {
     const db = new RuntimeDb();
     const config = {
@@ -182,6 +351,7 @@ describe('Crisp keyword Admin Bot flow', () => {
     expect(last.text).toContain('100. ✅ keyword-100');
     expect(last.text).not.toContain('keyword-90');
     expect(last.reply_markup.inline_keyboard.flat().some((button: any) => button.callback_data === 'k:add')).toBe(false);
+    expect(last.reply_markup.inline_keyboard.flat().some((button: any) => button.callback_data === 'k:env')).toBe(true);
     expect(last.reply_markup.inline_keyboard.flat().some((button: any) => button.callback_data === 'k:p:8')).toBe(true);
     expect(last.text.length).toBeLessThan(4096);
   });

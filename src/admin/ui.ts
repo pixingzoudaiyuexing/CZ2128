@@ -137,16 +137,26 @@ export async function showPage(
       `Telegram 设置\n\n客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n` +
       `配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_SUPPORT_PROFILE')}\n\n` +
       `${valueLine(env, 'BOT_GROUP_ID')}\n\nBot Token：${maskSecret(env.TELEGRAM_BOT_TOKEN)}\n\n` +
-      `Crisp 接管通知：${env.TELEGRAM_NOTIFY_CRISP_OPERATOR || 'silent（默认）'}\n` +
-      `Telegram 接管通知：${env.TELEGRAM_NOTIFY_TELEGRAM_OPERATOR || 'normal（默认）'}\n` +
-      `手动关闭 AI 通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}`,
+      `Crisp 接管通知：${env.TELEGRAM_NOTIFY_CRISP_OPERATOR || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_CRISP_OPERATOR')}\n` +
+      `Telegram 接管通知：${env.TELEGRAM_NOTIFY_TELEGRAM_OPERATOR || 'normal（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR')}\n` +
+      `手动关闭 AI 通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_MANUAL_OFF')}`,
       [
         [{ text: '轮换客服 Bot', callback_data: 'e:tbot' }, { text: '迁移客服群', callback_data: 'e:tgroup' }],
         [edit('Crisp 接管通知', 'tnc'), edit('Telegram 接管通知', 'tnt')],
         [edit('手动关闭通知', 'tnm')],
+        [{ text: '恢复 ENV 默认值', callback_data: 'p:tgr' }],
         [{ text: '返回', callback_data: 'm' }]
       ]
     );
+    return;
+  }
+  if (page === 'tgr') {
+    await reply(bootstrap, ctx, '恢复 Telegram 通知 ENV 默认值', [
+      [{ text: 'Crisp 接管通知', callback_data: 'x:tnc' }],
+      [{ text: 'Telegram 接管通知', callback_data: 'x:tnt' }],
+      [{ text: '手动关闭通知', callback_data: 'x:tnm' }],
+      [{ text: '返回 Telegram 设置', callback_data: 'p:tg' }]
+    ]);
     return;
   }
   if (page === 'crisp') {
@@ -163,17 +173,26 @@ export async function showPage(
       `API 密钥：${configured(env.CRISP_API_KEY)}`,
       `Webhook 签名密钥：${configured(env.CRISP_WEBHOOK_SECRET)}`,
       '',
-      `人工客服昵称：${env.CRISP_OPERATOR_NICKNAME || '人工客服（默认）'}`,
-      `人工客服头像：${env.CRISP_OPERATOR_AVATAR_URL || '未配置'}`,
-      `AI 昵称：${env.CRISP_AI_NICKNAME || '智能客服（默认）'}`,
-      `AI 头像：${env.CRISP_AI_AVATAR_URL || '未配置'}`,
+      `人工客服昵称：${env.CRISP_OPERATOR_NICKNAME || '人工客服（默认）'}（来源：${runtimeSource(env.runtimeConfigSnapshot, 'CRISP_OPERATOR_NICKNAME')}）`,
+      `人工客服头像：${env.CRISP_OPERATOR_AVATAR_URL || '未配置'}（来源：${runtimeSource(env.runtimeConfigSnapshot, 'CRISP_OPERATOR_AVATAR_URL')}）`,
+      `AI 昵称：${env.CRISP_AI_NICKNAME || '智能客服（默认）'}（来源：${runtimeSource(env.runtimeConfigSnapshot, 'CRISP_AI_NICKNAME')}）`,
+      `AI 头像：${env.CRISP_AI_AVATAR_URL || '未配置'}（来源：${runtimeSource(env.runtimeConfigSnapshot, 'CRISP_AI_AVATAR_URL')}）`,
       '',
       '身份凭据仍由 Worker ENV / Secret 管理；展示昵称和 HTTPS 头像可通过本 Bot 修改。'
     ].join('\n'), [
       [{ text: '👋 欢迎语', callback_data: 'p:cwelcome' }, { text: '📋 客服菜单', callback_data: 'p:cmenu' }],
       [edit('人工昵称', 'con'), edit('人工头像', 'coa')],
       [edit('AI 昵称', 'can'), edit('AI 头像', 'caa')],
+      [{ text: '恢复 ENV 默认值', callback_data: 'p:crispr' }],
       [{ text: '返回主菜单', callback_data: 'm' }]
+    ]);
+    return;
+  }
+  if (page === 'crispr') {
+    await reply(bootstrap, ctx, '恢复 Crisp ENV 默认值', [
+      [{ text: '人工昵称', callback_data: 'x:con' }, { text: '人工头像', callback_data: 'x:coa' }],
+      [{ text: 'AI 昵称', callback_data: 'x:can' }, { text: 'AI 头像', callback_data: 'x:caa' }],
+      [{ text: '返回 Crisp 设置', callback_data: 'p:crisp' }]
     ]);
     return;
   }

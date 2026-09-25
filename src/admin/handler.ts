@@ -431,7 +431,7 @@ async function processCallback(
     try { await answerAdminCallback(bootstrap.token, ctx.callbackId); } catch { /* mutation remains authoritative */ }
   }
   if (data === 'm') { await showMain(bootstrap, ctx); return 'MAIN'; }
-  if (/^p:(ai|air|tg|crisp|cwelcome|cmenu|cw|cwr|att|attr|sys|hist|rel|kw)$/.test(data)) {
+  if (/^p:(ai|air|tg|tgr|crisp|crispr|cwelcome|cmenu|cw|cwr|att|attr|sys|hist|rel|kw)$/.test(data)) {
     const page = data.slice(2);
     await showPage(env, bootstrap, ctx, page);
     return `PAGE_${page.toUpperCase()}`;

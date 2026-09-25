@@ -1,0 +1,13 @@
+name = "cz2128-runtime-config-restore-harness"
+main = "runtime-config-restore-harness-worker.ts"
+compatibility_date = "2024-03-20"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cz2128-db"
+database_id = "local-dev-only"
+migrations_dir = "../../migrations"
+
+[vars]
+CRISP_KEYWORD_RULES = "{\"version\":1,\"rules\":[{\"id\":\"kw_3333333333333333\",\"keyword\":\"env-original\",\"reply\":\"env-reply\",\"enabled\":true}]}"

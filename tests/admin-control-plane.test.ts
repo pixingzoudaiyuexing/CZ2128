@@ -21,6 +21,13 @@ function env(db = new RuntimeDb()) {
     AI_BASE_URL: 'https://ai.example/v1', AI_MODEL: 'model', AI_API_KEY: 'env-ai-key',
     TELEGRAM_BOT_TOKEN: '111111:old-support-abcdefghijklmnopqrstuvwxyz',
     TELEGRAM_WEBHOOK_SECRET: 'old-secret', TELEGRAM_SECRET_PATH: 'old-path', BOT_GROUP_ID: '-10099',
+    CRISP_OPERATOR_NICKNAME: 'ENV 人工客服',
+    CRISP_OPERATOR_AVATAR_URL: 'https://example.com/env-operator.png',
+    CRISP_AI_NICKNAME: 'ENV 智能客服',
+    CRISP_AI_AVATAR_URL: 'https://example.com/env-ai.png',
+    TELEGRAM_NOTIFY_CRISP_OPERATOR: 'silent',
+    TELEGRAM_NOTIFY_TELEGRAM_OPERATOR: 'normal',
+    TELEGRAM_NOTIFY_MANUAL_OFF: 'silent',
     CHATWOOT_API_URL: 'https://chatwoot.example', CHATWOOT_API_TOKEN: 'cw-token'
   } as any;
 }
@@ -71,6 +78,16 @@ function defaultTelegramMock() {
 async function begin(envValue: any, updateId: number, action: string) {
   await handleAdminTelegramWebhook(callback(updateId, action), envValue);
 }
+
+const crisp12RestoreCases = [
+  ['CRISP_OPERATOR_NICKNAME', 'con', 'ENV 人工客服', 'Runtime 人工客服'],
+  ['CRISP_OPERATOR_AVATAR_URL', 'coa', 'https://example.com/env-operator.png', 'https://example.com/runtime-operator.png'],
+  ['CRISP_AI_NICKNAME', 'can', 'ENV 智能客服', 'Runtime 智能客服'],
+  ['CRISP_AI_AVATAR_URL', 'caa', 'https://example.com/env-ai.png', 'https://example.com/runtime-ai.png'],
+  ['TELEGRAM_NOTIFY_CRISP_OPERATOR', 'tnc', 'silent', 'normal'],
+  ['TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', 'tnt', 'normal', 'silent'],
+  ['TELEGRAM_NOTIFY_MANUAL_OFF', 'tnm', 'silent', 'normal']
+] as const;
 
 describe('Telegram admin control plane', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -265,6 +282,79 @@ describe('Telegram admin control plane', () => {
     expect(body.text).not.toContain('Chatwoot');
     expect(testEnv.DB.runtime).toHaveLength(0);
   });
+
+  it('makes every Crisp-12 generic Restore ENV action reachable from the normal Admin keyboards', async () => {
+    const testEnv = env();
+    const fetchMock = defaultTelegramMock();
+
+    await handleAdminTelegramWebhook(callback(1501, 'p:crisp'), testEnv);
+    await handleAdminTelegramWebhook(callback(1502, 'p:crispr'), testEnv);
+    await handleAdminTelegramWebhook(callback(1503, 'p:tg'), testEnv);
+    await handleAdminTelegramWebhook(callback(1504, 'p:tgr'), testEnv);
+
+    const bodies = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body)));
+    const crispPage = bodies.find(body => body.text.includes('🔵 Crisp 设置'));
+    const crispRestore = bodies.find(body => body.text === '恢复 Crisp ENV 默认值');
+    const telegramPage = bodies.find(body => body.text.startsWith('Telegram 设置'));
+    const telegramRestore = bodies.find(body => body.text === '恢复 Telegram 通知 ENV 默认值');
+
+    expect(crispPage.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data)).toContain('p:crispr');
+    expect(crispRestore.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data))
+      .toEqual(['x:con', 'x:coa', 'x:can', 'x:caa', 'p:crisp']);
+    expect(telegramPage.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data)).toContain('p:tgr');
+    expect(telegramRestore.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data))
+      .toEqual(['x:tnc', 'x:tnt', 'x:tnm', 'p:tg']);
+  });
+
+  it.each(crisp12RestoreCases)(
+    'restores %s from D1 to its original ENV value through the Admin Restore callback',
+    async (key, code, envValue, runtimeValue) => {
+      const testEnv = env();
+      (testEnv as any)[key] = envValue;
+      defaultTelegramMock();
+
+      await begin(testEnv, 1520, `e:${code}`);
+      await handleAdminTelegramWebhook(message(1521, runtimeValue), testEnv);
+
+      let effective = await resolveEffectiveEnv(testEnv);
+      expect((effective as any)[key]).toBe(runtimeValue);
+      expect((effective.runtimeConfigSnapshot?.sources as any)[key]).toBe('D1');
+
+      await handleAdminTelegramWebhook(callback(1522, `x:${code}`), testEnv);
+
+      effective = await resolveEffectiveEnv(testEnv);
+      expect(testEnv.DB.runtime.some((row: any) => row.key === key)).toBe(false);
+      expect((effective as any)[key]).toBe(envValue);
+      expect((effective.runtimeConfigSnapshot?.sources as any)[key]).toBe('ENV');
+      expect(testEnv.DB.history.at(-1)).toMatchObject({
+        key,
+        action: 'RESTORE_ENV',
+        is_deleted: 1,
+        actor_user_id: '1001',
+        source_update_id: '1522'
+      });
+    }
+  );
+
+  it.each(crisp12RestoreCases)(
+    'treats Restore ENV for already-ENV %s as a safe no-op',
+    async (key, code) => {
+      const testEnv = env();
+      const fetchMock = defaultTelegramMock();
+
+      await handleAdminTelegramWebhook(callback(1530, `x:${code}`), testEnv);
+
+      expect(testEnv.DB.runtime).toHaveLength(0);
+      expect(testEnv.DB.history).toHaveLength(0);
+      expect(testEnv.DB.sessions).toHaveLength(0);
+      const texts = fetchMock.mock.calls
+        .filter(call => String(call[0]).endsWith('/sendMessage'))
+        .map(call => JSON.parse(String(call[1]?.body)).text);
+      expect(texts).toContain('当前已经使用 ENV。');
+    }
+  );
 
   it.each(['p:cw', 'p:cwr', 'e:cu', 'e:ct', 'e:ch', 'x:cu', 'x:ct', 'x:ch'])(
     'blocks legacy Chatwoot callback %s without opening a mutation session',
