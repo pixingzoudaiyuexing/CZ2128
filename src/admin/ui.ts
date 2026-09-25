@@ -140,9 +140,10 @@ export async function showPage(
   }
   if (page === 'tg') {
     const unified = bootstrap.mode === 'UNIFIED';
-    const identityActions = unified
-      ? [{ text: '迁移客服群', callback_data: 'e:tgroup' }]
-      : [{ text: '轮换客服 Bot', callback_data: 'e:tbot' }, { text: '迁移客服群', callback_data: 'e:tgroup' }];
+    const identityActions = [
+      { text: '轮换客服 Bot', callback_data: 'e:tbot' },
+      { text: '迁移客服群', callback_data: 'e:tgroup' }
+    ];
     await reply(bootstrap, ctx,
       `Telegram 设置\n\n${unified ? '模式：单 Bot\n私聊 = 后台管理\n客服群 = 对话\n\n' : ''}客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n` +
       `配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_SUPPORT_PROFILE')}\n\n` +

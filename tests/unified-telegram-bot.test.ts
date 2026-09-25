@@ -243,7 +243,7 @@ describe('Unified Telegram Bot routing', () => {
     expect(env.QUEUE.messages.map((message: any) => message.eventId)).toEqual(['tg:0:11', 'tg:0:11']);
   });
 
-  it('shows single-Bot Telegram settings, keeps group migration, and hides identity rotation', async () => {
+  it('shows single-Bot Telegram settings with bot rotation, group migration, and webhook recovery', async () => {
     const response = await Worker.fetch(telegramRequest(privateCallback(12, 'p:tg')), env, {} as any);
 
     expect(response.status).toBe(200);
@@ -255,39 +255,108 @@ describe('Unified Telegram Bot routing', () => {
     expect(page.text).toContain('私聊 = 后台管理');
     expect(page.text).toContain('客服群 = 对话');
     const actions = page.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data);
+    expect(actions).toContain('e:tbot');
     expect(actions).toContain('e:tgroup');
     expect(actions).toContain('t:tgw');
-    expect(actions).not.toContain('e:tbot');
   });
 
-  it('fails closed on forged or stale Bot-rotation workflows in unified Admin mode', async () => {
-    await Worker.fetch(telegramRequest(privateCallback(13, 'e:tbot')), env, {} as any);
+  it('rotates the unified bot and makes the new bot immediately active without a manual webhook refresh', async () => {
+    const oldToken = env.TELEGRAM_BOT_TOKEN;
+    const newToken = '222222:new-unified-bot-abcdefghijklmnopqrstuvwxyz';
+    env.ADMIN_TELEGRAM_BOT_TOKEN = '999999:legacy-admin-bot-abcdefghijklmnopqrstuvwxyz';
 
-    expect(env.DB.sessions).toHaveLength(0);
-    expect(env.DB.runtime).toHaveLength(0);
-    expect(vi.mocked(globalThis.fetch).mock.calls.some(
-      call => String(call[0]).endsWith('/setWebhook') || String(call[0]).endsWith('/deleteWebhook')
-    )).toBe(false);
-
-    env.DB.sessions.push({
-      admin_user_id: '1001',
-      action: 'ROTATE_BOT',
-      target: 'TELEGRAM_SUPPORT_PROFILE',
-      expected_version: 0,
-      candidate_value_text: null,
-      candidate_ciphertext: null,
-      candidate_nonce: null,
-      context_json: null,
-      expires_at: 9999999999,
-      updated_at: 0
+    vi.mocked(globalThis.fetch).mockImplementation(async (url: any) => {
+      const target = String(url);
+      if (target.includes(`${newToken}/getMe`)) {
+        return ok({ id: 222222, is_bot: true, username: 'new_unified_bot' });
+      }
+      if (target.includes(`${newToken}/getChatMember`)) {
+        return ok({ status: 'administrator', can_manage_topics: true });
+      }
+      if (target.includes(`${newToken}/getChat`)) {
+        return ok({ type: 'supergroup', is_forum: true });
+      }
+      if (target.endsWith('/sendMessage')) return ok({ message_id: 1 });
+      return ok(true);
     });
+
+    await Worker.fetch(telegramRequest(privateCallback(13, 'e:tbot')), env, {} as any);
+    expect(env.DB.sessions[0]).toMatchObject({ action: 'ROTATE_BOT', target: 'TELEGRAM_SUPPORT_PROFILE' });
+
     await Worker.fetch(
-      telegramRequest(privateMessage(14, 1001, '222222:should-never-be-processed-abcdefghijklmnopqrstuvwxyz')),
+      telegramRequest(privateMessage(14, 1001, newToken)),
+      env,
+      {} as any
+    );
+    expect(env.DB.sessions[0]).toMatchObject({ action: 'CONFIRM_BOT', target: 'TELEGRAM_SUPPORT_PROFILE' });
+
+    await Worker.fetch(telegramRequest(privateCallback(15, 'c:yes')), env, {} as any);
+
+    expect(env.DB.runtime).toHaveLength(1);
+    expect(env.DB.runtime[0]).toMatchObject({ key: 'TELEGRAM_SUPPORT_PROFILE', version: 1 });
+    expect(env.DB.sessions).toHaveLength(0);
+
+    const calls = vi.mocked(globalThis.fetch).mock.calls;
+    const setWebhookCalls = calls.filter(call => String(call[0]).includes(`${newToken}/setWebhook`));
+    expect(setWebhookCalls).toHaveLength(1);
+    const setWebhookBody = JSON.parse(String(setWebhookCalls[0][1]?.body));
+    expect(setWebhookBody).toMatchObject({
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
+      drop_pending_updates: true
+    });
+    expect(String(setWebhookBody.url)).toMatch(/^https:\/\/worker\.example\/webhooks\/telegram\/[A-Za-z0-9_-]{32,128}$/);
+    expect(setWebhookBody.secret_token).toMatch(/^[A-Za-z0-9_-]{32,128}$/);
+    expect(calls.filter(call => String(call[0]).includes(`${oldToken}/deleteWebhook`))).toHaveLength(1);
+
+    const newPath = new URL(setWebhookBody.url).pathname.replace('/webhooks/telegram/', '');
+    const newSecret = String(setWebhookBody.secret_token);
+
+    const newPrivateResponse = await Worker.fetch(
+      telegramRequest(privateMessage(16, 1001), newPath, newSecret),
+      env,
+      {} as any
+    );
+    expect(newPrivateResponse.status).toBe(200);
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(
+      call => String(call[0]).includes(`bot${newToken}/sendMessage`)
+    )).toBe(true);
+    expect(env.DB.receipts.at(-1)).toMatchObject({
+      update_id: '16',
+      admin_user_id: '1001',
+      status: 'PROCESSED'
+    });
+
+    const newSupportResponse = await Worker.fetch(
+      telegramRequest(supportMessage(17), newPath, newSecret),
+      env,
+      {} as any
+    );
+    expect(newSupportResponse.status).toBe(200);
+    expect(env.QUEUE.messages.at(-1)).toMatchObject({
+      source: 'telegram',
+      type: 'message_created',
+      eventId: 'tg:1:17',
+      payload: {
+        supportProfileVersion: 1,
+        updateRef: '17',
+        threadRef: '40'
+      }
+    });
+  });
+
+  it.each([
+    ['current unified bot token', '111111:unified-bot-abcdefghijklmnopqrstuvwxyz'],
+    ['legacy Admin bot token', '999999:legacy-admin-bot-abcdefghijklmnopqrstuvwxyz']
+  ])('rejects %s as a unified bot rotation target', async (_label, candidateToken) => {
+    env.ADMIN_TELEGRAM_BOT_TOKEN = '999999:legacy-admin-bot-abcdefghijklmnopqrstuvwxyz';
+
+    await Worker.fetch(telegramRequest(privateCallback(18, 'e:tbot')), env, {} as any);
+    await Worker.fetch(
+      telegramRequest(privateMessage(19, 1001, candidateToken)),
       env,
       {} as any
     );
 
-    expect(env.DB.sessions).toHaveLength(0);
     expect(env.DB.runtime).toHaveLength(0);
     expect(vi.mocked(globalThis.fetch).mock.calls.some(
       call => String(call[0]).endsWith('/setWebhook') || String(call[0]).endsWith('/deleteWebhook')

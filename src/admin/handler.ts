@@ -113,11 +113,6 @@ async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext,
     return 'CRISP_WELCOME_SET_BEGIN';
   }
   if (code === 'tbot') {
-    if (bootstrap.mode === 'UNIFIED') {
-      await clearAdminSession(env, ctx.userId);
-      await reply(bootstrap, ctx, '单 Bot 模式下 Bot identity 仅允许通过部署级配置变更。');
-      return 'TELEGRAM_BOT_ROTATION_DISABLED';
-    }
     await saveAdminSession(env, {
       admin_user_id: ctx.userId, action: 'ROTATE_BOT', target: 'TELEGRAM_SUPPORT_PROFILE',
       expected_version: await currentRuntimeVersion(env, 'TELEGRAM_SUPPORT_PROFILE'),
@@ -314,7 +309,10 @@ async function processBotToken(
   if (!ctx.text || ctx.messageId === undefined) throw new Error('ADMIN_INPUT_INVALID');
   const deleted = await deleteAdminInput(bootstrap.token, ctx.chatId, ctx.messageId);
   const token = ctx.text.trim();
-  if (token === bootstrap.token) throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
+  const legacyAdminToken = env.ADMIN_TELEGRAM_BOT_TOKEN?.trim();
+  if (token === bootstrap.token || (legacyAdminToken && token === legacyAdminToken)) {
+    throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
+  }
   const groupId = env.BOT_GROUP_ID || undefined;
   const bot = await validateSupportBot(token, groupId);
   const webhookPath = generateOpaqueSecret(32);
@@ -374,11 +372,6 @@ async function confirmSession(
 ): Promise<string> {
   const session = await getAdminSession(env, ctx.userId);
   if (!session || !session.action.startsWith('CONFIRM_')) throw new Error('CONFIRMATION_SESSION_MISSING');
-  if (bootstrap.mode === 'UNIFIED' && session.action === 'CONFIRM_BOT') {
-    await clearAdminSession(env, ctx.userId);
-    await reply(bootstrap, ctx, '单 Bot 模式下 Bot identity 仅允许通过部署级配置变更。');
-    return 'TELEGRAM_BOT_ROTATION_DISABLED';
-  }
   if (isLegacyChatwootRuntimeKey(session.target)) {
     await clearAdminSession(env, ctx.userId);
     await reply(bootstrap, ctx, CHATWOOT_ADMIN_DISABLED_MESSAGE);
@@ -515,11 +508,6 @@ async function processMessage(
   if (session.action === 'SET') return processSetInput(env, bootstrap, ctx, session);
   if (session.action === 'CRISP_WELCOME_SET') return processCrispWelcomeInput(env, bootstrap, ctx, session);
   if (session.action === 'ROTATE_BOT') {
-    if (bootstrap.mode === 'UNIFIED') {
-      await clearAdminSession(env, ctx.userId);
-      await reply(bootstrap, ctx, '单 Bot 模式下 Bot identity 仅允许通过部署级配置变更。');
-      return 'TELEGRAM_BOT_ROTATION_DISABLED';
-    }
     return processBotToken(env, bootstrap, ctx, session.expected_version);
   }
   if (session.action === 'MIGRATE_GROUP') return processGroupInput(env, bootstrap, ctx, session.expected_version);
