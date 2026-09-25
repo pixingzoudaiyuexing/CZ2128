@@ -406,3 +406,9 @@ Status: **IMPLEMENTED IN PR #41 / EXACT-HEAD CI AND INDEPENDENT REVIEW REQUIRED 
 Scope is limited to Telegram customer-message notification policy by persisted pause source, separate Crisp human/AI display identities, the 100-rule bounded keyword configuration with Admin pagination, and trusted Telegram AI on/off controls. Migration 0008 preserves existing D1 data and expands only the Runtime Config plain-value capacity needed by the 100-rule bound.
 
 No Staging deployment, Provider acceptance, Production change, knowledge-base work, Picker editing, Crisp-07/Crisp-08 work, historical replay or attachment cleanup is implied by code completion. Real UI acceptance remains gated by exact-head CI, independent Gemini review and Primary approval, and is specified in CRISP-12-STAGING-ACCEPTANCE.md.
+
+## Single Telegram Bot Architecture
+
+Status: **IMPLEMENTED / PRIMARY REVIEW REQUIRED / NOT DEPLOYED**
+
+One Telegram Bot identity now serves two isolated contexts behind the existing authenticated Telegram webhook: authorized private chats enter Admin, and only the configured forum supergroup enters Support Topics. Unified Admin removes online Bot identity rotation while retaining group migration, notification settings and safe webhook refresh. The legacy Admin webhook remains for migration/rollback compatibility, and `TELEGRAM_SUPPORT_PROFILE` generation/version semantics remain unchanged to preserve Queue identity and stale-generation fencing. No D1 migration is added. Staging and Production switching remain separate Owner-authorized work.

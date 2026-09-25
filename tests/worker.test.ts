@@ -442,7 +442,7 @@ describe('Worker Integration', () => {
   it('fetch() -> Telegram ingress -> QUEUE.send', async () => {
     const payload = JSON.stringify({
       update_id: 456,
-      message: { chat: { id: -100 }, from: { id: 7, is_bot: false }, message_thread_id: 8, message_id: 9, text: 'Reply' }
+      message: { chat: { id: -100, type: 'supergroup' }, from: { id: 7, is_bot: false }, message_thread_id: 8, message_id: 9, text: 'Reply' }
     });
     const req = new Request('http://localhost/webhooks/telegram/my-path', {
       method: 'POST',
@@ -468,7 +468,7 @@ describe('Worker Integration', () => {
       headers: { 'X-Telegram-Bot-Api-Secret-Token': 'tg-secret' },
       body: JSON.stringify({
         update_id: 458,
-        message: { chat: { id: -100 }, from: { id: 7, is_bot: false }, message_id: 10, text: 'Main group' }
+        message: { chat: { id: -100, type: 'supergroup' }, from: { id: 7, is_bot: false }, message_id: 10, text: 'Main group' }
       })
     });
 

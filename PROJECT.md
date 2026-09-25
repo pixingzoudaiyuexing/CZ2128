@@ -31,6 +31,12 @@ transport to Crisp. Their accepted real-Staging evidence remains explicitly scop
 `PREPRODUCTION-ACCEPTANCE.md`; it does not imply full R2, concurrency/fault, Admin,
 load or Production acceptance.
 
+## Telegram Identity Decision: Single Bot
+
+CZ2128 now targets one Telegram Bot identity for both operator surfaces. After the shared `/webhooks/telegram/<path>` webhook has passed path, secret-token and update validation, an authorized private chat (`ADMIN_TELEGRAM_USER_IDS`) enters the Admin control plane, while only the exact configured forum supergroup (`BOT_GROUP_ID`) enters Support Topic handling. Unauthorized private users, ordinary groups, channels and unrelated supergroups are accepted/ignored without Support Queue effects.
+
+`ADMIN_TELEGRAM_USER_IDS` remains bootstrap-only. In unified mode the Admin UI cannot rotate the Bot token/webhook identity; Bot identity changes are deployment-level operations. The legacy `/webhooks/admin-telegram/...` endpoint and legacy Admin bootstrap secrets remain temporarily available for migration/rollback compatibility. `TELEGRAM_SUPPORT_PROFILE` and its version remain in the runtime model for compatibility with existing Telegram event identity, ordering and stale-generation fencing; retiring those fields is deferred and requires a separately reviewed migration strategy.
+
 ## V1 Goals
 
 1. Chatwoot user messages are reliably mirrored to a corresponding Telegram topic.

@@ -74,7 +74,7 @@ describe('attachment webhook normalization', () => {
       body: JSON.stringify({
         update_id: 9,
         message: {
-          message_id: 10, message_thread_id: 11, chat: { id: -100 }, from: { id: 1, is_bot: false },
+          message_id: 10, message_thread_id: 11, chat: { id: -100, type: 'supergroup' }, from: { id: 1, is_bot: false },
           photo: [
             { file_id: 'small', file_unique_id: 'small-u', file_size: 1 },
             { file_id: 'large', file_unique_id: 'large-u', file_size: 2 }
@@ -101,7 +101,7 @@ describe('attachment webhook normalization', () => {
       body: JSON.stringify({
         update_id: 12,
         message: {
-          message_id: 13, message_thread_id: 11, chat: { id: -100 }, from: { id: 1, is_bot: false },
+          message_id: 13, message_thread_id: 11, chat: { id: -100, type: 'supergroup' }, from: { id: 1, is_bot: false },
           caption: 'caption once', document: { file_id: 'file', file_unique_id: 'unique', file_size: 2 }
         }
       })

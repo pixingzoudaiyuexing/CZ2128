@@ -328,7 +328,7 @@ export default {
       if (telegramChat?.type === 'private') {
         return handleAdminTelegramUpdate(payload, env, effectiveEnv, url.origin);
       }
-      if (!telegramChat || String(telegramChat.id) !== effectiveEnv.BOT_GROUP_ID) {
+      if (telegramChat?.type !== 'supergroup' || String(telegramChat.id) !== effectiveEnv.BOT_GROUP_ID) {
         return new Response('Ignored', { status: 200 });
       }
 
@@ -365,7 +365,6 @@ export default {
         return new Response('Accepted', { status: 200 });
       }
 
-      const telegramMessage = payload.message || payload.edited_message;
       if (!telegramMessage) {
         return new Response('Ignored', { status: 200 });
       }

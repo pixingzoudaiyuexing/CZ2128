@@ -535,7 +535,7 @@ describe('Telegram admin control plane', () => {
     testEnv.QUEUE = { send: vi.fn(async () => undefined) };
     const update = {
       update_id: 500, message: {
-        message_id: 1, message_thread_id: 2, chat: { id: -10099 }, from: { id: 1001, is_bot: false }, text: 'test'
+        message_id: 1, message_thread_id: 2, chat: { id: -10099, type: 'supergroup' }, from: { id: 1001, is_bot: false }, text: 'test'
       }
     };
     const oldResponse = await Worker.fetch(new Request('https://worker.example/webhooks/telegram/old-path', {
