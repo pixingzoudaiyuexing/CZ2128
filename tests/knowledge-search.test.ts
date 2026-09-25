@@ -15,6 +15,11 @@ describe('knowledge retrieval', () => {
     expect(terms).not.toContain('?');
   });
 
+  it('normalizes knowledge titles to one safe line', async () => {
+    const { sanitizeKnowledgeTitle } = await import('../src/knowledge/repository');
+    expect(sanitizeKnowledgeTitle('  退款\n   规则  ')).toBe('退款 规则');
+  });
+
   it('queries only enabled FTS matches with a bounded result count', async () => {
     let bound: any[] = [];
     const env = {

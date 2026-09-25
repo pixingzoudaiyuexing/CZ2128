@@ -35,7 +35,7 @@ function boundedText(value: string, max: number): string {
 }
 
 export function sanitizeKnowledgeTitle(value: string): string {
-  return boundedText(value, KNOWLEDGE_TITLE_MAX_CHARS);
+  return boundedText(value, KNOWLEDGE_TITLE_MAX_CHARS).replace(/\s+/g, ' ');
 }
 
 export function sanitizeKnowledgeBody(value: string): string {
@@ -180,6 +180,7 @@ async function updateWithHistory(
   const now = Math.floor(Date.now() / 1000);
   const nextVersion = expectedVersion + 1;
   const searchTerms = buildKnowledgeSearchTerms(title + '\n' + body);
+  if (!searchTerms) throw new SafeError('KNOWLEDGE_VALUE_INVALID');
   const results = await env.DB.batch([
     env.DB.prepare(
       `UPDATE knowledge_entries
