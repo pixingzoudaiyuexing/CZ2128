@@ -10,7 +10,7 @@ import {
   updateKnowledgeEntry
 } from '../knowledge/repository';
 import { SafeError } from '../core/errors';
-import { clearAdminSession, saveAdminSession } from '../runtime-config/repository';
+import { clearAdminSession, getAdminSession, saveAdminSession } from '../runtime-config/repository';
 import { AdminSessionRow } from '../runtime-config/types';
 import { sendAdminMessage } from './telegram';
 import { AdminBootstrap, AdminContext, AdminKeyboard } from './types';
@@ -216,15 +216,17 @@ export async function processKnowledgeCallback(
   }
 
   if (action === 'dn') {
+    const session = await getAdminSession(env, ctx.userId);
+    if (!session || session.action !== 'KNOWLEDGE_DELETE_CONFIRM') {
+      throw new SafeError('CONFIRMATION_SESSION_MISSING');
+    }
     await clearAdminSession(env, ctx.userId);
     await send(bootstrap, ctx, '已取消知识删除。', [[{ text: '返回知识库', callback_data: 'p:kb' }]]);
     return 'KNOWLEDGE_DELETE_CANCEL';
   }
 
   if (action === 'dy') {
-    const session = await env.DB.prepare(
-      'SELECT * FROM admin_sessions WHERE admin_user_id = ? AND expires_at > ?'
-    ).bind(ctx.userId, Math.floor(Date.now() / 1000)).first<AdminSessionRow>();
+    const session = await getAdminSession(env, ctx.userId);
     if (!session || session.action !== 'KNOWLEDGE_DELETE_CONFIRM') {
       throw new SafeError('CONFIRMATION_SESSION_MISSING');
     }
