@@ -1,6 +1,6 @@
 # CZ2128 Pre-Production Acceptance Matrix
 
-Status: **PHASE 4B-5 ACCEPTED / COMPLETE / FROZEN / MERGED / PHASE 4C IN EXECUTION / SCOPED CRISP-02 THROUGH CRISP-05 STAGING EVIDENCE RECORDED / PRODUCTION NOT VALIDATED**
+Status: **PHASE 4B-5 ACCEPTED / COMPLETE / FROZEN / MERGED / PHASE 4C RELIABILITY CLOSURE RECONCILED / SCOPED CRISP-02 THROUGH CRISP-05 STAGING EVIDENCE RECORDED / HUMAN + TOOLING/TIME-BOUND GAPS RETAINED / PRODUCTION NOT VALIDATED**
 
 This matrix is a planning and evidence-recording artifact. Phase 4C has since begun and separately bounded Crisp-02 through Crisp-05 real-Staging slices are recorded below. Those scoped records do not silently close broader matrix rows. The matrix does not authorize new staging or production operations. Production is **NOT DEPLOYED** and production `DLQ_QUARANTINE` is **NOT PROVISIONED / NOT VALIDATED**.
 
@@ -192,12 +192,92 @@ The two pre-hotfix rows failed after Telegram `getFile` but before a Crisp `SEND
 
 **NOT VERIFIED / outside Stage B acceptance**
 
-- Real 20 MiB boundary behavior and large-file multipart behavior.
+- Real 20 MiB **Worker/provider attachment-path** behavior and large-file multipart behavior. The later Phase 4C closure in Section 2F proves a 20 MiB direct R2 service round-trip only; it is not Worker-memory, multipart or Provider evidence.
 - Real proxy HEAD/Range and all authorization-denial permutations.
 - Long-term R2 lifecycle cleanup versus application-level attachment expiry.
 - All media/file types beyond the tested ordinary text file and automated blocked-type matrix.
 - Real D1/R2 outage injection, simultaneous failure, real Queue duplicate/concurrency/load and multi-region behavior.
 - Full Admin reliability operations, Support Bot rotation, Telegram group migration, monitoring/incident response, rollback drills and Production.
+
+### 2F. Phase 4C One-Shot Reliability Closure Reconciliation — 2026-09-27
+
+**Closure verdict: PHASE 4C RELIABILITY CLOSURE COMPLETE for the Owner-authorized one-shot reliability work unit.**
+
+This verdict means every currently executable, non-human, non-historical reliability row was either exercised to the evidence level actually available or assigned a concrete tooling/external/time-bound blocker. It does **not** mean all 23 matrix rows PASS, does not complete D-035 human acceptance, does not deploy or accept Phase 6, and does not establish Production readiness.
+
+**Exact Staging baseline, before and after execution**
+
+- Worker: cz2128-4c-staging.
+- Active deployment: 906fdcaf-9a54-4485-bd73-e5971b279f99.
+- Active version: 14aadd30-bca6-4c70-8c65-7bcec602f4c6 (version 63, 100%).
+- Deployment annotation ties the runtime to exact pre-Phase-6 SHA 456cc3c68ec36317d15c256371d90645236f932d.
+- The current repository main contains Phase 6, but no Phase 6 runtime was deployed in this closure. Static inspection of the deployed SHA confirms no runLearningMaintenance import/call.
+- D1: cz2128-4c-staging-db, UUID 6482f216-5357-4e93-9796-89eaf0c1299c.
+- Applied D1 migrations: exactly 0001 through 0009. 0010_human_learning.sql remained pending before and after; it was not applied.
+- Main Queue: cz2128-4c-staging-queue, ID 6a4ed17bccbb4d6db22fb5cd8407eeb3, one staging Worker producer and one staging Worker consumer.
+- DLQ: cz2128-4c-staging-dlq, ID 6ec943a39dfe461ba33504593a5692f0, one staging Worker consumer.
+- Attachment R2: cz2128-4c-staging-attachments.
+- Quarantine R2: cz2128-4c-staging-dlq-quarantine.
+- Both R2 buckets reported zero objects before the active case and zero objects after cleanup.
+- Attachment lifecycle was re-read: attachments/ expires after seven days; incomplete multipart uploads abort after seven days. No elapsed-time lifecycle execution was claimed.
+- The ignored wrangler.staging.jsonc passed the strict isolated-staging validator against the independently recorded D1 UUID.
+- Current Worker bindings were re-read: exact approved D1/Queue/R2 bindings, 2024-03-20 + nodejs_compat, staging Queue identity variables and the existing AI test-scope allowlist variables. Secret names only were inspected; secret values were never read. No Phase 6 Notion bindings are present in the deployed version.
+- D1 bounded baseline before and after the active case remained: two historical non-PROCESSED event receipts, zero AMBIGUOUS outbound operations, two historical OPEN DLQ receipts, zero active Admin sessions, zero attachment rows and 37 conversations. The historical failed/DLQ rows were not mutated.
+
+**New active Staging evidence**
+
+- Direct remote R2 service case, synthetic-only key P4C-RELIABILITY-20260927-small.txt: 39-byte put/get/delete succeeded; source and read-back SHA-256 both eb2566a6dee37a484b96f642482aaaa836248db5b1288202bf18f5e9e5bb7a59.
+- Direct remote R2 service case, synthetic-only key P4C-RELIABILITY-20260927-20MiB.bin: 20 MiB put succeeded in approximately 9.06 seconds; get succeeded in approximately 8.20 seconds; read-back was exactly 20,971,520 bytes; source and read-back SHA-256 both cd52d81e25f372e6fa4db2c0dfceb59862c1969cab17096da352b34950c973cc; delete succeeded.
+- These cases prove real Staging R2 service write/read/delete and a real 20 MiB R2 object round-trip. They **do not** prove Worker attachment memory, multipart behavior, proxy GET/HEAD/Range semantics, capability-token behavior or Provider delivery.
+- Cleanup restored the attachment bucket to object_count = 0 / bucket_size = 0 B; D1, Queue/DLQ, Worker deployment and migration state remained unchanged.
+
+**23-row execution reconciliation**
+
+| # | Matrix area | Execution classification | New closure evidence | Final status / reason |
+| ---: | --- | --- | --- | --- |
+| 1 | Historical Chatwoot text ingress/egress compatibility | DEFERRED — HISTORICAL COMPATIBILITY | No Chatwoot reintroduction. | REAL CHATWOOT remains **NOT VALIDATED** under the Crisp-only architecture. |
+| 2 | Real Telegram text/topic lifecycle | BLOCKED — TOOLING / EXTERNAL | Existing Crisp-02/04 scoped Staging evidence preserved. | Remaining deliberate duplicate/stale/concurrency real injection has no safe non-human authenticated injector in the current executor. |
+| 3 | Historical Telegram/Chatwoot attachments compatibility | DEFERRED — HISTORICAL COMPATIBILITY | No historical Chatwoot path replayed. | REAL historical compatibility remains **NOT VALIDATED**. |
+| 4 | Real AI provider retry/classification | BLOCKED — TOOLING / EXTERNAL | Existing real success/handoff evidence preserved. | No official safe forced-failure/rate-limit route; secrets were not modified and the Provider was not load-tested. Row remains **STAGING PARTIAL / NOT VALIDATED overall**. |
+| 5 | R2 write/multipart/read/Range/delete | ACTIVE / EXECUTE NOW | New real R2 small + 20 MiB put/get/hash/delete evidence. | **STAGING PARTIAL**; service data plane proved, but runtime proxy HEAD/Range, multipart and capability-token cases remain missing. |
+| 6 | R2 lifecycle and aborted multipart | DEFERRED — TIME-BOUND | Lifecycle configuration re-read unchanged. | **STAGING PARTIAL / DEFERRED — TIME-BOUND**; seven-day service-managed execution has not elapsed under a controlled fixture. |
+| 7 | Queue/D1 duplicate delivery and concurrency | BLOCKED — TOOLING / EXTERNAL | Wrangler 4.131.1 exposes no Queue message-send command; no authenticated synthetic injector exists. | REAL Queue/D1 concurrency remains **NOT VALIDATED**; no debug/fault route was added. |
+| 8 | Multi-region and sustained load | BLOCKED — TOOLING / EXTERNAL | No fabricated load result. | Multi-region runner unavailable; no verified provider-free active Worker URL was obtainable through the supported read-only surfaces used in this work unit. |
+| 9 | D1 outage and recovery | BLOCKED — TOOLING / EXTERNAL | No destructive fault attempted. | No safe official outage hook; credential revocation, rebinding and destructive mutation were rejected. |
+| 10 | R2 outage and D1/R2 dual failure | BLOCKED — TOOLING / EXTERNAL | No bucket/rebinding fault attempted. | No safe official outage hook; real outage/dual failure remains **NOT VALIDATED**. |
+| 11 | Queue retry exhaustion and DLQ | BLOCKED — TOOLING / EXTERNAL | Two pre-existing real OPEN DLQ rows were read metadata-only and preserved. | No new synthetic Queue injection surface; historical rows were not relabelled as this acceptance. |
+| 12 | 20 MiB attachment memory | BLOCKED — TOOLING / EXTERNAL | Real 20 MiB R2 service round-trip measured. | Worker memory, multipart and Provider-path 20 MiB behavior remain **NOT VALIDATED**. |
+| 13 | Scheduled cleanup | BLOCKED — TOOLING / EXTERNAL | Hourly cron/binding remains present. | No supported remote scheduled-event invocation or safe time acceleration; real scheduled cleanup remains **NOT VALIDATED**. |
+| 14 | Support Bot rotation | DEFERRED — HUMAN ACCEPTANCE | No action. | D-035 real rotation remains **NOT VALIDATED**. |
+| 15 | Telegram group migration | DEFERRED — HUMAN ACCEPTANCE | No action. | Real group migration remains **NOT VALIDATED**. |
+| 16 | Admin reconciliation | DEFERRED — HUMAN ACCEPTANCE | No action. | Real authenticated Admin flow remains **NOT VALIDATED**. |
+| 17 | Admin Mark Delivered/Cancel | DEFERRED — HUMAN ACCEPTANCE | No action. | Real authenticated Admin flow remains **NOT VALIDATED**. |
+| 18 | Admin Manual Retry | DEFERRED — HUMAN ACCEPTANCE | No action. | Real authenticated duplicate-risk decision remains **NOT VALIDATED**. |
+| 19 | Admin historical AI redrive | DEFERRED — HUMAN ACCEPTANCE | No action. | Real authenticated redrive remains **NOT VALIDATED**. |
+| 20 | DLQ capture/quarantine | BLOCKED — TOOLING / EXTERNAL | Exact DLQ consumer/quarantine binding and empty quarantine bucket reverified. | New synthetic D1-preferred/fallback/dual-failure run unavailable without Queue injection + safe D1 failure hook. |
+| 21 | Permissions, privacy, audit and logs | ACTIVE / EXECUTE NOW | Exact current bindings and secret names-only inventory; no secret values; no Notion runtime binding; before/after D1 counts unchanged. | **STAGING PARTIAL / NOT VALIDATED overall**; no fabricated live unauthorized-route result. |
+| 22 | Migration and rollback drill | BLOCKED — TOOLING / EXTERNAL | Current schema and no-0010 boundary reverified. | No separately authorized isolated remote D1 copy; local migration tests cannot be relabelled as Staging. |
+| 23 | Monitoring and incident response | BLOCKED — TOOLING / EXTERNAL | Repository/runbook inventory rechecked. | No monitoring configuration or external alerting integration is available for a real exercise. |
+
+**Independent review**
+
+- agy Gate 1, gemini-3.1-pro-high / high: **PASS** for the bounded mutation/fault plan.
+- agy Gate 2, gemini-3.1-pro-high / high: **PASS**; explicitly approved baseline preservation, R2 STAGING PARTIAL labeling, blocker/deferred classifications, zero-Provider execution and complete cleanup.
+- Final Formal Independent Review, gemini-3.1-pro-high / high: **FORMAL REVIEW PASS**. The reviewer accepted the closure semantics only because blocked/deferred rows remain non-PASS and the R2 evidence is not overstated.
+
+**Durable Objects decision**
+
+**NO MEASURED NEED OBSERVED**
+
+No real Staging measurement executed in this closure exposed a correctness or ordering failure that justifies Durable Objects. This is **not** a claim that the blocked Queue/D1 concurrency row passed; uncertainty alone is not evidence for adding a coordination layer.
+
+**Security / cleanup**
+
+- Synthetic R2 bytes only; no customer data or raw historical payload replay.
+- No token, webhook secret, bearer credential, private capability URL, attachment body from a customer, AI/customer text or full Provider error body was read into the evidence package.
+- No unauthenticated debug/fault endpoint, chaos flag, secret bypass or global failure switch was added.
+- No Queue pause/purge, D1 write, migration apply, Worker deploy, Provider call, Notion mutation or Production-targeted command occurred.
+- Both P4C-* R2 fixtures were deleted; attachment and quarantine buckets ended empty and bounded D1 state returned exactly to the pre-case counts.
 
 ## 3. Required Evidence Record
 

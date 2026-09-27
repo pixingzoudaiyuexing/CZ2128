@@ -1,6 +1,6 @@
 # CZ2128 4C Staging Foundation Deployment Plan
 
-Status: **HISTORICAL FOUNDATION PLAN / STAGING DEPLOYED / READ-ONLY RECONCILED 2026-09-23**
+Status: **HISTORICAL FOUNDATION PLAN / STAGING DEPLOYED / READ-ONLY RECONCILED 2026-09-27 / PHASE 4C RELIABILITY CLOSURE EVIDENCE RECORDED**
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
@@ -15,25 +15,27 @@ Related documents:
 
 ## 1. Approved Resource Boundary
 
-| Resource | Exact staging name | Current read-only evidence (2026-09-23) |
+| Resource | Exact staging name | Current read-only evidence (2026-09-27) |
 | --- | --- | --- |
-| Worker | `cz2128-4c-staging` | Crisp-06 read-only deployment list shows latest version `4d13f217-bd80-4c7c-a6bf-8ed13669be77`; the accepted Stage B deployment record ties it to exact main `d635520b1cde7a49e75ef5f658c862d5e856c5db`. |
-| D1 | `cz2128-4c-staging-db` | UUID `6482f216-5357-4e93-9796-89eaf0c1299c`; read-only `d1_migrations` lists exactly `0001`–`0007`, including the Crisp attachment/upload migrations; no migration is pending. |
+| Worker | `cz2128-4c-staging` | Active deployment `906fdcaf-9a54-4485-bd73-e5971b279f99` points 100% to version `14aadd30-bca6-4c70-8c65-7bcec602f4c6` (version 63), annotated exact pre-Phase-6 runtime `456cc3c68ec36317d15c256371d90645236f932d`. |
+| D1 | `cz2128-4c-staging-db` | UUID `6482f216-5357-4e93-9796-89eaf0c1299c`; read-only `d1_migrations` lists exactly `0001`–`0009`. `0010_human_learning.sql` is pending and was not applied. |
 | Main Queue | `cz2128-4c-staging-queue` | ID `6a4ed17bccbb4d6db22fb5cd8407eeb3`; staging Worker is the one producer and one consumer. |
 | DLQ | `cz2128-4c-staging-dlq` | ID `6ec943a39dfe461ba33504593a5692f0`; staging Worker is the one consumer. |
-| Attachment R2 | `cz2128-4c-staging-attachments` | Exists; `attachments/` expires after seven days and incomplete multipart uploads abort after seven days. |
-| Quarantine R2 | `cz2128-4c-staging-dlq-quarantine` | Exists and is bound; no object-expiry lifecycle was observed in the current listing. |
+| Attachment R2 | `cz2128-4c-staging-attachments` | Exists; `attachments/` expires after seven days and incomplete multipart uploads abort after seven days. Phase 4C closure verified a synthetic 39-byte and 20 MiB direct remote service round-trip, deleted both fixtures, and ended at `object_count = 0`. |
+| Quarantine R2 | `cz2128-4c-staging-dlq-quarantine` | Exists, is bound and reported `object_count = 0`; no quarantine object was created by the closure because no safe Queue/D1-failure injector was available. |
 
 Historical Gate A required re-confirming the exact Cloudflare account and proving all six names absent before the first write. That requirement remains part of the creation record, not a current instruction: all six approved 4C resources now exist. A matching name alone is still never proof of ownership. Do not modify, reuse, empty or delete legacy `cz2128-staging-*`, unsuffixed `cz2128*`, production or other-project resources.
 
 ### 1A. Current Deployment / Acceptance Snapshot
 
-- Exact current main before Crisp-06: `d635520b1cde7a49e75ef5f658c862d5e856c5db` (PR #36 merge). The accepted Stage B deployment record used this exact main tree.
-- Exact latest Worker version independently re-read by Crisp-06: `4d13f217-bd80-4c7c-a6bf-8ed13669be77`.
+- Exact active runtime is the reviewed pre-Phase-6 SHA `456cc3c68ec36317d15c256371d90645236f932d`; current repository `main` has advanced to Phase 6 but was deliberately not deployed by the Phase 4C reliability closure.
+- Active Worker deployment/version: `906fdcaf-9a54-4485-bd73-e5971b279f99` / `14aadd30-bca6-4c70-8c65-7bcec602f4c6` (version 63, 100%).
+- D1 has exactly migrations `0001` through `0009`; `0010_human_learning.sql` remains pending. Static inspection of the deployed SHA confirms no Phase 6 `runLearningMaintenance` import/call.
 - Compatibility date/flag: `2024-03-20` / `nodejs_compat`.
 - Current resource bindings point to the 4C D1, main Queue and two 4C R2 buckets listed above; runtime Queue identity variables name the 4C main Queue and DLQ.
-- Provider secret **names** are now configured for Crisp and Telegram. Historical Chatwoot secret names also remain. Secret values were not read or recorded by this reconciliation.
-- The current evidence record now contains separately bounded Crisp-02 basic support, Crisp-03 AI/handoff, Crisp-04 lifecycle and Crisp-05 attachment/upload scopes described in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md). Those scopes do not accept the whole R2/proxy/cleanup matrix, real Queue/D1 concurrency/fault injection, Admin recovery, load/multi-region or Production.
+- Provider secret **names** are configured for Crisp and Telegram; historical Chatwoot secret names also remain. Secret values were not read or recorded. No Phase 6 Notion bindings are present in the deployed version.
+- The 2026-09-27 closure preserved two historical non-`PROCESSED` event receipts and two historical `OPEN` DLQ receipts, left zero `AMBIGUOUS` outbound operations, zero active Admin sessions and zero attachment rows, and returned both R2 buckets to empty after the bounded synthetic R2 case.
+- The current evidence record contains separately bounded Crisp-02 basic support, Crisp-03 AI/handoff, Crisp-04 lifecycle and Crisp-05 attachment/upload scopes plus the Phase 4C closure reconciliation in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md). Blocked/deferred rows remain non-PASS and Production remains unvalidated.
 
 ## 2. Configuration Artifacts
 
@@ -51,7 +53,7 @@ The template declares:
 - exactly two non-sensitive Queue identity variables matching the staging Queue and DLQ bindings;
 - no other plaintext variables, secrets, Provider identities or webhook configuration.
 
-The generated `wrangler.staging.jsonc` is ignored by Git. In the historical foundation flow, after D1 creation an authorized operator could create it locally from the template and replace only the D1 placeholder with the independently recorded D1 UUID. The generated file is not present in the current checkout, so this reconciliation does not claim to have revalidated that historical local artifact.
+The generated `wrangler.staging.jsonc` is ignored by Git. In the historical foundation flow, after D1 creation an authorized operator could create it locally from the template and replace only the D1 placeholder with the independently recorded D1 UUID. A current ignored copy is present in the 2026-09-27 checkout and passed the strict isolated-staging validator against the independently recorded D1 UUID. It remains a local deployment artifact and is not committed.
 
 Local checks:
 

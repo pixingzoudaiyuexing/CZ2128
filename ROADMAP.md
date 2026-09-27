@@ -1,6 +1,6 @@
 # CZ2128 Roadmap
 
-Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C in execution with scoped Crisp-02 through Crisp-05 Staging evidence recorded / Production not validated**
+Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C reliability closure reconciled with executable evidence plus explicit tooling/human/time-bound gaps / Production not validated**
 
 ## Crisp-01 - Basic Crisp support bridge
 
@@ -311,8 +311,8 @@ Current status:
 - Phase 4B-4B explicit durable-state AI recovery: **ACCEPTED / COMPLETE / FROZEN / MERGED**
 - Phase 4B-4 overall: **COMPLETE / FROZEN / MERGED**
 - Phase 4B-5 reliability operations, recovery and pre-production acceptance documentation: **ACCEPTED / COMPLETE / FROZEN / MERGED**
-- Phase 4C: **IN EXECUTION** — isolated staging foundation exists; Crisp-02 real Staging basic-support acceptance is complete and scoped
-- Phase 4C concurrency/load validation: **NOT STARTED**
+- Phase 4C: **RELIABILITY CLOSURE RECONCILED** — scoped Crisp-02 through Crisp-05 evidence is preserved; the 2026-09-27 one-shot closure adds real R2 service evidence and records every remaining row as blocked, human-deferred, historical or time-bound without false PASS.
+- Phase 4C concurrency/load validation: **BLOCKED IN CURRENT EXECUTOR / NOT STAGING ACCEPTED** — Wrangler exposes no Queue payload-injection command, no authenticated synthetic injector exists, the current executor has no real multi-region runner, and no verified provider-free active Worker URL was obtained through the supported read-only surfaces used by this work unit.
 
 Scope:
 
@@ -328,6 +328,8 @@ Scope:
 - concurrency/load tests to decide whether per-conversation Durable Objects are actually needed
 
 Durable Objects may be introduced here only if measured correctness/ordering problems justify them.
+
+Phase 4C closure decision evidence: **NO MEASURED NEED OBSERVED**. No executable real-Staging measurement in the closure exposed a correctness/ordering defect that would justify Durable Objects. This does not convert the blocked Queue/D1 concurrency or multi-region/load rows into PASS. The exact closure matrix, R2 evidence, blockers and deferred human/time-bound rows are recorded in `PREPRODUCTION-ACCEPTANCE.md` Section 2F.
 
 Phase 4B-2C-1 uses the existing `0005` columns and tables. It persists finite subject identity and versioned sanitized target evidence before visible requests, blocks retries when stored and current target identity differ, preserves historical `AMBIGUOUS`, supports effective-SENT interpretation after confirmed/manual delivery, and provides bounded Chatwoot exact-`source_id` positive reconciliation through five supported `after`-cursor pages of up to 100 messages. Positive confirmation requires observed provider-history exhaustion; reaching the bound never proves uniqueness. Zero/multiple matches, invalid or non-advancing cursors and all Telegram ambiguity remain unresolved. The phase also adds internal manual mark-delivered/cancel persistence with atomic reliability audit. It does not implement manual retry children, visible redrive, AI durable retry activation, Admin UI or DLQ consumption.
 
