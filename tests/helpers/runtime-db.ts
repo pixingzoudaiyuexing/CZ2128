@@ -139,7 +139,13 @@ export class RuntimeDb {
       const index = this.sessions.findIndex(row => row.admin_user_id === params[0]);
       if (index >= 0) { this.sessions.splice(index, 1); changes = 1; }
     } else if (query.includes('INSERT INTO admin_update_receipts')) {
-      if (!this.receipts.some(row => row.update_id === params[0])) {
+      const legacyUpdateId = params[3];
+      const legacyCreatedAfter = params[4];
+      const legacyExists = legacyUpdateId !== undefined && this.receipts.some(row =>
+        row.update_id === legacyUpdateId &&
+        (legacyCreatedAfter === undefined || row.created_at > legacyCreatedAfter)
+      );
+      if (!legacyExists && !this.receipts.some(row => row.update_id === params[0])) {
         this.receipts.push({ update_id: params[0], admin_user_id: params[1], status: 'PROCESSING', created_at: params[2] });
         changes = 1;
       }

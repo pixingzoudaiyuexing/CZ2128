@@ -714,7 +714,19 @@ async function processAdminTelegramPayload(
   const ctx = parseAdminContext(payload);
   if (!ctx || !bootstrap.userIds.has(ctx.userId)) return new Response('Accepted', { status: 200 });
   const receiptId = adminReceiptIdentity(bootstrap.token, ctx.updateId);
-  if (!await claimAdminUpdate(rawEnv, receiptId, ctx.userId)) return new Response('Accepted', { status: 200 });
+  const currentProfile = bootstrap.mode === 'UNIFIED'
+    ? await getRuntimeConfig(rawEnv, 'TELEGRAM_SUPPORT_PROFILE')
+    : null;
+  const legacyCreatedAfter = bootstrap.mode === 'UNIFIED' && currentProfile
+    ? currentProfile.updated_at
+    : null;
+  if (!await claimAdminUpdate(
+    rawEnv,
+    receiptId,
+    ctx.userId,
+    ctx.updateId,
+    legacyCreatedAfter
+  )) return new Response('Accepted', { status: 200 });
 
   let action = 'UNKNOWN';
   try {

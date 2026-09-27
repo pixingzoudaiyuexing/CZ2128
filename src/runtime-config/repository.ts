@@ -220,13 +220,39 @@ export async function migrateSupportGroup(
 export async function claimAdminUpdate(
   env: Env,
   updateId: string,
-  userId: string
+  userId: string,
+  legacyUpdateId?: string,
+  legacyCreatedAfter?: number | null
 ): Promise<boolean> {
-  const result = await env.DB.prepare(
-    `INSERT INTO admin_update_receipts (update_id, admin_user_id, status, created_at)
-     VALUES (?, ?, 'PROCESSING', ?)
-     ON CONFLICT (update_id) DO NOTHING`
-  ).bind(updateId, userId, Math.floor(Date.now() / 1000)).run();
+  const now = Math.floor(Date.now() / 1000);
+  let statement;
+  if (!legacyUpdateId) {
+    statement = env.DB.prepare(
+      `INSERT INTO admin_update_receipts (update_id, admin_user_id, status, created_at)
+       VALUES (?, ?, 'PROCESSING', ?)
+       ON CONFLICT (update_id) DO NOTHING`
+    ).bind(updateId, userId, now);
+  } else if (legacyCreatedAfter === null || legacyCreatedAfter === undefined) {
+    statement = env.DB.prepare(
+      `INSERT INTO admin_update_receipts (update_id, admin_user_id, status, created_at)
+       SELECT ?, ?, 'PROCESSING', ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM admin_update_receipts WHERE update_id = ?
+       )
+       ON CONFLICT (update_id) DO NOTHING`
+    ).bind(updateId, userId, now, legacyUpdateId);
+  } else {
+    statement = env.DB.prepare(
+      `INSERT INTO admin_update_receipts (update_id, admin_user_id, status, created_at)
+       SELECT ?, ?, 'PROCESSING', ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM admin_update_receipts
+         WHERE update_id = ? AND created_at > ?
+       )
+       ON CONFLICT (update_id) DO NOTHING`
+    ).bind(updateId, userId, now, legacyUpdateId, legacyCreatedAfter);
+  }
+  const result = await statement.run();
   return result.meta.changes === 1;
 }
 

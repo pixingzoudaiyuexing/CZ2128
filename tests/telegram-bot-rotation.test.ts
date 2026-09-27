@@ -333,6 +333,83 @@ describe('one-click unified Telegram Bot rotation', () => {
     )).toHaveLength(beforeNewStart + 1);
   });
 
+  it('bridges legacy raw Admin receipts before rotation without blocking the new Bot namespace', async () => {
+    const fetchMock = providerMock();
+    const createdAt = Math.floor(Date.now() / 1000) - 60;
+    env.DB.receipts.push({
+      update_id: '500',
+      admin_user_id: '1001',
+      status: 'PROCESSED',
+      action: 'MAIN',
+      created_at: createdAt,
+      processed_at: createdAt
+    });
+
+    const beforeOldRetry = fetchMock.mock.calls.filter(
+      call => String(call[0]).includes(`bot${CURRENT_TOKEN}/sendMessage`)
+    ).length;
+    await Worker.fetch(unifiedRequest(privateMessage(500, '/start')), env, {} as any);
+    expect(fetchMock.mock.calls.filter(
+      call => String(call[0]).includes(`bot${CURRENT_TOKEN}/sendMessage`)
+    )).toHaveLength(beforeOldRetry);
+    expect(env.DB.receipts.some((row: any) => row.update_id === '111111:500')).toBe(false);
+
+    await beginUnifiedRotation(env, 510);
+    await Worker.fetch(unifiedRequest(privateCallback(512, 'c:yes')), env, {} as any);
+    const effective = await resolveEffectiveEnv(env);
+    const beforeNewStart = fetchMock.mock.calls.filter(
+      call => String(call[0]).includes(`bot${NEW_TOKEN}/sendMessage`)
+    ).length;
+
+    await Worker.fetch(
+      unifiedRequest(privateMessage(500, '/start'), effective.TELEGRAM_SECRET_PATH, effective.TELEGRAM_WEBHOOK_SECRET),
+      env,
+      {} as any
+    );
+
+    expect(env.DB.receipts.some((row: any) => row.update_id === '222222:500')).toBe(true);
+    expect(fetchMock.mock.calls.filter(
+      call => String(call[0]).includes(`bot${NEW_TOKEN}/sendMessage`)
+    )).toHaveLength(beforeNewStart + 1);
+  });
+
+  it('preserves raw receipt retry protection for the currently active D1 Bot generation', async () => {
+    await setSecretOverride(
+      env,
+      'TELEGRAM_SUPPORT_PROFILE',
+      JSON.stringify({
+        bot_token: CURRENT_TOKEN,
+        webhook_secret: 'runtime_current_secret_abcdefghijklmnopqrstuvwxyz',
+        webhook_path: 'runtime_current_path_abcdefghijklmnopqrstuvwxyz'
+      }),
+      0,
+      'seed',
+      'seed-current'
+    );
+    const effective = await resolveEffectiveEnv(env);
+    const currentProfile = env.DB.runtime.find((row: any) => row.key === 'TELEGRAM_SUPPORT_PROFILE');
+    env.DB.receipts.push({
+      update_id: '600',
+      admin_user_id: '1001',
+      status: 'PROCESSED',
+      action: 'MAIN',
+      created_at: currentProfile.updated_at + 1,
+      processed_at: currentProfile.updated_at + 1
+    });
+    const fetchMock = providerMock();
+
+    await Worker.fetch(
+      unifiedRequest(privateMessage(600, '/start'), effective.TELEGRAM_SECRET_PATH, effective.TELEGRAM_WEBHOOK_SECRET),
+      env,
+      {} as any
+    );
+
+    expect(env.DB.receipts.some((row: any) => row.update_id === '111111:600')).toBe(false);
+    expect(fetchMock.mock.calls.some(call =>
+      String(call[0]).includes(`bot${CURRENT_TOKEN}/sendMessage`)
+    )).toBe(false);
+  });
+
   it('deduplicates identical old Support/Admin retirement targets and never deletes the new Bot', async () => {
     env.ADMIN_TELEGRAM_BOT_TOKEN = CURRENT_TOKEN;
     const fetchMock = providerMock();
