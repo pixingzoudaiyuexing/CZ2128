@@ -52,6 +52,7 @@ describe('knowledge retrieval', () => {
   });
 
   it('injects matched knowledge after the configured system prompt', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
     const env = {
       DB: {
         prepare: (sql: string) => {
@@ -80,6 +81,7 @@ describe('knowledge retrieval', () => {
     expect(messages[1].role).toBe('system');
     expect(messages[1].content).toContain('退款规则');
     expect(messages[2]).toEqual({ role: 'user', content: '怎么退款' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('falls back to the original AI context when knowledge retrieval fails', async () => {

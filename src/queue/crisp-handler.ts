@@ -32,6 +32,7 @@ import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-we
 import { getRuntimeHistoryVersion } from '../runtime-config/repository';
 import type { OutboundOperation } from '../core/domain';
 import { insertReliabilityAuditOnce } from '../core/reliability-audit';
+import { captureLearningCandidateByProviderRef } from '../learning/repository';
 
 export interface CrispMenuOption {
   pickerId: string;
@@ -804,6 +805,21 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
       env, conv.id, 'crisp', payload.messageRef,
       isOperator ? 'OUTBOUND' : 'INBOUND', payload.actorRole, 'TEXT', content
     );
+    if (isOperator) {
+      try {
+        await captureLearningCandidateByProviderRef(
+          env,
+          'crisp',
+          payload.messageRef,
+          'crisp-human-reply'
+        );
+      } catch {
+        logger.warn('Learning capture deferred after Crisp human reply', {
+          conversation_id: conv.id,
+          result: 'DEFERRED'
+        });
+      }
+    }
   }
 
   const threadRef = await ensureTelegramTopic(

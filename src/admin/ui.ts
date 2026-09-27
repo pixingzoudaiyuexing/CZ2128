@@ -11,9 +11,11 @@ import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './p
 import { parseCrispMenu } from '../queue/crisp-handler';
 import { parseCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
 import { showKnowledgePage } from './knowledge';
+import { showLearningPage } from './learning';
 
 const mainKeyboard: AdminKeyboard = [
   [{ text: '🤖 AI 设置', callback_data: 'p:ai' }, { text: '📚 AI 知识库', callback_data: 'p:kb' }],
+  [{ text: '🧠 学习候选 / Notion', callback_data: 'p:learn' }],
   [{ text: '💬 Telegram 设置', callback_data: 'p:tg' }, { text: '🔵 Crisp 设置', callback_data: 'p:crisp' }],
   [{ text: '📎 附件设置', callback_data: 'p:att' }, { text: '💡 关键词回复', callback_data: 'p:kw' }],
   [{ text: '🛡 可靠性管理', callback_data: 'p:rel' }, { text: '⚙️ 系统状态', callback_data: 'p:sys' }],
@@ -107,6 +109,10 @@ export async function showPage(
   }
   if (page === 'kb') {
     await showKnowledgePage(env, bootstrap, ctx);
+    return;
+  }
+  if (page === 'learn') {
+    await showLearningPage(env, bootstrap, ctx);
     return;
   }
   if (page === 'ai') {

@@ -35,6 +35,7 @@ import { reply, showMain, showPage } from './ui';
 import { processReliabilityCallback, processReliabilityMessage, showReliabilityMain } from './reliability';
 import { processCrispKeywordCallback, processCrispKeywordMessage } from './crisp-keywords';
 import { processKnowledgeCallback, processKnowledgeMessage } from './knowledge';
+import { processLearningCallback } from './learning';
 import { safeErrorCode } from '../core/errors';
 import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './platform-policy';
 import { createCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
@@ -624,7 +625,7 @@ async function processCallback(
     try { await answerAdminCallback(bootstrap.token, ctx.callbackId); } catch { /* mutation remains authoritative */ }
   }
   if (data === 'm') { await showMain(bootstrap, ctx); return 'MAIN'; }
-  if (/^p:(ai|air|tg|tgr|crisp|crispr|cwelcome|cmenu|cw|cwr|att|attr|sys|hist|rel|kw|kb)$/.test(data)) {
+  if (/^p:(ai|air|tg|tgr|crisp|crispr|cwelcome|cmenu|cw|cwr|att|attr|sys|hist|rel|kw|kb|learn)$/.test(data)) {
     const page = data.slice(2);
     await showPage(env, bootstrap, ctx, page);
     return `PAGE_${page.toUpperCase()}`;
@@ -634,6 +635,7 @@ async function processCallback(
   if (data.startsWith('r:')) return await processReliabilityCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('k:')) return await processCrispKeywordCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('b:')) return await processKnowledgeCallback(env, bootstrap, ctx, data.slice(2));
+  if (data.startsWith('l:')) return await processLearningCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3));

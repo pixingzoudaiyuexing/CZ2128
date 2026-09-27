@@ -29,6 +29,7 @@ import { captureDlqMessage } from './queue/dlq-consumer';
 import { persistDlqQuarantine } from './queue/dlq-quarantine';
 import { resolveQueueIdentities } from './config/queue-identities';
 import { handleUploadCapabilityRequest } from './uploads/handler';
+import { runLearningMaintenance } from './learning/maintenance';
 
 export type { Env } from './config/env';
 
@@ -489,5 +490,13 @@ export default {
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(cleanupExpiredAttachments(env));
+    ctx.waitUntil((async () => {
+      try {
+        const effectiveEnv = await resolveEffectiveEnv(env);
+        await runLearningMaintenance(effectiveEnv);
+      } catch {
+        logger.warn('Learning scheduled maintenance failed', { result: 'FAILED' });
+      }
+    })());
   }
 };

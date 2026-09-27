@@ -91,5 +91,9 @@ export interface Env {
   ADMIN_TELEGRAM_SECRET_PATH?: string;
   ADMIN_TELEGRAM_USER_IDS?: string;
   UPLOAD_CAPABILITY_SECRET?: string;
+  NOTION_LEARNING_ENABLED?: string;
+  NOTION_API_TOKEN?: string;
+  NOTION_LEARNING_CANDIDATES_DATA_SOURCE_ID?: string;
+  NOTION_KNOWLEDGE_SOURCES_DATA_SOURCE_ID?: string;
   runtimeConfigSnapshot?: import('../runtime-config/types').RuntimeConfigSnapshot;
 }

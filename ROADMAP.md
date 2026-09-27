@@ -372,18 +372,34 @@ This MVP does not claim embedding/vector RAG or automatic learning.
 
 Goal: turn successful human support into reviewed knowledge candidates.
 
-Possible flow:
+Development status: **IMPLEMENTED / REVIEWED IN DEVELOPMENT; exact-head CI, formal review and main promotion are the development-closure gates. REAL STAGING / NOTION / TELEGRAM / CRISP E2E NOT VALIDATED.**
+
+Implemented flow:
 
 ```text
 customer question
-  -> AI cannot answer / human takes over
-  -> operator answer
-  -> candidate extraction
-  -> review/approve/reject
-  -> publish to knowledge base
+  -> successful human operator answer
+  -> one provider-agnostic D1 learning candidate
+  -> deterministic privacy filter
+  -> bounded AI extraction/generalization
+  -> optional Notion editorial mirror
+  -> human Approved / Rejected review
+  -> Approved-only D1 knowledge_entries publication
+  -> existing FTS5 retrieval for later AI answers
 ```
 
-No automatic unreviewed permanent learning.
+Key boundaries:
+
+- D1 is canonical; Notion is optional editorial/review state and is never queried on customer/AI request paths.
+- Candidate identity is bound to the canonical human `messages.id`; retries, duplicate provider delivery and scheduled recovery converge on one logical candidate.
+- Learning capture/extraction/Notion failures cannot turn a completed support reply into a support failure; the existing hourly schedule performs bounded compensation.
+- Deterministic privacy filtering runs before candidate persistence, before AI provider input, after AI extraction and again after reviewer edits.
+- `Approved` is the only publishable review state. `Rejected` never publishes, and stale review is fenced by the candidate version last mirrored to Notion.
+- Publication reuses `knowledge_entries`, `knowledge_entry_history` and FTS5 with deterministic candidate-linked identity and D1 CAS/batch fencing.
+- `Knowledge Sources` first version is editorial-only. There is no automatic ingest, scraping, URL fetching, publication or runtime Notion lookup.
+- Additive migration `0010_human_learning.sql` is development-validated locally; it is not applied to Staging in this work unit.
+
+No automatic unreviewed permanent learning. Real Phase 6 Staging migration/deploy, real Notion mutation and Telegram/Crisp E2E remain deferred acceptance, not unfinished development code.
 
 ## Phase 7 — Operations / Analytics UI
 

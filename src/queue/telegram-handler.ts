@@ -13,6 +13,8 @@ import { executeOutboundOperation, markOutboundOperationFinal } from '../core/ou
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence, targetEvidenceMatches } from '../core/outbound-evidence';
 import { createAndSendUploadInvite, revokeUploadInviteFromTelegram } from '../uploads/service';
+import { captureLearningCandidateByProviderRef } from '../learning/repository';
+import { logger } from '../observability/logger';
 
 function isAuthorizedUploadOperator(env: Env, operatorRef: string | undefined): operatorRef is string {
   if (!operatorRef || !/^[1-9]\d{0,19}$/.test(operatorRef)) return false;
@@ -178,7 +180,7 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
       content
     );
 
-    await executeOutboundOperation(
+    const delivery = await executeOutboundOperation(
       env,
       conv.id,
       destinationProvider,
@@ -211,6 +213,21 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
         ...(operatorRequestOptions ? { requestOptions: operatorRequestOptions } : {})
       }
     );
+    if (delivery.status === 'SENT') {
+      try {
+        await captureLearningCandidateByProviderRef(
+          env,
+          'telegram',
+          scopedMessageRef,
+          'telegram-human-reply'
+        );
+      } catch {
+        logger.warn('Learning capture deferred after Telegram human reply', {
+          conversation_id: conv.id,
+          result: 'DEFERRED'
+        });
+      }
+    }
   }
 
   await enqueueAttachmentJobs(

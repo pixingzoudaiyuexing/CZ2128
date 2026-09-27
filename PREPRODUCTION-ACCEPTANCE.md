@@ -256,6 +256,32 @@ The list below described the Phase 4B-5 / pre-execution authorization boundary a
 
 For this reconciliation task specifically, authorization is **DOCS ONLY** plus read-only evidence verification and creation of the docs-only Git PR. No new Provider message, Cloudflare mutation, deployment, replay, fault injection or next Phase 4C acceptance run is authorized.
 
+## 5A. Phase 6 Human Learning Development / Deferred Real Acceptance
+
+Phase 6 development adds D1-first human learning with optional Notion editorial review, but **no real Phase 6 environment acceptance is executed in this development work unit**.
+
+Development evidence includes:
+
+- additive local migration validation for fresh `0001 -> 0010` and an existing `0001 -> 0009 -> 0010` database, with a pre-existing knowledge row and FTS result preserved;
+- canonical human-message candidate identity, duplicate/concurrent capture fencing and bounded scheduled recovery;
+- deterministic pre/post extraction privacy filtering, prompt-injection boundary and provider-failure isolation;
+- mocked/fake Notion create/update/retry/duplicate/timeout/429/5xx, stale review, identity mismatch and unsafe Approved behavior;
+- Approved-only idempotent publication into the existing D1 knowledge/history/FTS store, including concurrent retries and Notion writeback failure after authoritative D1 publication;
+- existing authenticated Telegram Admin routing/receipt authorization plus bounded Phase 6 list/sync/review operations;
+- full repository automated regression, including the existing D-035 Telegram rotation, Crisp/Telegram bridge, AI, attachments, Runtime Config, Queue/DLQ and knowledge retrieval behavior.
+
+Deferred real acceptance remains **NOT VALIDATED** until separately authorized:
+
+- applying `0010_human_learning.sql` to isolated Staging;
+- deploying the Phase 6 executable to isolated Staging;
+- real Telegram and Crisp human-reply candidate capture;
+- real Notion Data Source schema/config verification, page mirror/edit/review/writeback and duplicate/recovery observations;
+- real Approved -> D1 publish -> later AI retrieval evidence;
+- operational cron/compensation observation in Staging;
+- Production deployment or Production behavior.
+
+Development completion must therefore be reported as `PHASE 6 DEVELOPMENT COMPLETE`, never as `PHASE 6 STAGING ACCEPTED`. Existing Phase 4C scoped acceptance records are unchanged and do not become Phase 6 evidence.
+
 ## 6. Existing Automated Evidence Map
 
 | Evidence area | Repository tests | Evidence level |
@@ -270,6 +296,7 @@ For this reconciliation task specifically, authorization is **DOCS ONLY** plus r
 | Crisp AI and lifecycle | `tests/crisp-ai.test.ts`, `tests/crisp-lifecycle.test.ts`, `tests/crisp-flow.test.ts` | LOCAL AUTOMATED / CI |
 | Crisp temporary upload | `tests/upload-*.test.ts`, `tests/0007-crisp-upload-invites-migration-real.test.ts` | LOCAL AUTOMATED + local real-D1 / CI |
 | Runtime config/rotation/group migration | `tests/runtime-config-*.test.ts`, `tests/admin-control-plane.test.ts` | LOCAL AUTOMATED / CI |
+| Phase 6 human learning / privacy / Notion / publish | `tests/0010-human-learning-migration.test.ts`, `tests/learning-*.test.ts` | LOCAL AUTOMATED + local SQLite/Wrangler D1 / CI |
 | Migration `0005` | `tests/0005-reliability-migration-real.test.ts`, `tests/reliability-migration.test.ts` | Local SQLite migration / CI |
 | Error taxonomy/privacy | `tests/error-taxonomy-retry.test.ts`, Admin/DLQ privacy tests | LOCAL AUTOMATED / CI |
 

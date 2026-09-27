@@ -157,13 +157,22 @@ describe('Telegram admin control plane', () => {
     expect(body.text).toBe('CZ2128 控制中心');
     const buttons = body.reply_markup.inline_keyboard.flat();
     expect(buttons.map((item: any) => item.text)).toEqual([
-      '🤖 AI 设置', '📚 AI 知识库', '💬 Telegram 设置', '🔵 Crisp 设置',
+      '🤖 AI 设置', '📚 AI 知识库', '🧠 学习候选 / Notion', '💬 Telegram 设置', '🔵 Crisp 设置',
       '📎 附件设置', '💡 关键词回复', '🛡 可靠性管理', '⚙️ 系统状态', '📜 操作历史'
     ]);
     expect(buttons.map((item: any) => item.callback_data)).toEqual([
-      'p:ai', 'p:kb', 'p:tg', 'p:crisp', 'p:att', 'p:kw', 'p:rel', 'p:sys', 'p:hist'
+      'p:ai', 'p:kb', 'p:learn', 'p:tg', 'p:crisp', 'p:att', 'p:kw', 'p:rel', 'p:sys', 'p:hist'
     ]);
     expect(buttons.map((item: any) => item.callback_data)).not.toContain('p:cw');
+  });
+
+  it('rejects unauthorized learning actions before receipts, D1 work or provider calls', async () => {
+    const testEnv = env();
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const response = await handleAdminTelegramWebhook(callback(12, 'l:sync', { userId: 2001 }), testEnv);
+    expect(response.status).toBe(200);
+    expect(testEnv.DB.receipts).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('reports a safe bootstrap error when the master key is missing', async () => {

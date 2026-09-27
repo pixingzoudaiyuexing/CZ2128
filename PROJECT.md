@@ -1,6 +1,6 @@
 # CZ2128 Project
 
-Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged / Phase 4C In Execution — Crisp-02 through Crisp-05 Scoped Staging Evidence Recorded / Production Not Validated**
+Status: **Phases 1-3.5 Complete / Phase 4A Frozen / Phase 4B-1 Complete / Phase 4B-2B Complete, Frozen / Phase 4B-2C Complete, Frozen / Phase 4B-3 Complete, Frozen, Merged / Phase 4B-4A Complete, Frozen, Merged / Phase 4B-4B Accepted, Complete, Frozen, Merged / Phase 4B-5 Accepted, Complete, Frozen, Merged / Phase 4C In Execution — Crisp-02 through Crisp-05 Scoped Staging Evidence Recorded / Phase 6 Human Learning Development Implemented and Reviewed Locally, Real E2E Not Validated / Production Not Validated**
 
 ## Purpose
 
@@ -61,7 +61,7 @@ The following are intentionally deferred:
 - Custom replacement for the Chatwoot customer widget
 - Modifying/forking Chatwoot source code
 - Full embedding/vector RAG beyond the bounded D1 FTS5 knowledge-retrieval MVP
-- Automatic permanent learning from every operator answer
+- Automatic **unreviewed** permanent learning from operator answers
 - Multi-channel support beyond Telegram
 - Multi-helpdesk support beyond Chatwoot
 - Multi-tenant SaaS control plane
@@ -78,7 +78,7 @@ The following are intentionally deferred:
 - **Human wins races:** If an operator intervenes while AI is generating, the human state wins and stale AI output is discarded.
 - **Private-by-default attachments:** R2 objects are private; access is granted through opaque expiring gateway links.
 - **Exact logical expiration:** Application-level expiry is enforced even if physical R2 lifecycle deletion happens later.
-- **No automatic unreviewed learning:** Human answers may become knowledge candidates, but publication requires review in a later phase.
+- **No automatic unreviewed learning:** Human answers may become D1 learning candidates, but permanent knowledge publication requires an explicit human `Approved` review.
 - **Bootstrap remains recoverable:** The admin bot, its administrator allowlist and the runtime encryption master key remain deployment-level settings outside the runtime control plane.
 
 ## Legacy Reference
@@ -124,3 +124,13 @@ Phase 4B-4B implements explicit durable-state recovery only for `internal / ai_t
 Abandoned convergence treats `SENT` as delivery truth only when its provider message reference is bounded and non-empty, including after a lost cleanup CAS reload. Malformed SENT is preserved but blocks internal domain repair and DLQ resolution; durable AI text cannot manufacture provider-delivery evidence.
 
 Phase 4B-5 was accepted, completed, frozen and merged by PR #15 as `d6e111cbf79e4a64a396c749d60821d6a5a6d7f8`. It documents frozen reliability behavior in `RELIABILITY-RUNBOOK.md`, `MIGRATION-RECOVERY.md` and `PREPRODUCTION-ACCEPTANCE.md`. It adds no runtime feature, schema, migration or production resource and does not execute Phase 4C validation. `62c7c51120ad4d44fcdc4cff089173258b719c28` remains the historical pre-PR #15 implementation base.
+
+## Phase 6 Human Learning + Notion
+
+Phase 6 adds a provider-agnostic, D1-first learning workflow without putting Notion or AI extraction on the support success path. A customer-visible human reply may create one logical learning candidate keyed by its canonical D1 `messages.id`. Telegram capture occurs only after the matching helpdesk outbound operation is confirmed `SENT`; Crisp operator capture occurs after the verified operator message is durably persisted. Immediate learning failures do not change an already successful support outcome, and the existing hourly scheduled handler performs bounded recovery from canonical messages/outbound evidence.
+
+Learning text is deterministically normalized and privacy-filtered before candidate persistence, then bounded sanitized question/answer data may be generalized by the existing OpenAI-compatible adapter. AI extraction never publishes. Notion is an optional editorial/review mirror configured only through deployment-level settings; D1 remains canonical, duplicate Candidate IDs fail closed, stale reviews are version-fenced, and reviewer edits are privacy-scanned again before they can become `Approved`.
+
+Only a safe canonical `Approved` candidate can publish into the existing `knowledge_entries` / `knowledge_entry_history` / FTS5 store. Publication has a deterministic candidate-linked knowledge identity and D1 CAS/batch fencing so retries and concurrency converge on one logical knowledge entry. A Notion writeback failure after D1 publication cannot roll back the authoritative knowledge result. `Knowledge Sources` remains an editorial catalog in the first version: no scraping, bulk import, automatic publication or runtime AI lookup is added.
+
+This development work introduces additive migration `0010_human_learning.sql`. It does **not** apply that migration to Staging, deploy Phase 6 code to Staging, mutate real Notion, run real Telegram/Crisp Phase 6 E2E, or change Production. Those are future separately authorized acceptance activities.

@@ -792,7 +792,7 @@ describe('Worker Integration', () => {
     errorLog.mockRestore();
   });
 
-  it('scheduled() registers bounded attachment cleanup with waitUntil', async () => {
+  it('scheduled() registers bounded attachment cleanup and learning maintenance with waitUntil', async () => {
     const waitUntil = vi.fn();
     const scheduledEnv = {
       DB: { prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }) }) }) },
@@ -801,7 +801,7 @@ describe('Worker Integration', () => {
     if (Worker.scheduled) {
       await Worker.scheduled({} as any, scheduledEnv as any, { waitUntil } as any);
     }
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+    expect(waitUntil).toHaveBeenCalledTimes(2);
+    await expect(Promise.all(waitUntil.mock.calls.map(call => call[0]))).resolves.toEqual([undefined, undefined]);
   });
 });

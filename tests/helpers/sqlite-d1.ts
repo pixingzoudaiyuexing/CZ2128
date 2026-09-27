@@ -75,6 +75,16 @@ export class SqliteD1 {
     }
   }
 
+  migrateThroughKnowledge(): void {
+    this.migrate();
+    this.exec(readFileSync('migrations/0009_knowledge_base.sql', 'utf8'));
+  }
+
+  migrateThroughHumanLearning(): void {
+    this.migrateThroughKnowledge();
+    this.exec(readFileSync('migrations/0010_human_learning.sql', 'utf8'));
+  }
+
   close(): void {
     this.database.close();
   }

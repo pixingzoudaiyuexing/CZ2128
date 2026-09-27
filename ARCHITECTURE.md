@@ -269,9 +269,15 @@ Minimum fields:
 - `deleted_at`
 - `created_at`
 
-### Deferred
+### `learning_candidates` / `learning_candidate_history`
 
-`learning_candidates` is a later domain concept. Do not create its table in V1 until the learning workflow starts.
+Phase 6 activates the previously deferred learning domain with additive migration `0010_human_learning.sql`.
+
+- `learning_candidates.source_human_message_id` is unique and points to the canonical D1 human message; this is the logical dedupe identity, while the candidate ID is only an opaque stable reference.
+- Sanitized question/answer, extraction result, risk/review state, Notion mirror state, publication identity and candidate version are durable D1 state.
+- `learning_candidate_history` is append-only audit for capture, extraction, sync, review/reject, publish and bounded error outcomes.
+- Notion page IDs and publication knowledge IDs are unique where present.
+- No raw provider webhook payload is a learning candidate.
 
 ## 6. AI Handoff and Generation Concurrency
 
@@ -352,6 +358,34 @@ Recommended behavior:
 - Embedding/vector RAG remains deferred until corpus size or measured retrieval quality justifies a separate vector resource.
 
 The AI-provider interface remains unchanged; retrieval is a context-building concern.
+
+## 7A. Phase 6 Human Learning and Notion Editorial Review
+
+Phase 6 is a side-path from successful human support:
+
+```text
+canonical customer question + confirmed human reply
+  -> durable D1 candidate
+  -> deterministic privacy filter
+  -> bounded AI extraction/generalization
+  -> optional Notion editorial mirror
+  -> human Approved / Rejected
+  -> Approved-only existing D1 knowledge store / FTS5
+```
+
+**Capture reliability.** Telegram replies become eligible only after their deterministic helpdesk outbound operation is effectively `SENT`; verified Crisp operator messages are already customer-visible when received and become eligible after canonical message persistence. Capture is failure-isolated from support. The existing hourly schedule scans only a bounded number of eligible canonical messages missing candidates and replays the same D1 unique-fenced capture, so an immediate learning-side D1 failure is recoverable without another Queue or Durable Object.
+
+**Privacy and AI trust.** Source question/answer text is deterministically normalized, bounded and redacted for high-confidence PII, credentials and capability URLs before candidate storage and before any extraction-provider call. Extraction receives only that bounded sanitized pair, never an unlimited transcript or provider body. Customer/operator text is untrusted data, not instructions. Extracted output is schema-checked and deterministically filtered again; unsafe, malformed or failed extraction remains durable for review and cannot affect the support result.
+
+**Notion boundary.** Notion is optional and deployment-configured with a token plus explicit Learning Candidates and Knowledge Sources **Data Source IDs**. The token is not part of Runtime Config or D1. D1 stays canonical and ordinary customer/AI paths never query Notion. A D1 sync lease serializes page creation; recovery always performs a bounded exact Candidate ID lookup before create. Zero matches may create, one is reused, and multiple matches fail closed. D1 stores the page identity and the exact candidate version last mirrored.
+
+**Review and stale fencing.** Only the known Notion page may be pulled. Candidate ID and page identity must match, and `current candidate.version == last_synced_candidate_version` before remote review can apply. Reviewer edits to title, question, answer and notes are normalized and privacy-scanned again. Unsafe `Approved` content returns to review instead of publishing. `Rejected` is terminal for that candidate.
+
+**Publication.** Only safe canonical `Approved` state may publish. The existing `knowledge_entries`, `knowledge_entry_history` and FTS5 remain the sole runtime knowledge store. A deterministic candidate-linked knowledge ID plus conditional D1 batch/CAS operations make retry/concurrent publication converge on one logical knowledge entry and one publication audit. D1 publication is authoritative; later Notion `Published` writeback failure is retried and never rolls knowledge back.
+
+**Knowledge Sources first version.** The second Notion Data Source is an editorial source catalog only. Code may validate its configured schema/metadata during an explicit Admin operation. There is no automatic scraping, bulk import, arbitrary URL fetch, automatic publication or runtime AI lookup.
+
+Scheduled Phase 6 compensation is bounded per hourly execution: at most 25 missing captures, 10 extraction attempts, 10 Notion syncs and 10 review pulls. It runs independently from attachment cleanup through `waitUntil`.
 
 ## 8. Echo Prevention and Idempotency
 
