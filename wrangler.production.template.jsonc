@@ -1,0 +1,61 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cz2128",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-03-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "EXPECTED_MAIN_QUEUE_NAME": "cz2128-queue",
+    "EXPECTED_DLQ_QUEUE_NAME": "cz2128-dlq",
+    "AI_TEST_SCOPE_ENABLED": "false",
+    "AI_TEST_ALLOWED_CONVERSATION_IDS": "[]",
+    "NOTION_LEARNING_ENABLED": "true",
+    "NOTION_LEARNING_CANDIDATES_DATA_SOURCE_ID": "91108397-2842-48ce-ac6d-68df8bd80399",
+    "NOTION_KNOWLEDGE_SOURCES_DATA_SOURCE_ID": "8ff03b80-6d0f-4c31-b0bc-1c13ab8fa300"
+  },
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cz2128-db",
+      "database_id": "REPLACE_WITH_CZ2128_PRODUCTION_D1_UUID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "QUEUE",
+        "queue": "cz2128-queue"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "cz2128-queue",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "dead_letter_queue": "cz2128-dlq"
+      },
+      {
+        "queue": "cz2128-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "ATTACHMENTS_BUCKET",
+      "bucket_name": "cz2128-attachments"
+    },
+    {
+      "binding": "DLQ_QUARANTINE",
+      "bucket_name": "cz2128-dlq-quarantine"
+    }
+  ]
+}

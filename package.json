@@ -7,7 +7,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",
     "validate:staging-template": "node scripts/validate-staging-config.mjs --config wrangler.staging.template.jsonc --allow-placeholder",
-    "validate:staging": "node scripts/validate-staging-config.mjs"
+    "validate:staging": "node scripts/validate-staging-config.mjs",
+    "validate:production-template": "node scripts/validate-production-config.mjs --config wrangler.production.template.jsonc --allow-placeholder",
+    "validate:production": "node scripts/validate-production-config.mjs"
   },
   "repository": {
     "type": "git",
