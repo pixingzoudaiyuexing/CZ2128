@@ -93,7 +93,7 @@ describe('Unified Telegram Bot routing', () => {
     expect(String(send?.[0])).toContain(`bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`);
     expect(String(send?.[1]?.body)).toContain('AI 知识库');
     expect(env.DB.receipts).toHaveLength(1);
-    expect(env.DB.receipts[0]).toMatchObject({ update_id: '1', admin_user_id: '1001', status: 'PROCESSED' });
+    expect(env.DB.receipts[0]).toMatchObject({ update_id: '111111:1', admin_user_id: '1001', status: 'PROCESSED' });
   });
 
   it('accepts an unauthorized private user without Admin receipt, provider action, or Queue event', async () => {
@@ -227,7 +227,7 @@ describe('Unified Telegram Bot routing', () => {
     await Worker.fetch(telegramRequest(privateMessage(10, 1001)), env, {} as any);
 
     expect(env.DB.receipts).toHaveLength(1);
-    expect(env.DB.receipts[0]).toMatchObject({ update_id: '10', status: 'PROCESSED' });
+    expect(env.DB.receipts[0]).toMatchObject({ update_id: '111111:10', status: 'PROCESSED' });
     expect(env.QUEUE.messages).toHaveLength(0);
     expect(vi.mocked(globalThis.fetch).mock.calls.filter(
       call => String(call[0]).endsWith('/sendMessage')
@@ -321,7 +321,7 @@ describe('Unified Telegram Bot routing', () => {
       call => String(call[0]).includes(`bot${newToken}/sendMessage`)
     )).toBe(true);
     expect(env.DB.receipts.at(-1)).toMatchObject({
-      update_id: '16',
+      update_id: '222222:16',
       admin_user_id: '1001',
       status: 'PROCESSED'
     });
@@ -346,7 +346,9 @@ describe('Unified Telegram Bot routing', () => {
 
   it.each([
     ['current unified bot token', '111111:unified-bot-abcdefghijklmnopqrstuvwxyz'],
-    ['legacy Admin bot token', '999999:legacy-admin-bot-abcdefghijklmnopqrstuvwxyz']
+    ['current unified bot identity with a different token secret', '111111:rotated-secret-for-same-bot-abcdefghijklmnopqrstuvwxyz'],
+    ['legacy Admin bot token', '999999:legacy-admin-bot-abcdefghijklmnopqrstuvwxyz'],
+    ['legacy Admin bot identity with a different token secret', '999999:rotated-legacy-secret-abcdefghijklmnopqrstuvwxyz']
   ])('rejects %s as a unified bot rotation target', async (_label, candidateToken) => {
     env.ADMIN_TELEGRAM_BOT_TOKEN = '999999:legacy-admin-bot-abcdefghijklmnopqrstuvwxyz';
 

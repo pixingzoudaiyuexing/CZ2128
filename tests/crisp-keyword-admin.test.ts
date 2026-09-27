@@ -284,7 +284,7 @@ describe('Crisp keyword Admin Bot flow', () => {
 
     expect(db.runtime.some(row => row.key === 'CRISP_KEYWORD_RULES')).toBe(false);
     expect(db.history.filter(row => row.action === 'RESTORE_ENV')).toHaveLength(1);
-    expect(db.receipts.filter(row => row.update_id === '94')).toHaveLength(1);
+    expect(db.receipts.filter(row => row.update_id === '999999:94')).toHaveLength(1);
   });
 
   it('rejects a forged keyword restore confirmation without a valid Admin session', async () => {

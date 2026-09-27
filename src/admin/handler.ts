@@ -46,7 +46,7 @@ function adminBootstrap(env: Env): AdminBootstrap | null {
   const webhookSecret = env.ADMIN_TELEGRAM_WEBHOOK_SECRET?.trim() || '';
   const ids = (env.ADMIN_TELEGRAM_USER_IDS || '').split(',').map(value => value.trim()).filter(Boolean);
   if (
-    !token || !path || !webhookSecret || path === token ||
+    !token || !telegramBotIdFromToken(token) || !path || !webhookSecret || path === token ||
     path === webhookSecret ||
     !/^[A-Za-z0-9_-]{32,128}$/.test(path) ||
     !/^[A-Za-z0-9_-]{32,128}$/.test(webhookSecret) ||
@@ -58,7 +58,7 @@ function adminBootstrap(env: Env): AdminBootstrap | null {
 function unifiedAdminBootstrap(rawEnv: Env, effectiveEnv: Env): AdminBootstrap | null {
   const token = effectiveEnv.TELEGRAM_BOT_TOKEN?.trim() || '';
   const ids = (rawEnv.ADMIN_TELEGRAM_USER_IDS || '').split(',').map(value => value.trim()).filter(Boolean);
-  if (!token || ids.length === 0 || ids.some(id => !/^[1-9]\d{0,19}$/.test(id))) return null;
+  if (!token || !telegramBotIdFromToken(token) || ids.length === 0 || ids.some(id => !/^[1-9]\d{0,19}$/.test(id))) return null;
   return {
     token,
     path: effectiveEnv.TELEGRAM_SECRET_PATH?.trim() || '',
@@ -104,18 +104,40 @@ interface BotRetirementContext {
   pending: BotRetirementCategory[];
 }
 
+function telegramBotIdFromToken(token: string | null | undefined): string | null {
+  const normalized = token?.trim();
+  if (!normalized) return null;
+  const separator = normalized.indexOf(':');
+  if (separator <= 0) return null;
+  const botId = normalized.slice(0, separator);
+  return /^[1-9]\d{0,19}$/.test(botId) ? botId : null;
+}
+
+function adminReceiptIdentity(botToken: string, updateId: string): string {
+  const botId = telegramBotIdFromToken(botToken);
+  if (!botId) throw new Error('TELEGRAM_TOKEN_INVALID');
+  return `${botId}:${updateId}`;
+}
+
 function assertRotationCandidateDistinct(
   rawEnv: Env,
   effectiveEnv: Env,
   bootstrap: AdminBootstrap,
   candidateToken: string
 ): void {
+  const candidateBotId = telegramBotIdFromToken(candidateToken);
+  if (!candidateBotId) throw new Error('TELEGRAM_TOKEN_INVALID');
   const existingTokens = new Set([
     effectiveEnv.TELEGRAM_BOT_TOKEN?.trim(),
     bootstrap.token?.trim(),
     rawEnv.ADMIN_TELEGRAM_BOT_TOKEN?.trim()
   ].filter((value): value is string => !!value));
-  if (existingTokens.has(candidateToken)) throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
+  if (
+    existingTokens.has(candidateToken) ||
+    [...existingTokens].some(token => telegramBotIdFromToken(token) === candidateBotId)
+  ) {
+    throw new Error('ADMIN_SUPPORT_BOT_MUST_DIFFER');
+  }
 }
 
 async function priorSupportToken(rawEnv: Env, previousSupportVersion: number): Promise<string | null> {
@@ -691,7 +713,8 @@ async function processAdminTelegramPayload(
 ): Promise<Response> {
   const ctx = parseAdminContext(payload);
   if (!ctx || !bootstrap.userIds.has(ctx.userId)) return new Response('Accepted', { status: 200 });
-  if (!await claimAdminUpdate(rawEnv, ctx.updateId, ctx.userId)) return new Response('Accepted', { status: 200 });
+  const receiptId = adminReceiptIdentity(bootstrap.token, ctx.updateId);
+  if (!await claimAdminUpdate(rawEnv, receiptId, ctx.userId)) return new Response('Accepted', { status: 200 });
 
   let action = 'UNKNOWN';
   try {
@@ -702,10 +725,10 @@ async function processAdminTelegramPayload(
     action = ctx.callbackData
       ? await processCallback(rawEnv, effectiveEnv, bootstrap, ctx, origin)
       : await processMessage(rawEnv, effectiveEnv, bootstrap, ctx);
-    await completeAdminUpdate(rawEnv, ctx.updateId, action);
+    await completeAdminUpdate(rawEnv, receiptId, action);
   } catch (error) {
     const code = safeErrorCode(error);
-    await completeAdminUpdate(rawEnv, ctx.updateId, action, code);
+    await completeAdminUpdate(rawEnv, receiptId, action, code);
     try { await reply(bootstrap, ctx, `操作失败：${code}`); } catch { /* webhook acknowledgement remains safe */ }
   }
   return new Response('Accepted', { status: 200 });

@@ -111,6 +111,16 @@ describe('Telegram admin control plane', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('fails closed for a malformed Admin Bot token before receipt or provider side effects', async () => {
+    const testEnv = env();
+    testEnv.ADMIN_TELEGRAM_BOT_TOKEN = 'malformed-token-without-bot-id';
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const response = await handleAdminTelegramWebhook(message(9, '/start'), testEnv);
+    expect(response.status).toBe(404);
+    expect(testEnv.DB.receipts).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects reuse of the Admin Bot as the Support Bot', async () => {
     const testEnv = env();
     testEnv.TELEGRAM_BOT_TOKEN = testEnv.ADMIN_TELEGRAM_BOT_TOKEN;
@@ -178,7 +188,7 @@ describe('Telegram admin control plane', () => {
     expect(testEnv.DB.runtime).toHaveLength(1);
     expect(testEnv.DB.runtime[0]).toMatchObject({ key: 'AI_SYSTEM_PROMPT', version: 1 });
     expect(testEnv.DB.history).toHaveLength(1);
-    expect(testEnv.DB.receipts.filter((row: any) => row.update_id === '21')).toHaveLength(1);
+    expect(testEnv.DB.receipts.filter((row: any) => row.update_id === '999999:21')).toHaveLength(1);
   });
 
   it('expires interactive sessions after ten minutes', async () => {

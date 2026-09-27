@@ -308,6 +308,31 @@ describe('one-click unified Telegram Bot rotation', () => {
     });
   });
 
+  it('keeps Admin update dedupe isolated by Bot identity across rotation', async () => {
+    const fetchMock = providerMock();
+
+    await Worker.fetch(unifiedRequest(privateMessage(500, '/start')), env, {} as any);
+    expect(env.DB.receipts.some((row: any) => row.update_id === '111111:500')).toBe(true);
+
+    await beginUnifiedRotation(env, 510);
+    await Worker.fetch(unifiedRequest(privateCallback(512, 'c:yes')), env, {} as any);
+
+    const effective = await resolveEffectiveEnv(env);
+    const newPath = effective.TELEGRAM_SECRET_PATH;
+    const newSecret = effective.TELEGRAM_WEBHOOK_SECRET;
+    const beforeNewStart = fetchMock.mock.calls.filter(
+      call => String(call[0]).includes(`bot${NEW_TOKEN}/sendMessage`)
+    ).length;
+
+    await Worker.fetch(unifiedRequest(privateMessage(500, '/start'), newPath, newSecret), env, {} as any);
+    await Worker.fetch(unifiedRequest(privateMessage(500, '/start'), newPath, newSecret), env, {} as any);
+
+    expect(env.DB.receipts.some((row: any) => row.update_id === '222222:500')).toBe(true);
+    expect(fetchMock.mock.calls.filter(
+      call => String(call[0]).includes(`bot${NEW_TOKEN}/sendMessage`)
+    )).toHaveLength(beforeNewStart + 1);
+  });
+
   it('deduplicates identical old Support/Admin retirement targets and never deletes the new Bot', async () => {
     env.ADMIN_TELEGRAM_BOT_TOKEN = CURRENT_TOKEN;
     const fetchMock = providerMock();
