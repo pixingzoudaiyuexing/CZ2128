@@ -6,6 +6,25 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  "secrets": {
+    "required": [
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_WEBHOOK_SECRET",
+      "TELEGRAM_SECRET_PATH",
+      "BOT_GROUP_ID",
+      "ADMIN_TELEGRAM_USER_IDS",
+      "RUNTIME_CONFIG_MASTER_KEY",
+      "UPLOAD_CAPABILITY_SECRET",
+      "CRISP_WEBHOOK_SECRET",
+      "CRISP_API_IDENTIFIER",
+      "CRISP_API_KEY",
+      "CRISP_WEBSITE_ID",
+      "AI_BASE_URL",
+      "AI_API_KEY",
+      "AI_MODEL",
+      "NOTION_API_TOKEN"
+    ]
+  },
   "vars": {
     "EXPECTED_MAIN_QUEUE_NAME": "cz2128-queue",
     "EXPECTED_DLQ_QUEUE_NAME": "cz2128-dlq",

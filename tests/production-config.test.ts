@@ -30,6 +30,16 @@ describe('production deployment config', () => {
     })).toThrow(/D1 database identity/);
   });
 
+  it('requires the exact reviewed Worker secret-name set', async () => {
+    const missing = await template();
+    missing.secrets.required = missing.secrets.required.filter((name: string) => name !== 'NOTION_API_TOKEN');
+    expect(() => validateProductionConfig(missing, { allowPlaceholder: true })).toThrow(/secret-name set/);
+
+    const duplicate = await template();
+    duplicate.secrets.required.push('TELEGRAM_BOT_TOKEN');
+    expect(() => validateProductionConfig(duplicate, { allowPlaceholder: true })).toThrow(/secret-name set/);
+  });
+
   it('fails closed if production AI test scope is enabled or allowlisted', async () => {
     const enabled = await template();
     enabled.vars.AI_TEST_SCOPE_ENABLED = 'true';

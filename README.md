@@ -1,5 +1,31 @@
 # CZ2128
 
+## One-Click Production Operations
+
+[Deploy CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/deploy-production.yml) · [Update CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/update-production.yml) · [Rollback CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/rollback-production.yml)
+
+The repository is safe to keep public. These workflows are manual-only (`workflow_dispatch`), use the GitHub `production` Environment, and enforce a repository-owner gate by default. Public readers can see the workflow source, but they cannot use this repository's GitHub Secrets. A fork owner can deploy only with credentials configured in that fork.
+
+Configure these GitHub `production` Environment secrets once:
+
+- Cloudflare: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
+- Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_SECRET_PATH`, `BOT_GROUP_ID`, `ADMIN_TELEGRAM_USER_IDS`
+- Runtime: `RUNTIME_CONFIG_MASTER_KEY`, `UPLOAD_CAPABILITY_SECRET`
+- Crisp: `CRISP_WEBHOOK_SECRET`, `CRISP_API_IDENTIFIER`, `CRISP_API_KEY`, `CRISP_WEBSITE_ID`
+- AI: `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`; `AI_SYSTEM_PROMPT` is optional
+- Notion: `NOTION_API_TOKEN`
+
+Optional repository/environment variable `CZ2128_DEPLOY_ACTOR` can override the default authorized GitHub actor. If it is absent, only `github.repository_owner` passes the workflow owner gate.
+
+**First deploy:** choose a release tag such as `v1.0.0`. On a fresh account the workflow creates the frozen D1/Queue/DLQ/R2 identities, applies migrations, writes Worker secrets from GitHub Secrets, and performs the first `wrangler deploy`. If any unsuffixed Production resource already exists while the Worker does not, the workflow fails closed unless `adopt_existing_resources` is explicitly selected after provenance review.
+
+**Update:** choose a later published release tag. The workflow never recreates D1/Queue/R2. It records the active Worker version and a D1 recovery point, permits only pending expand-only migrations, uploads an immutable Worker Version tagged with the release, and then promotes it to 100%. Destructive pending migrations hard-stop the one-click update path and require a separately reviewed release plan.
+
+**Rollback:** optionally choose a previously deployed Worker Version ID, or leave it blank to select the previous 100% deployment automatically. Rollback changes the Worker only; D1 migrations and durable D1/R2/Queue data are never rolled back or deleted. Update automation therefore accepts only expand-only schema migrations so the previous Worker remains within an explicit compatibility boundary.
+
+Normal pushes, pull requests and GitHub Releases do **not** deploy Production automatically. The owner must click the corresponding workflow. See [Production Deployment Contract](PRODUCTION-DEPLOYMENT.md).
+
+
 CZ2128 connects the current Crisp helpdesk target to Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder. Chatwoot remains a historical compatibility adapter and evidence surface.
 
 Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A, Phase 4B-4B and Phase 4B-5 are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged. Phase 4C is now **IN EXECUTION** with several separately bounded isolated-Staging results recorded: Crisp-02 basic support, Crisp-03 AI delivery/handoff fencing, Crisp-04 Crisp close/reopen to the same Telegram topic, and Crisp-05 attachment transport / temporary ordinary-file upload slices. These scoped results are not whole-platform or production validation. Real Queue/D1 load and fault injection, full R2 proxy/cleanup coverage, large-file limits, Admin reliability operations, bot/group migration, monitoring/rollback drills and Production remain unvalidated unless separately recorded in the acceptance matrix.
@@ -67,7 +93,7 @@ These documents preserve the Phase 4B-5 boundaries and the historical 4C-0A/4C-0
 - `npm run lint`
 - `npm run test`
 
-Before deployment, replace the local-only D1 database ID in `wrangler.toml`, create both `cz2128-queue` and its `cz2128-dlq` dead-letter queue, and provision the dedicated private `cz2128-dlq-quarantine` R2 bucket for the `DLQ_QUARANTINE` binding. This repository task does not create remote resources.
+For Production, do not use `wrangler.toml`. The reviewed path is `wrangler.production.template.jsonc` plus the manual [Deploy CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/deploy-production.yml) workflow. Only that explicitly started workflow may create or adopt the frozen unsuffixed Production resources. Normal CI, pushes and pull requests never create or mutate Production resources.
 
 ## Environment Variables
 Core:

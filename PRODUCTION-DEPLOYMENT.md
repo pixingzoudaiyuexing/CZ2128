@@ -1,6 +1,6 @@
 # CZ2128 v1.0.0 Production Deployment Contract
 
-Status: **RELEASE PREPARATION / NO PRODUCTION MUTATION YET**
+Status: **V1 RELEASE + GITHUB OPERATIONS AUTOMATION IN DEVELOPMENT / PRODUCTION DATA RESOURCES PROVISIONED / WORKER NOT DEPLOYED / PROVIDER TRAFFIC NOT CUT OVER**
 
 Release target: **CZ2128 v1.0.0**
 
@@ -71,6 +71,45 @@ The production validator must prove:
 - Knowledge Sources Data Source UUID `8ff03b80-6d0f-4c31-b0bc-1c13ab8fa300`.
 
 The Owner-provided Notion targets were expressed as `collection://<uuid>`; the runtime configuration stores the UUID portion because the Notion adapter sends it as a Data Source ID.
+
+## 3A. GitHub One-Click Operations
+
+Committed manual workflows:
+
+- `.github/workflows/deploy-production.yml` — first installation only.
+- `.github/workflows/update-production.yml` — later release-tag updates.
+- `.github/workflows/rollback-production.yml` — Worker-only rollback.
+
+All three use the GitHub `production` Environment and an owner gate. They have no push, pull-request, schedule or release-event trigger. The optional `CZ2128_DEPLOY_ACTOR` variable can name the only authorized actor; otherwise the repository owner is required.
+
+The Production Environment holds Cloudflare credentials and all Worker secret values. The committed Wrangler template contains only secret **names** through `secrets.required`; missing required secrets fail before Worker upload/deploy. Secret values are written only to an ephemeral runner file with restrictive permissions and are never committed or printed.
+
+First deployment uses `wrangler deploy`, because Cloudflare does not permit `wrangler versions upload` as the first Worker upload. Later updates decouple upload and promotion with `wrangler versions upload` followed by `wrangler versions deploy`.
+
+The Update workflow:
+
+1. requires a Git tag whose `vX.Y.Z` value matches `package.json`;
+2. requires that tag commit to be reachable from `origin/main`;
+3. verifies the existing Worker/D1/Queue/R2 identities;
+4. records the current 100% Worker version and a D1 Time Travel recovery point;
+5. compares remote `d1_migrations` with the release and rejects pending destructive schema SQL such as table/column drop or rename;
+6. applies only accepted forward migrations;
+7. uploads the new Worker Version with the release tag and refreshed GitHub-managed secrets;
+8. promotes it to 100%;
+9. verifies the active version changed;
+10. automatically rolls the Worker back to the previously active version if cutover verification fails.
+
+The one-click migration rule is deliberately **expand-only**. A release requiring destructive/contracting schema change is not eligible for the generic Update button and must use a separately reviewed expand/migrate/contract release sequence.
+
+The Rollback workflow:
+
+- can target only a Worker Version that previously served as a single 100% deployment;
+- defaults to the prior 100% deployment when no target is supplied;
+- requires explicit rollback confirmation;
+- immediately restores that Worker Version;
+- never down-migrates D1 and never deletes/recreates D1, R2 or Queues.
+
+Cloudflare Worker versions include code/config/bindings, while storage state is outside Worker version history. This is why the update migration guard and no-down-migration rollback rule are mandatory.
 
 ## 4. Production Resource Creation
 
@@ -152,7 +191,7 @@ Optional Crisp welcome/menu/identity overrides may be added only if explicitly c
 
 The two Notion Data Source IDs and `NOTION_LEARNING_ENABLED=true` are reviewed non-secret vars in the Production config.
 
-Owner-owned values must be entered through Cloudflare or a trusted local terminal. Do not paste raw credentials into chat.
+For the GitHub one-click path, Owner-owned values are configured once as GitHub `production` Environment secrets. They may alternatively be entered through Cloudflare or a trusted local terminal for a separately reviewed manual deployment. Do not paste raw credentials into chat or commit them to the repository.
 
 ## 7. Deployment and Live-Cutover Gates
 

@@ -1,0 +1,194 @@
+name: Update CZ2128
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release tag to deploy (for example v1.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cz2128-production
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update Production Worker
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+      TELEGRAM_SECRET_PATH: ${{ secrets.TELEGRAM_SECRET_PATH }}
+      BOT_GROUP_ID: ${{ secrets.BOT_GROUP_ID }}
+      ADMIN_TELEGRAM_USER_IDS: ${{ secrets.ADMIN_TELEGRAM_USER_IDS }}
+      RUNTIME_CONFIG_MASTER_KEY: ${{ secrets.RUNTIME_CONFIG_MASTER_KEY }}
+      UPLOAD_CAPABILITY_SECRET: ${{ secrets.UPLOAD_CAPABILITY_SECRET }}
+      CRISP_WEBHOOK_SECRET: ${{ secrets.CRISP_WEBHOOK_SECRET }}
+      CRISP_API_IDENTIFIER: ${{ secrets.CRISP_API_IDENTIFIER }}
+      CRISP_API_KEY: ${{ secrets.CRISP_API_KEY }}
+      CRISP_WEBSITE_ID: ${{ secrets.CRISP_WEBSITE_ID }}
+      AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      AI_MODEL: ${{ secrets.AI_MODEL }}
+      AI_SYSTEM_PROMPT: ${{ secrets.AI_SYSTEM_PROMPT }}
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+
+    steps:
+      - name: Checkout requested release
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Authorize deployment actor
+        env:
+          CONFIGURED_ACTOR: ${{ vars.CZ2128_DEPLOY_ACTOR }}
+        run: |
+          set -euo pipefail
+          allowed="${CONFIGURED_ACTOR:-$GITHUB_REPOSITORY_OWNER}"
+          test "$GITHUB_ACTOR" = "$allowed"
+
+      - name: Verify release tag and source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          git fetch origin main
+          expected="v$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "$expected"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Validate release and secret prerequisites
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          npm run validate:production-template
+          node scripts/release/build-worker-secrets.mjs --check-only
+          npm run typecheck
+          npm run lint
+
+      - name: Verify existing Production resource identities
+        id: resources
+        run: |
+          set -euo pipefail
+          npx wrangler deployments status --name cz2128 --json >/tmp/cz2128-current-deployment.json
+          npx wrangler queues info cz2128-queue >/dev/null
+          npx wrangler queues info cz2128-dlq >/dev/null
+          npx wrangler r2 bucket info cz2128-attachments --json >/dev/null
+          npx wrangler r2 bucket info cz2128-dlq-quarantine --json >/dev/null
+          d1_id="$(npx wrangler d1 list --json | node -e '
+            let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{
+              const rows=JSON.parse(s).filter(x=>x.name==="cz2128-db");
+              if(rows.length!==1) process.exit(2);
+              process.stdout.write(rows[0].uuid || rows[0].id || "");
+            });')"
+          test -n "$d1_id"
+          echo "d1_id=$d1_id" >> "$GITHUB_OUTPUT"
+          previous="$(node -e '
+            const x=require("/tmp/cz2128-current-deployment.json");
+            if(!Array.isArray(x.versions)||x.versions.length!==1||Number(x.versions[0].percentage)!==100) process.exit(2);
+            process.stdout.write(x.versions[0].version_id);
+          ')"
+          echo "previous_version=$previous" >> "$GITHUB_OUTPUT"
+
+      - name: Render and validate exact Production config
+        env:
+          D1_ID: ${{ steps.resources.outputs.d1_id }}
+        run: |
+          set -euo pipefail
+          node scripts/release/render-production-config.mjs --d1-id "$D1_ID"
+          npm run validate:production -- --config wrangler.production.jsonc --expected-d1-id "$D1_ID"
+
+      - name: Enforce expand-only pending migrations
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute cz2128-db --remote --config wrangler.production.jsonc             --command "SELECT name FROM d1_migrations ORDER BY id" --json > "$RUNNER_TEMP/applied-migrations.json"
+          node scripts/release/check-update-migrations.mjs             --applied-json "$RUNNER_TEMP/applied-migrations.json"
+
+      - name: Record recovery point and apply pending migrations
+        run: |
+          set -euo pipefail
+          npx wrangler d1 time-travel info cz2128-db --config wrangler.production.jsonc --json || true
+          npx wrangler d1 migrations apply cz2128-db --remote --config wrangler.production.jsonc
+          pending="$(npx wrangler d1 migrations list cz2128-db --remote --config wrangler.production.jsonc)"
+          grep -Fq 'No migrations to apply' <<<"$pending"
+
+      - name: Prepare protected Worker secrets file
+        env:
+          SECRETS_FILE: ${{ runner.temp }}/cz2128-worker-secrets.json
+        run: node scripts/release/build-worker-secrets.mjs --output "$SECRETS_FILE"
+
+      - name: Upload new immutable Worker version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SECRETS_FILE: ${{ runner.temp }}/cz2128-worker-secrets.json
+        run: |
+          set -euo pipefail
+          npx wrangler versions upload             --config wrangler.production.jsonc             --strict             --tag "$RELEASE_TAG"             --message "CZ2128 update release=$RELEASE_TAG source=$GITHUB_SHA"             --secrets-file "$SECRETS_FILE"
+
+      - name: Mark deployment attempt
+        run: echo "CZ2128_DEPLOYMENT_ATTEMPTED=1" >> "$GITHUB_ENV"
+
+      - name: Deploy new version at 100 percent
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy             --config wrangler.production.jsonc             --version-tag "$RELEASE_TAG"             --percentage 100             --message "CZ2128 update release=$RELEASE_TAG source=$GITHUB_SHA"             --yes
+
+      - name: Verify new deployment
+        env:
+          PREVIOUS_VERSION: ${{ steps.resources.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          status="$(npx wrangler deployments status --name cz2128 --json)"
+          node -e '
+            const x=JSON.parse(process.argv[1]);
+            const previous=process.argv[2];
+            if(!Array.isArray(x.versions)||x.versions.length!==1||Number(x.versions[0].percentage)!==100) process.exit(1);
+            if(x.versions[0].version_id===previous) process.exit(2);
+            console.log("active_version="+x.versions[0].version_id);
+          ' "$status" "$PREVIOUS_VERSION"
+
+      - name: Automatic Worker rollback if cutover verification fails
+        if: failure() && env.CZ2128_DEPLOYMENT_ATTEMPTED == '1'
+        env:
+          PREVIOUS_VERSION: ${{ steps.resources.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          test -n "$PREVIOUS_VERSION"
+          npx wrangler rollback "$PREVIOUS_VERSION"             --name cz2128             --message "Automatic rollback after failed GitHub update $GITHUB_RUN_ID"             --yes
+
+      - name: Update summary
+        if: success()
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PREVIOUS_VERSION: ${{ steps.resources.outputs.previous_version }}
+        run: |
+          {
+            echo "## CZ2128 Production update"
+            echo "- Release: $RELEASE_TAG"
+            echo "- Source: $GITHUB_SHA"
+            echo "- Previous Worker version: $PREVIOUS_VERSION"
+            echo "- D1 migrations: expand-only, forward-only"
+            echo "- Secrets: refreshed from GitHub by name; values not logged"
+            echo "- Rollback: previous Worker version remains in deployment history"
+          } >> "$GITHUB_STEP_SUMMARY"

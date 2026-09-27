@@ -4,6 +4,24 @@ import { resolve } from 'node:path';
 const PLACEHOLDER_D1_ID = 'REPLACE_WITH_CZ2128_PRODUCTION_D1_UUID';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const EXPECTED_SECRET_NAMES = Object.freeze([
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_WEBHOOK_SECRET',
+  'TELEGRAM_SECRET_PATH',
+  'BOT_GROUP_ID',
+  'ADMIN_TELEGRAM_USER_IDS',
+  'RUNTIME_CONFIG_MASTER_KEY',
+  'UPLOAD_CAPABILITY_SECRET',
+  'CRISP_WEBHOOK_SECRET',
+  'CRISP_API_IDENTIFIER',
+  'CRISP_API_KEY',
+  'CRISP_WEBSITE_ID',
+  'AI_BASE_URL',
+  'AI_API_KEY',
+  'AI_MODEL',
+  'NOTION_API_TOKEN'
+]);
+
 const EXPECTED = Object.freeze({
   worker: 'cz2128',
   d1: 'cz2128-db',
@@ -29,6 +47,7 @@ const ALLOWED_ROOT_KEYS = new Set([
   'compatibility_flags',
   'workers_dev',
   'preview_urls',
+  'secrets',
   'vars',
   'triggers',
   'd1_databases',
@@ -74,6 +93,7 @@ function secretKeyPaths(value, path = '', results = []) {
   }
   for (const [key, child] of Object.entries(value)) {
     const next = path ? `${path}.${key}` : key;
+    if (path === '' && key === 'secrets') continue;
     if (/(secret|token|password|api[_-]?key|webhook)/i.test(key)) results.push(next);
     secretKeyPaths(child, next, results);
   }
@@ -109,6 +129,17 @@ export function validateProductionConfig(config, options = {}) {
   }
   exactly(root.workers_dev, true, 'workers_dev');
   exactly(root.preview_urls, false, 'preview_urls');
+
+  const secrets = record(root.secrets, 'secrets');
+  onlyKeys(secrets, ['required'], 'secrets');
+  const requiredSecrets = array(secrets.required, 'secrets.required');
+  if (
+    requiredSecrets.length !== EXPECTED_SECRET_NAMES.length ||
+    new Set(requiredSecrets).size !== requiredSecrets.length ||
+    EXPECTED_SECRET_NAMES.some(name => !requiredSecrets.includes(name))
+  ) {
+    fail('secrets.required must contain the exact reviewed Production secret-name set');
+  }
 
   const vars = record(root.vars, 'vars');
   onlyKeys(vars, [

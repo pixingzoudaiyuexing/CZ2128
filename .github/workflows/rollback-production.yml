@@ -1,0 +1,128 @@
+name: Rollback CZ2128
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version_id:
+        description: Optional previously deployed Worker Version ID. Leave blank to use the previous 100% deployment.
+        required: false
+        type: string
+      confirm_rollback:
+        description: Confirm Worker rollback without any D1 down-migration
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cz2128-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Rollback Production Worker
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Authorize rollback actor
+        env:
+          CONFIGURED_ACTOR: ${{ vars.CZ2128_DEPLOY_ACTOR }}
+          CONFIRMED: ${{ inputs.confirm_rollback }}
+        run: |
+          set -euo pipefail
+          allowed="${CONFIGURED_ACTOR:-$GITHUB_REPOSITORY_OWNER}"
+          test "$GITHUB_ACTOR" = "$allowed"
+          test "$CONFIRMED" = "true"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Resolve safe rollback target
+        id: target
+        env:
+          REQUESTED_TARGET: ${{ inputs.target_version_id }}
+        run: |
+          set -euo pipefail
+          npx wrangler deployments status --name cz2128 --json > "$RUNNER_TEMP/current.json"
+          npx wrangler deployments list --name cz2128 --json > "$RUNNER_TEMP/history.json"
+          npx wrangler versions list --name cz2128 --json > "$RUNNER_TEMP/versions.json"
+
+          target="$(node - "$RUNNER_TEMP/current.json" "$RUNNER_TEMP/history.json" "$RUNNER_TEMP/versions.json" "$REQUESTED_TARGET" <<'NODE'
+          const fs=require('fs');
+          const [currentPath,historyPath,versionsPath,requested]=process.argv.slice(2);
+          const current=JSON.parse(fs.readFileSync(currentPath,'utf8'));
+          const history=JSON.parse(fs.readFileSync(historyPath,'utf8'));
+          const versions=JSON.parse(fs.readFileSync(versionsPath,'utf8'));
+          if(!Array.isArray(current.versions)||current.versions.length!==1||Number(current.versions[0].percentage)!==100) {
+            throw new Error('Current deployment is not a single 100% version');
+          }
+          const active=current.versions[0].version_id;
+          const previouslyDeployed=new Set(
+            history.flatMap(d => Array.isArray(d.versions) && d.versions.length===1 && Number(d.versions[0].percentage)===100
+              ? [d.versions[0].version_id] : [])
+          );
+          const knownVersions=new Set(versions.map(v=>v.id));
+          let target=requested.trim();
+          if(target) {
+            if(target===active) throw new Error('Requested target is already active');
+            if(!previouslyDeployed.has(target)) throw new Error('Requested target was not a prior 100% deployment');
+            if(!knownVersions.has(target)) throw new Error('Requested target version no longer exists');
+          } else {
+            const ordered=[...history].reverse();
+            const prior=ordered.find(d =>
+              Array.isArray(d.versions) &&
+              d.versions.length===1 &&
+              Number(d.versions[0].percentage)===100 &&
+              d.versions[0].version_id!==active
+            );
+            if(!prior) throw new Error('No previous 100% deployment is available');
+            target=prior.versions[0].version_id;
+          }
+          process.stdout.write(target);
+          NODE
+          )"
+
+          test -n "$target"
+          echo "version_id=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back Worker only
+        env:
+          TARGET_VERSION: ${{ steps.target.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          npx wrangler rollback "$TARGET_VERSION"             --name cz2128             --message "GitHub owner rollback run=$GITHUB_RUN_ID source=$GITHUB_SHA"             --yes
+
+      - name: Verify rollback
+        env:
+          TARGET_VERSION: ${{ steps.target.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          status="$(npx wrangler deployments status --name cz2128 --json)"
+          node -e '
+            const x=JSON.parse(process.argv[1]);
+            const target=process.argv[2];
+            if(!Array.isArray(x.versions)||x.versions.length!==1||Number(x.versions[0].percentage)!==100) process.exit(1);
+            if(x.versions[0].version_id!==target) process.exit(2);
+          ' "$status" "$TARGET_VERSION"
+          {
+            echo "## CZ2128 Worker rollback"
+            echo "- Target Worker version: $TARGET_VERSION"
+            echo "- D1 migration rollback: NOT PERFORMED"
+            echo "- Durable D1/R2/Queue resources: preserved"
+          } >> "$GITHUB_STEP_SUMMARY"

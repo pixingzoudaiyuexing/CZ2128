@@ -1,0 +1,243 @@
+name: Deploy CZ2128
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to deploy
+        required: true
+        default: v1.0.0
+        type: string
+      adopt_existing_resources:
+        description: Adopt already-existing unsuffixed Production resources (only after manual provenance review)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cz2128-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: First Production Deploy
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+      TELEGRAM_SECRET_PATH: ${{ secrets.TELEGRAM_SECRET_PATH }}
+      BOT_GROUP_ID: ${{ secrets.BOT_GROUP_ID }}
+      ADMIN_TELEGRAM_USER_IDS: ${{ secrets.ADMIN_TELEGRAM_USER_IDS }}
+      RUNTIME_CONFIG_MASTER_KEY: ${{ secrets.RUNTIME_CONFIG_MASTER_KEY }}
+      UPLOAD_CAPABILITY_SECRET: ${{ secrets.UPLOAD_CAPABILITY_SECRET }}
+      CRISP_WEBHOOK_SECRET: ${{ secrets.CRISP_WEBHOOK_SECRET }}
+      CRISP_API_IDENTIFIER: ${{ secrets.CRISP_API_IDENTIFIER }}
+      CRISP_API_KEY: ${{ secrets.CRISP_API_KEY }}
+      CRISP_WEBSITE_ID: ${{ secrets.CRISP_WEBSITE_ID }}
+      AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      AI_MODEL: ${{ secrets.AI_MODEL }}
+      AI_SYSTEM_PROMPT: ${{ secrets.AI_SYSTEM_PROMPT }}
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+
+    steps:
+      - name: Checkout requested release
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Authorize deployment actor
+        env:
+          CONFIGURED_ACTOR: ${{ vars.CZ2128_DEPLOY_ACTOR }}
+        run: |
+          set -euo pipefail
+          allowed="${CONFIGURED_ACTOR:-$GITHUB_REPOSITORY_OWNER}"
+          if [ "$GITHUB_ACTOR" != "$allowed" ]; then
+            echo "Only the configured CZ2128 deployment owner may run Production workflows." >&2
+            exit 1
+          fi
+
+      - name: Verify release tag and source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          git fetch origin main
+          expected="v$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "$expected"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+          git merge-base --is-ancestor HEAD origin/main
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release and secret prerequisites
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          npm run validate:production-template
+          node scripts/release/build-worker-secrets.mjs --check-only
+          npm run typecheck
+          npm run lint
+
+      - name: Ensure this is a first Worker deployment
+        run: |
+          set -euo pipefail
+          if npx wrangler deployments status --name cz2128 --json >/tmp/cz2128-worker.json 2>/tmp/cz2128-worker.err; then
+            echo "Worker cz2128 already exists. Use Update CZ2128 instead." >&2
+            exit 1
+          fi
+          if ! grep -Eqi 'does not exist|not found' /tmp/cz2128-worker.err; then
+            cat /tmp/cz2128-worker.err >&2
+            exit 1
+          fi
+
+      - name: Inventory or create Production resources
+        id: resources
+        env:
+          ADOPT_EXISTING: ${{ inputs.adopt_existing_resources }}
+        run: |
+          set -euo pipefail
+
+          d1_id="$(npx wrangler d1 list --json | node -e '
+            let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{
+              const rows=JSON.parse(s).filter(x=>x.name==="cz2128-db");
+              if(rows.length>1) process.exit(2);
+              if(rows.length===1) process.stdout.write(rows[0].uuid || rows[0].id || "");
+            });')"
+
+          queue_exists=0
+          dlq_exists=0
+          attachment_exists=0
+          quarantine_exists=0
+          npx wrangler queues info cz2128-queue >/dev/null 2>&1 && queue_exists=1 || true
+          npx wrangler queues info cz2128-dlq >/dev/null 2>&1 && dlq_exists=1 || true
+          npx wrangler r2 bucket info cz2128-attachments --json >/dev/null 2>&1 && attachment_exists=1 || true
+          npx wrangler r2 bucket info cz2128-dlq-quarantine --json >/dev/null 2>&1 && quarantine_exists=1 || true
+
+          existing=0
+          [ -n "$d1_id" ] && existing=$((existing+1))
+          existing=$((existing+queue_exists+dlq_exists+attachment_exists+quarantine_exists))
+          if [ "$existing" -gt 0 ] && [ "$ADOPT_EXISTING" != "true" ]; then
+            echo "Existing Production resource identity detected. Re-run only after provenance review with adopt_existing_resources=true." >&2
+            exit 1
+          fi
+
+          if [ -z "$d1_id" ]; then npx wrangler d1 create cz2128-db; fi
+          if [ "$dlq_exists" -eq 0 ]; then npx wrangler queues create cz2128-dlq; fi
+          if [ "$queue_exists" -eq 0 ]; then npx wrangler queues create cz2128-queue; fi
+          if [ "$attachment_exists" -eq 0 ]; then npx wrangler r2 bucket create cz2128-attachments; fi
+          if [ "$quarantine_exists" -eq 0 ]; then npx wrangler r2 bucket create cz2128-dlq-quarantine; fi
+
+          d1_id="$(npx wrangler d1 list --json | node -e '
+            let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{
+              const rows=JSON.parse(s).filter(x=>x.name==="cz2128-db");
+              if(rows.length!==1) process.exit(2);
+              process.stdout.write(rows[0].uuid || rows[0].id || "");
+            });')"
+          test -n "$d1_id"
+          echo "d1_id=$d1_id" >> "$GITHUB_OUTPUT"
+
+      - name: Render and validate exact Production config
+        env:
+          D1_ID: ${{ steps.resources.outputs.d1_id }}
+        run: |
+          set -euo pipefail
+          node scripts/release/render-production-config.mjs --d1-id "$D1_ID"
+          npm run validate:production -- --config wrangler.production.jsonc --expected-d1-id "$D1_ID"
+
+      - name: Enforce R2 lifecycle
+        run: |
+          set -euo pipefail
+          lifecycle="$(npx wrangler r2 bucket lifecycle list cz2128-attachments)"
+          if ! grep -Fq 'expire-attachments-after-7-days' <<<"$lifecycle"; then
+            npx wrangler r2 bucket lifecycle add cz2128-attachments               expire-attachments-after-7-days attachments/ --expire-days 7 --force
+          fi
+          npx wrangler r2 bucket lifecycle list cz2128-attachments
+          npx wrangler r2 bucket lifecycle list cz2128-dlq-quarantine
+
+      - name: Record D1 recovery point and apply migrations
+        run: |
+          set -euo pipefail
+          npx wrangler d1 time-travel info cz2128-db --config wrangler.production.jsonc --json || true
+          npx wrangler d1 migrations apply cz2128-db --remote --config wrangler.production.jsonc
+          pending="$(npx wrangler d1 migrations list cz2128-db --remote --config wrangler.production.jsonc)"
+          grep -Fq 'No migrations to apply' <<<"$pending"
+
+      - name: Prove first-deploy business state is empty
+        run: |
+          set -euo pipefail
+          result="$(npx wrangler d1 execute cz2128-db --remote --config wrangler.production.jsonc --command             "SELECT (SELECT COUNT(*) FROM conversations) AS conversations,(SELECT COUNT(*) FROM messages) AS messages,(SELECT COUNT(*) FROM attachments) AS attachments,(SELECT COUNT(*) FROM outbound_operations) AS outbound_operations,(SELECT COUNT(*) FROM knowledge_entries) AS knowledge_entries,(SELECT COUNT(*) FROM learning_candidates) AS learning_candidates" --json)"
+          node -e '
+            const rows=JSON.parse(process.argv[1]).flatMap(x=>x.results||[]);
+            if(rows.length!==1) process.exit(2);
+            const nonzero=Object.entries(rows[0]).filter(([,v])=>Number(v)!==0);
+            if(nonzero.length){ console.error("Production D1 is not empty:", nonzero.map(([k])=>k).join(",")); process.exit(1); }
+          ' "$result"
+          for bucket in cz2128-attachments cz2128-dlq-quarantine; do
+            info="$(npx wrangler r2 bucket info "$bucket" --json)"
+            node -e 'const x=JSON.parse(process.argv[1]); if(Number(x.object_count||0)!==0) process.exit(1)' "$info"
+          done
+
+      - name: Prepare protected Worker secrets file
+        env:
+          SECRETS_FILE: ${{ runner.temp }}/cz2128-worker-secrets.json
+        run: node scripts/release/build-worker-secrets.mjs --output "$SECRETS_FILE"
+
+      - name: First Worker deploy at 100 percent
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SECRETS_FILE: ${{ runner.temp }}/cz2128-worker-secrets.json
+        run: |
+          set -euo pipefail
+          # Cloudflare requires wrangler deploy for the first Worker version.
+          npx wrangler deploy             --config wrangler.production.jsonc             --strict             --tag "$RELEASE_TAG"             --message "CZ2128 release=$RELEASE_TAG source=$GITHUB_SHA"             --secrets-file "$SECRETS_FILE"
+
+      - name: Verify Worker deployment and secret names
+        run: |
+          set -euo pipefail
+          status="$(npx wrangler deployments status --name cz2128 --json)"
+          node -e '
+            const x=JSON.parse(process.argv[1]);
+            if(!Array.isArray(x.versions)||x.versions.length!==1||Number(x.versions[0].percentage)!==100) process.exit(1);
+            console.log("active_version="+x.versions[0].version_id);
+          ' "$status"
+          secrets="$(npx wrangler secret list --name cz2128 --format json)"
+          node -e '
+            const rows=JSON.parse(process.argv[1]);
+            const names=new Set(rows.map(x=>x.name));
+            const required=JSON.parse(process.argv[2]);
+            const missing=required.filter(x=>!names.has(x));
+            if(missing.length){ console.error("Missing Worker secret names: "+missing.join(",")); process.exit(1); }
+            console.log("verified_secret_names="+required.length);
+          ' "$secrets" "$(node -e "import('./scripts/release/build-worker-secrets.mjs').then(m=>process.stdout.write(JSON.stringify(m.REQUIRED_WORKER_SECRET_NAMES)))")"
+
+      - name: Deployment summary
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          D1_ID: ${{ steps.resources.outputs.d1_id }}
+        run: |
+          {
+            echo "## CZ2128 Production deploy"
+            echo "- Release: $RELEASE_TAG"
+            echo "- Source: $GITHUB_SHA"
+            echo "- D1 UUID: $D1_ID"
+            echo "- Database migrations: forward-only through repository head"
+            echo "- Secrets: verified by name only"
+            echo "- Provider webhook cutover: not performed by this workflow"
+          } >> "$GITHUB_STEP_SUMMARY"
