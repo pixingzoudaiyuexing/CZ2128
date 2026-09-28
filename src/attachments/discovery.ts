@@ -1,5 +1,5 @@
 import { AttachmentConfig } from '../config/attachments';
-import { AttachmentDescriptor, AttachmentType, isSafeInlineImageMime } from '../core/attachments';
+import { AttachmentDescriptor, AttachmentType, isSafeInlineImageMime, normalizeMime } from '../core/attachments';
 
 function finiteSize(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -77,20 +77,30 @@ export function discoverChatwootAttachments(payload: any, config: AttachmentConf
 }
 
 export function discoverCrispAttachments(payload: any, config: AttachmentConfig): AttachmentDescriptor[] {
-  if (payload?.event !== 'message:send') return [];
   const data = payload?.data;
-  if (!data || data.type !== 'file' || data.from !== 'user') return [];
+  if (!data || data.type !== 'file') return [];
+  const isVisitor = payload?.event === 'message:send' && data.from === 'user';
+  const isOperator = payload?.event === 'message:received' && data.from === 'operator';
+  if (!isVisitor && !isOperator) return [];
   const content = data.content;
-  if (!content || typeof content !== 'object') return [];
-  if (typeof content.type !== 'string' || !isSafeInlineImageMime(content.type)) return [];
+  if (!content || typeof content !== 'object' || typeof content.type !== 'string') return [];
+  const mimeType = normalizeMime(content.type);
+  if (isVisitor && !isSafeInlineImageMime(mimeType)) return [];
   if (typeof content.url !== 'string' || content.url.length === 0 || content.url.length > 2048) return [];
   const messageRef = data.fingerprint === undefined ? '' : String(data.fingerprint);
   if (!messageRef || messageRef.length > 256) return [];
+  const attachmentType: AttachmentType = isSafeInlineImageMime(mimeType)
+    ? 'photo'
+    : mimeType.startsWith('video/')
+      ? 'video'
+      : mimeType.startsWith('audio/')
+        ? 'audio'
+        : 'document';
   const descriptor: AttachmentDescriptor = {
     sourceAttachmentRef: 'file',
-    attachmentType: 'photo',
+    attachmentType,
     originalFilename: typeof content.name === 'string' ? content.name : undefined,
-    mimeType: content.type,
+    mimeType,
     locator: { provider: 'crisp', dataUrl: content.url }
   };
   const declaredSize = finiteSize(content.size);

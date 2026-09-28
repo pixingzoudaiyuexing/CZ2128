@@ -95,15 +95,19 @@ async function lifecycleOperations(db: SqliteD1, id = 'conv'): Promise<any[]> {
 function mockProviders(
   state: () => 'pending' | 'unresolved' | 'resolved',
   telegramMethods: string[],
-  onTelegram?: (method: string) => Promise<void>
+  onTelegram?: (method: string) => Promise<void>,
+  telegramBodies?: Array<Record<string, unknown>>
 ) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     if (url.startsWith('https://api.crisp.chat/') && url.endsWith('/state')) {
       return new Response(JSON.stringify({ data: { state: state() } }), { status: 200 });
     }
     const method = url.split('/').at(-1) || '';
     telegramMethods.push(method);
+    if (telegramBodies && typeof init?.body === 'string') {
+      telegramBodies.push(JSON.parse(init.body));
+    }
     await onTelegram?.(method);
     const result = method === 'sendMessage' ? { message_id: 9001 } : true;
     return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
@@ -141,7 +145,8 @@ describe('Crisp lifecycle reconciliation', () => {
     const env = makeEnv(db);
     let providerState: 'unresolved' | 'resolved' = 'resolved';
     const telegramMethods: string[] = [];
-    mockProviders(() => providerState, telegramMethods);
+    const telegramBodies: Array<Record<string, unknown>> = [];
+    mockProviders(() => providerState, telegramMethods, undefined, telegramBodies);
 
     const close = lifecycleEvent('crisp-close-same', 'resolved');
     await handleQueueEvent(close, env);
@@ -157,6 +162,9 @@ describe('Crisp lifecycle reconciliation', () => {
     await handleQueueEvent(lifecycleEvent('late-old-close', 'resolved'), env);
 
     expect(telegramMethods).toEqual(['closeForumTopic', 'reopenForumTopic']);
+    expect(telegramBodies).toHaveLength(2);
+    expect(telegramBodies.every(body => !('disable_notification' in body))).toBe(true);
+    expect(telegramMethods).not.toContain('sendMessage');
     expect((await lifecycleOperations(db)).map(operation => operation.operation_type))
       .toEqual(['CLOSE_TOPIC', 'REOPEN_TOPIC']);
     const conversation = await db.prepare(

@@ -116,7 +116,7 @@ describe('provider API contracts', () => {
     });
   });
 
-  it('sends Telegram silent notification and fixed AI controls without changing message text', async () => {
+  it('emits disable_notification=true in the final Telegram sendMessage payload', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true, result: { message_id: 42 } }), { status: 200 })
     );

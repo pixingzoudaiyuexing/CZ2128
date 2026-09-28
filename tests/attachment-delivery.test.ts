@@ -128,13 +128,20 @@ describe('attachment multipart delivery', () => {
     }), { status: 200 }));
     const bytes = new Uint8Array(Math.min(size, 3)).buffer;
     const result = await deliverAttachmentToTelegram(
-      env, config, attachment({ attachment_type: type, mime_type: mime, size_bytes: size }), '7', bytes
+      env,
+      config,
+      attachment({ attachment_type: type, mime_type: mime, size_bytes: size }),
+      '7',
+      bytes,
+      undefined,
+      { disableNotification: true }
     );
     expect(result.providerMessageRef).toBe('55');
     expect(fetchMock.mock.calls[0][0]).toBe(`https://api.telegram.org/bottelegram-secret/${method}`);
     const form = fetchMock.mock.calls[0][1]?.body as FormData;
     expect(form.get(field)).toBeInstanceOf(Blob);
     expect(form.get('message_thread_id')).toBe('7');
+    expect(form.get('disable_notification')).toBe('true');
   });
 
   it.each([

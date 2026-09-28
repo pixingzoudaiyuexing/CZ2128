@@ -91,7 +91,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
           sourceTelemetry = { ...sourceTelemetry, didTimeout: telegramSource.didTimeout };
         }
       } else if (event.payload.locator.provider === 'crisp') {
-        source = await downloadCrispAttachment(event.payload.locator.dataUrl, config);
+        source = await downloadCrispAttachment(event.payload.locator.dataUrl, config, row.attachment_type);
       } else if (event.payload.locator.provider === 'chatwoot') {
         source = await downloadChatwootAttachment(env, event.payload.locator.dataUrl, config);
       } else {

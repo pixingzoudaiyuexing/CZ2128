@@ -86,7 +86,7 @@ describe('attachment discovery', () => {
     })]);
   });
 
-  it('discovers only Crisp visitor image files from the signed provider shape', () => {
+  it('keeps visitor discovery image-only while accepting operator image and file attachments', () => {
     const image = discoverCrispAttachments({
       event: 'message:send',
       data: {
@@ -111,7 +111,22 @@ describe('attachment discovery', () => {
     expect(discoverCrispAttachments({
       event: 'message:received',
       data: { fingerprint: 57, type: 'file', from: 'operator', content: { name: 'x.png', url: 'https://storage.crisp.chat/x.png', type: 'image/png' } }
-    }, config)).toEqual([]);
+    }, config)).toEqual([expect.objectContaining({
+      sourceAttachmentRef: 'file',
+      attachmentType: 'photo',
+      originalFilename: 'x.png',
+      mimeType: 'image/png'
+    })]);
+
+    expect(discoverCrispAttachments({
+      event: 'message:received',
+      data: { fingerprint: 59, type: 'file', from: 'operator', content: { name: 'report.pdf', url: 'https://storage.crisp.chat/report.pdf', type: 'application/pdf' } }
+    }, config)).toEqual([expect.objectContaining({
+      sourceAttachmentRef: 'file',
+      attachmentType: 'document',
+      originalFilename: 'report.pdf',
+      mimeType: 'application/pdf'
+    })]);
   });
 
   it('persists explicit Crisp attachment destinations without changing stable source identity', async () => {

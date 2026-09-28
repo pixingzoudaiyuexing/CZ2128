@@ -44,6 +44,13 @@ export function telegramCustomerRequestOptions(
   };
 }
 
+export function telegramCrispOperatorRequestOptions(): TelegramCustomerUxOptions {
+  return {
+    version: 1,
+    disableNotification: true
+  };
+}
+
 export function parseTelegramCustomerRequestOptions(value: string | null | undefined): TelegramCustomerUxOptions | null {
   if (!value) return null;
   try {

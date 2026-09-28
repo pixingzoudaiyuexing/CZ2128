@@ -277,6 +277,24 @@ describe('attachment source security', () => {
     expect(fetchMock.mock.calls[1][1]?.redirect).toBe('manual');
   });
 
+  it('downloads a Crisp operator document from the same trusted storage boundary', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(stream([1, 2, 3]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/pdf', 'Content-Length': '3' }
+      })
+    );
+    const result = await downloadCrispAttachment(
+      'https://storage.crisp.chat/users/upload/session/report.pdf',
+      getAttachmentConfig(env),
+      'document'
+    );
+    expect(result.contentLength).toBe(3);
+    result.finish();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe('manual');
+  });
+
   it.each([
     'http://storage.crisp.chat/a.png',
     'https://evil.example/a.png',

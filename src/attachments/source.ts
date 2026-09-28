@@ -306,7 +306,8 @@ export async function downloadChatwootAttachment(
 
 export async function downloadCrispAttachment(
   dataUrl: string,
-  config: AttachmentConfig
+  config: AttachmentConfig,
+  attachmentType: AttachmentRow['attachment_type'] = 'photo'
 ): Promise<{ body: ReadableStream<Uint8Array>; contentLength?: number; finish: () => void }> {
   let current: URL;
   try {
@@ -349,7 +350,7 @@ export async function downloadCrispAttachment(
       });
     }
     const contentType = (response.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (!isSafeInlineImageMime(contentType)) {
+    if (attachmentType === 'photo' && !isSafeInlineImageMime(contentType)) {
       fetched.finish();
       throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
     }

@@ -151,10 +151,60 @@ describe('Crisp basic bridge orchestration', () => {
       version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:2',
       payload: {
         websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
-        messageRef: '102', actorRole: 'OPERATOR', content: 'Human'
+        messageRef: '102', actorRole: 'OPERATOR', content: 'Human',
+        attachments: [
+          {
+            sourceAttachmentRef: 'operator-image',
+            attachmentType: 'photo',
+            originalFilename: 'human.png',
+            mimeType: 'image/png',
+            locator: { provider: 'crisp', dataUrl: 'https://storage.crisp.chat/human.png' }
+          },
+          {
+            sourceAttachmentRef: 'operator-file',
+            attachmentType: 'document',
+            originalFilename: 'human.pdf',
+            mimeType: 'application/pdf',
+            locator: { provider: 'crisp', dataUrl: 'https://storage.crisp.chat/human.pdf' }
+          }
+        ]
       }
     }, env);
     expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp', 'CRISP_OPERATOR');
+    const operatorOutbound = vi.mocked(outbound.executeOutboundOperation).mock.calls.at(-1);
+    expect(operatorOutbound?.[6]).toMatchObject({
+      requestOptions: { version: 1, disableNotification: true }
+    });
+    const operatorAttachments = vi.mocked(attachmentRepository.enqueueAttachmentJobs).mock.calls.at(-1);
+    expect(operatorAttachments?.[5]).toEqual([
+      expect.objectContaining({ sourceAttachmentRef: 'operator-image', attachmentType: 'photo' }),
+      expect.objectContaining({ sourceAttachmentRef: 'operator-file', attachmentType: 'document' })
+    ]);
+    expect(JSON.parse(String(operatorAttachments?.[8]))).toEqual({
+      version: 1,
+      disableNotification: true
+    });
+  });
+
+  it('keeps ordinary Crisp customer notification policy separate from Crisp-operator silence', async () => {
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:customer-policy',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'customer-policy-1', actorRole: 'CUSTOMER', content: 'Customer'
+      }
+    }, env);
+
+    const customerOutbound = vi.mocked(outbound.executeOutboundOperation).mock.calls.at(-1);
+    expect(customerOutbound?.[6]).toMatchObject({
+      requestOptions: { version: 1, disableNotification: false, controls: 'AI_TOGGLE_V1' }
+    });
+    const customerAttachments = vi.mocked(attachmentRepository.enqueueAttachmentJobs).mock.calls.at(-1);
+    expect(JSON.parse(String(customerAttachments?.[8]))).toEqual({
+      version: 1,
+      disableNotification: false,
+      controls: 'AI_TOGGLE_V1'
+    });
   });
 
   it('enqueues one stable AI trigger for configured ordinary Crisp customer text', async () => {
