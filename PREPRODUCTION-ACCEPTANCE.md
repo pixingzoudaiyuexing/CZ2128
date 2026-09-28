@@ -279,6 +279,44 @@ No real Staging measurement executed in this closure exposed a correctness or or
 - No Queue pause/purge, D1 write, migration apply, Worker deploy, Provider call, Notion mutation or Production-targeted command occurred.
 - Both P4C-* R2 fixtures were deleted; attachment and quarantine buckets ended empty and bounded D1 state returned exactly to the pre-case counts.
 
+### 2G. v1.1.0 Model Selector Staging Deployment — 2026-09-28
+
+**Evidence status: STAGING DEPLOYMENT PASS / MODEL SELECTOR HUMAN ACCEPTANCE PENDING.**
+
+**Exact runtime identity**
+
+- Exact Git SHA: `254fd2880a6ffc23e17a19227d1fee944877f8e1`.
+- Worker: `cz2128-4c-staging`.
+- Deployment: `48fccdbd-1117-4ae1-9246-98b8e7e87644`.
+- Worker version: `f1ea01a1-4197-458a-9a7e-3a42fd294909`, version 66, 100%.
+- Actual rollback point: prior version `c27f82ad-4f0b-4bbf-8740-c3a6c4ec3877`, version 65; D1 is not rolled back with Worker executable rollback.
+
+**Schema reconciliation**
+
+The Owner task carried a last-known `0001`–`0009` snapshot, but the mandatory pre-write readback found that the isolated Staging D1 already contained exact migrations `0001`–`0010`; `0010_human_learning.sql` had been applied at 2026-09-28 09:59:33. Independent Gate 1 returned **PASS** for treating that as a satisfied precondition. This v1.1.0 work unit therefore did not re-apply, down-migrate or otherwise mutate D1 schema.
+
+**Configuration / resource preservation**
+
+- Exact D1 UUID remains `6482f216-5357-4e93-9796-89eaf0c1299c`.
+- Main Queue and DLQ IDs remain `6a4ed17bccbb4d6db22fb5cd8407eeb3` and `6ec943a39dfe461ba33504593a5692f0`; producer/consumer topology and batch/retry/wait settings were unchanged.
+- Both approved R2 buckets remained bound and empty; cron remained `0 * * * *`.
+- All 22 existing secret names were preserved. Secret values were not read. The existing AI test-scope variables and staging Queue identity variables were unchanged.
+- No `NOTION_*` secret/binding/plaintext variable exists in the deployed version. Notion learning remains disabled/unconfigured; no real Notion page, sync, review or publish acceptance was performed.
+- Bounded D1 counts before/after Worker deployment remained identical: learning candidates 47, learning candidate history 97, knowledge entries/history 0, AMBIGUOUS outbound 0, OPEN DLQ receipts 3 and Admin sessions 1.
+- No Telegram/Crisp provider webhook registration mutation was performed, and no Production-targeted operation occurred.
+
+**Model-selector evidence**
+
+Exact deployed-source tests rerun after deployment passed 135/135 across model discovery, model selector and Admin control plane. They cover the bounded authenticated `GET /models` request, redirect refusal, timeout/body/list/session bounds, incomplete/401/403/404/405/429/5xx/transport/malformed/empty cases, long IDs, >200 models, pagination, expired/tampered session, CAS and SET->RESTORE ABA conflict, duplicate callback fencing, manual-entry fallback, and the regression that AI URL/API-key edits remain provider-health independent. The existing **测试 AI** action remains the separate completion health check.
+
+No fake Telegram update, debug endpoint, testing bypass or direct-SQL acceptance was used. The real authenticated Telegram Admin sequence has not yet been performed, so the model-selector business result remains **HUMAN ACCEPTANCE PENDING** rather than ACCEPTED.
+
+**Independent review**
+
+- Pre-write agy Gate 1: **PASS**.
+- Post-deploy final agy review: **STAGING DEPLOYMENT PASS**.
+- Production remains untouched and unvalidated by this work unit.
+
 ## 3. Required Evidence Record
 
 Create one record per matrix row and test execution:
@@ -340,6 +378,8 @@ For this reconciliation task specifically, authorization is **DOCS ONLY** plus r
 
 Phase 6 development adds D1-first human learning with optional Notion editorial review, but **no real Phase 6 environment acceptance is executed in this development work unit**.
 
+Current reconciliation note: a later separately authorized Staging deployment has since advanced the isolated Staging schema/runtime to `0001`–`0010` and the v1.1.0 executable recorded in Section 2G. That does not retroactively turn the Phase 6 development work unit itself into a real acceptance run, and it does not establish real Notion acceptance.
+
 Development evidence includes:
 
 - additive local migration validation for fresh `0001 -> 0010` and an existing `0001 -> 0009 -> 0010` database, with a pre-existing knowledge row and FTS result preserved;
@@ -350,7 +390,7 @@ Development evidence includes:
 - existing authenticated Telegram Admin routing/receipt authorization plus bounded Phase 6 list/sync/review operations;
 - full repository automated regression, including the existing D-035 Telegram rotation, Crisp/Telegram bridge, AI, attachments, Runtime Config, Queue/DLQ and knowledge retrieval behavior.
 
-Deferred real acceptance remains **NOT VALIDATED** until separately authorized:
+At the time of the Phase 6 development work unit, deferred real acceptance included:
 
 - applying `0010_human_learning.sql` to isolated Staging;
 - deploying the Phase 6 executable to isolated Staging;
@@ -359,6 +399,8 @@ Deferred real acceptance remains **NOT VALIDATED** until separately authorized:
 - real Approved -> D1 publish -> later AI retrieval evidence;
 - operational cron/compensation observation in Staging;
 - Production deployment or Production behavior.
+
+As of the v1.1.0 Staging deployment in Section 2G, the first two infrastructure bullets are no longer pending: migration `0010` is present and a Phase-6-capable runtime is deployed to isolated Staging. Real Telegram/Crisp human-learning capture, all real Notion schema/mirror/review/writeback/publish behavior, operational compensation acceptance, and Production behavior remain **NOT VALIDATED** unless separately evidenced.
 
 Development completion must therefore be reported as `PHASE 6 DEVELOPMENT COMPLETE`, never as `PHASE 6 STAGING ACCEPTED`. Existing Phase 4C scoped acceptance records are unchanged and do not become Phase 6 evidence.
 

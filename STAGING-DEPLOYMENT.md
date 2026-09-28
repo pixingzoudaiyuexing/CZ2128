@@ -1,6 +1,6 @@
 # CZ2128 4C Staging Foundation Deployment Plan
 
-Status: **HISTORICAL FOUNDATION PLAN / STAGING DEPLOYED / READ-ONLY RECONCILED 2026-09-27 / PHASE 4C RELIABILITY CLOSURE EVIDENCE RECORDED**
+Status: **V1.1.0 STAGING DEPLOYED / MODEL SELECTOR HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
@@ -13,9 +13,26 @@ Related documents:
 - [Migration, Backup and Recovery](MIGRATION-RECOVERY.md)
 - [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md)
 
+## Current v1.1.0 Staging Deployment — 2026-09-28
+
+This section is the current runtime snapshot. The Phase 4C foundation and acceptance material below is retained as historical evidence and is not rewritten as though those earlier states never existed.
+
+- Exact deployed source: `254fd2880a6ffc23e17a19227d1fee944877f8e1` (`v1.1.0`, `feat: add Telegram AI model selector`).
+- Active Worker: `cz2128-4c-staging`, deployment `48fccdbd-1117-4ae1-9246-98b8e7e87644`, version `f1ea01a1-4197-458a-9a7e-3a42fd294909` (version 66, 100%), created 2026-09-28T14:14:22.585036Z. The deployment annotation records the exact Git SHA above.
+- Actual pre-deploy rollback point was version 65, `c27f82ad-4f0b-4bbf-8740-c3a6c4ec3877`, deployment `cc1d670b-4ab2-47fb-aa70-15c8ce324f08`, annotated exact main `e8ac67d1190d5dd935839b7dc34ad183682c0d37`.
+- D1 remains `cz2128-4c-staging-db`, UUID `6482f216-5357-4e93-9796-89eaf0c1299c`. The Owner task's historical expectation that `0010_human_learning.sql` was pending had already been superseded before this deployment: remote `d1_migrations` showed exact `0001`–`0010`, with `0010` applied at 2026-09-28 09:59:33. Gate 1 independently approved treating that as a satisfied precondition, so this work unit performed **no D1 migration write**.
+- Current Queue topology is unchanged: main `cz2128-4c-staging-queue` / `6a4ed17bccbb4d6db22fb5cd8407eeb3` has the staging Worker as its one producer and one consumer, batch 10, three retries, 1-second wait and exact staging DLQ; `cz2128-4c-staging-dlq` / `6ec943a39dfe461ba33504593a5692f0` has the staging Worker as its one consumer.
+- `ATTACHMENTS_BUCKET` remains `cz2128-4c-staging-attachments`; `DLQ_QUARANTINE` remains `cz2128-4c-staging-dlq-quarantine`. Both reported zero objects / zero bytes after deployment. Cron remains `0 * * * *`.
+- All 22 pre-existing secret **names** were preserved; secret values were not read. The four plaintext variables remain the two staging Queue identities plus `AI_TEST_SCOPE_ENABLED=true` and the same single synthetic allowlist UUID. No `NOTION_*` secret, binding or plaintext variable is present, so Notion learning remains disabled/unconfigured and real Notion acceptance is still out of scope.
+- Bounded D1 counts were unchanged across the Worker deployment: `learning_candidates 47 -> 47`, `learning_candidate_history 97 -> 97`, `knowledge_entries 0 -> 0`, `knowledge_entry_history 0 -> 0`, `AMBIGUOUS outbound 0 -> 0`, `OPEN dlq_receipts 3 -> 3`, `admin_sessions 1 -> 1`.
+- Exact-source post-deploy focused regression for model discovery, selector and Admin control plane passed 135/135 tests. This covers the bounded `GET /models` contract, safe failure classes, pagination/session limits, CAS/ABA fencing, provider-independent URL/API-key edits and manual model entry.
+- Final independent review verdict: **STAGING DEPLOYMENT PASS**.
+- Real authenticated Telegram Admin execution of **AI 设置 -> 修改模型 -> select model -> 测试 AI** has not yet been performed. Current acceptance status is therefore **V1.1.0 STAGING DEPLOYED / MODEL SELECTOR HUMAN ACCEPTANCE PENDING**, not ACCEPTED.
+- No Production Worker, D1, Queue, R2, secret, webhook, tag or release was modified by this Staging deployment.
+
 ## 1. Approved Resource Boundary
 
-| Resource | Exact staging name | Current read-only evidence (2026-09-27) |
+| Resource | Exact staging name | Historical read-only evidence (2026-09-27) |
 | --- | --- | --- |
 | Worker | `cz2128-4c-staging` | Active deployment `906fdcaf-9a54-4485-bd73-e5971b279f99` points 100% to version `14aadd30-bca6-4c70-8c65-7bcec602f4c6` (version 63), annotated exact pre-Phase-6 runtime `456cc3c68ec36317d15c256371d90645236f932d`. |
 | D1 | `cz2128-4c-staging-db` | UUID `6482f216-5357-4e93-9796-89eaf0c1299c`; read-only `d1_migrations` lists exactly `0001`–`0009`. `0010_human_learning.sql` is pending and was not applied. |
@@ -26,7 +43,7 @@ Related documents:
 
 Historical Gate A required re-confirming the exact Cloudflare account and proving all six names absent before the first write. That requirement remains part of the creation record, not a current instruction: all six approved 4C resources now exist. A matching name alone is still never proof of ownership. Do not modify, reuse, empty or delete legacy `cz2128-staging-*`, unsuffixed `cz2128*`, production or other-project resources.
 
-### 1A. Current Deployment / Acceptance Snapshot
+### 1A. Historical Phase 4C Deployment / Acceptance Snapshot
 
 - Exact active runtime is the reviewed pre-Phase-6 SHA `456cc3c68ec36317d15c256371d90645236f932d`; current repository `main` has advanced to Phase 6 but was deliberately not deployed by the Phase 4C reliability closure.
 - Active Worker deployment/version: `906fdcaf-9a54-4485-bd73-e5971b279f99` / `14aadd30-bca6-4c70-8c65-7bcec602f4c6` (version 63, 100%).

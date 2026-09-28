@@ -4,11 +4,13 @@ Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 co
 
 ## v1.1.0 - Upstream AI Model Discovery + Telegram Model Selector
 
-Status: **DEVELOPMENT IMPLEMENTED / PRODUCTION NOT DEPLOYED**
+Status: **STAGING DEPLOYED / MODEL SELECTOR HUMAN ACCEPTANCE PENDING / PRODUCTION NOT DEPLOYED**
 
 Telegram Admin gains a default model-discovery flow at **AI 设置 → 修改模型**. The control plane uses the current effective OpenAI-compatible base URL and API key to perform a bounded `GET /models`, normalizes only provider model IDs, presents eight selectable entries per Telegram page, and stores the temporary directory only in the authenticated Admin session. Selection reuses the existing `AI_MODEL` Runtime Config CAS/history contract; raw model IDs are not callback identities.
 
-The generic API URL/API Key edit paths remain provider-health independent. `/models` support is optional: manual model input remains available, discovery failure leaves the configured model unchanged, and normal AI runtime continues to depend only on the configured model and `/chat/completions`. The existing **测试 AI** action remains the explicit completion health check. No schema migration or permanent model-catalog table is introduced. Production deployment/release is intentionally deferred until after development/main closure.
+The generic API URL/API Key edit paths remain provider-health independent. `/models` support is optional: manual model input remains available, discovery failure leaves the configured model unchanged, and normal AI runtime continues to depend only on the configured model and `/chat/completions`. The existing **测试 AI** action remains the explicit completion health check. No schema migration or permanent model-catalog table is introduced by this feature.
+
+Exact main `254fd2880a6ffc23e17a19227d1fee944877f8e1` is now deployed to isolated Staging as deployment `48fccdbd-1117-4ae1-9246-98b8e7e87644`, Worker version `f1ea01a1-4197-458a-9a7e-3a42fd294909` (version 66, 100%). Pre-write inspection found Staging D1 already at exact migrations `0001`–`0010`, so no duplicate migration write was performed. Existing Provider/Admin secrets, Queue/R2 bindings, AI test scope and cron were preserved; Notion remains disabled/unconfigured. Post-deploy independent review returned **STAGING DEPLOYMENT PASS**. Real authenticated Telegram model-list/select/**测试 AI** interaction is still pending, so this is not yet a model-selector ACCEPTED claim. Production remains untouched and deployment/release remains deferred.
 
 ## Crisp-01 - Basic Crisp support bridge
 
