@@ -2,6 +2,7 @@ import { ATTACHMENT_HARD_MAX_BYTES, ATTACHMENT_HARD_MAX_COUNT } from '../config/
 import { canonicalizeCrispKeywordRules } from '../config/crisp-keywords';
 import { canonicalizeCrispWelcomeConfig } from '../config/crisp-welcome';
 import { validateCrispAvatarUrl, validateCrispNickname } from '../config/crisp-identities';
+import { canonicalizeAIBaseUrl } from '../config/ai';
 import { SafeErrorCode } from '../core/error-taxonomy';
 import { SafeError } from '../core/errors';
 import { RuntimeConfigKey, RuntimeValueKind, TelegramSupportProfile } from './types';
@@ -57,6 +58,13 @@ function providerUrl(value: string, protocols: string[], httpsOnly: boolean): st
   } catch {
     throw new RuntimeConfigValidationError('INVALID_PROVIDER_URL');
   }
+}
+
+function aiProviderUrl(value: string): string {
+  const normalized = boundedText(value, 1, 2048, 'INVALID_PROVIDER_URL');
+  const canonical = canonicalizeAIBaseUrl(normalized);
+  if (!canonical) throw new RuntimeConfigValidationError('INVALID_PROVIDER_URL');
+  return canonical;
 }
 
 function allowedHosts(value: string): string {
@@ -125,7 +133,7 @@ function supportProfile(value: string): string {
 }
 
 const definitions: RuntimeConfigDefinition[] = [
-  { key: 'AI_BASE_URL', kind: 'PLAIN', label: 'AI API 地址', shortCode: 'ab', rollback: 'GENERIC', highImpact: false, validate: value => providerUrl(value, ['http:', 'https:'], false) },
+  { key: 'AI_BASE_URL', kind: 'PLAIN', label: 'AI API 地址', shortCode: 'ab', rollback: 'GENERIC', highImpact: false, validate: aiProviderUrl },
   { key: 'AI_MODEL', kind: 'PLAIN', label: 'AI 模型', shortCode: 'am', rollback: 'GENERIC', highImpact: false, validate: value => boundedText(value, 1, 256, 'INVALID_AI_MODEL') },
   { key: 'AI_API_KEY', kind: 'SECRET', label: 'AI API 密钥', shortCode: 'ak', rollback: 'GENERIC', highImpact: true, validate: value => boundedText(value, 1, 4096, 'INVALID_SECRET') },
   { key: 'AI_SYSTEM_PROMPT', kind: 'PLAIN', label: 'AI 系统提示词', shortCode: 'ap', rollback: 'GENERIC', highImpact: false, validate: value => boundedText(value, 1, 20000, 'INVALID_SYSTEM_PROMPT') },

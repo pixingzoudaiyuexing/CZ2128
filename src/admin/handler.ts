@@ -36,6 +36,7 @@ import { processReliabilityCallback, processReliabilityMessage, showReliabilityM
 import { processCrispKeywordCallback, processCrispKeywordMessage } from './crisp-keywords';
 import { processKnowledgeCallback, processKnowledgeMessage } from './knowledge';
 import { processLearningCallback } from './learning';
+import { processAIModelSelectorCallback } from './model-selector';
 import { safeErrorCode } from '../core/errors';
 import { CHATWOOT_ADMIN_DISABLED_MESSAGE, isLegacyChatwootRuntimeKey } from './platform-policy';
 import { createCrispWelcomeConfig, resolveCrispWelcome } from '../config/crisp-welcome';
@@ -630,6 +631,7 @@ async function processCallback(
   if (data.startsWith('k:')) return await processCrispKeywordCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('b:')) return await processKnowledgeCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('l:')) return await processLearningCallback(env, bootstrap, ctx, data.slice(2));
+  if (data.startsWith('am:')) return processAIModelSelectorCallback(rawEnv, env, bootstrap, ctx, data);
   if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3));

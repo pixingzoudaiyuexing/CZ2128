@@ -31,6 +31,12 @@ transport to Crisp. Their accepted real-Staging evidence remains explicitly scop
 `PREPRODUCTION-ACCEPTANCE.md`; it does not imply full R2, concurrency/fault, Admin,
 load or Production acceptance.
 
+## v1.1.0 AI Model Discovery
+
+Telegram Admin now treats upstream model discovery as an authenticated control-plane convenience rather than a runtime dependency. **AI 设置 → 修改模型** uses the current effective OpenAI-compatible `AI_BASE_URL` and encrypted/effective `AI_API_KEY` to request the provider's bounded `/models` directory, stores only normalized model IDs in a short-lived Admin session, and writes the selected model through the existing `AI_MODEL` Runtime Config CAS/history path. Raw model IDs never enter Telegram callback data. Providers without a compatible model directory retain the manual model-ID fallback.
+
+Discovery failure never changes the configured model and does not disable normal AI runtime operation. Generic API URL/API Key edits remain independently saveable, and **测试 AI** remains the explicit `/chat/completions` health check. No D1 migration or permanent model-catalog storage is introduced.
+
 ## Telegram Identity Decision: Single Bot
 
 CZ2128 now targets one Telegram Bot identity for both operator surfaces. After the shared `/webhooks/telegram/<path>` webhook has passed path, secret-token and update validation, an authorized private chat (`ADMIN_TELEGRAM_USER_IDS`) enters the Admin control plane, while only the exact configured forum supergroup (`BOT_GROUP_ID`) enters Support Topic handling. Unauthorized private users, ordinary groups, channels and unrelated supergroups are accepted/ignored without Support Queue effects.

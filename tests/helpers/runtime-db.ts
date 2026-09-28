@@ -75,7 +75,12 @@ export class RuntimeDb {
   private run(query: string, params: any[]) {
     let changes = 0;
     if (query.includes('INSERT INTO runtime_config\n')) {
-      if (!this.runtime.some(row => row.key === params[0])) {
+      const fenced = query.includes('MAX(version)');
+      const historyVersion = fenced
+        ? Math.max(0, ...this.history.filter(row => row.key === params[9]).map(row => row.version))
+        : 0;
+      const historyMatches = !fenced || historyVersion === params[10];
+      if (historyMatches && !this.runtime.some(row => row.key === params[0])) {
         this.runtime.push({
           key: params[0], value_kind: params[1], value_text: params[2], ciphertext: params[3],
           nonce: params[4], version: params[5], updated_by: params[6], updated_at: params[7]
@@ -84,7 +89,12 @@ export class RuntimeDb {
       }
     } else if (query.includes('UPDATE runtime_config\n')) {
       const row = this.runtime.find(item => item.key === params[7] && item.version === params[8]);
-      if (row) {
+      const fenced = query.includes('MAX(version)');
+      const historyVersion = fenced
+        ? Math.max(0, ...this.history.filter(item => item.key === params[9]).map(item => item.version))
+        : 0;
+      const historyMatches = !fenced || historyVersion === params[10];
+      if (row && historyMatches) {
         Object.assign(row, {
           value_kind: params[0], value_text: params[1], ciphertext: params[2], nonce: params[3],
           version: params[4], updated_by: params[5], updated_at: params[6]

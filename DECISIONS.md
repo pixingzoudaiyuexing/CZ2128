@@ -338,3 +338,14 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Knowledge Sources first version:** The configured Notion Knowledge Sources Data Source remains an editorial catalog for policy/FAQ/product/manual/reference organization. Phase 6 does not add scraping, bulk import, arbitrary URL fetching, automatic publication or runtime Notion lookup.
 
 **Infrastructure / acceptance boundary:** Migration `0010_human_learning.sql` is additive; no new Queue, Durable Object or knowledge store is introduced. This development decision does not authorize applying `0010` to Staging, deploying Phase 6 to Staging, mutating real Notion, running real Telegram/Crisp Phase 6 E2E, or changing Production.
+
+
+## D-037 — Keep upstream AI model discovery ephemeral and separate from runtime health
+
+**Decision:** Telegram Admin model discovery is an explicit authenticated control-plane action using the same effective `AI_BASE_URL` and `AI_API_KEY` as the OpenAI-compatible completion adapter. The discovery adapter performs a bounded `GET {AI_BASE_URL}/models` with Bearer authorization, JSON acceptance, a finite timeout, a bounded response body and manual redirect handling. Credential-bearing redirects are never followed. The existing AI base-URL validation/canonicalization contract remains authoritative; discovery introduces no per-request URL input and no second provider configuration.
+
+**Temporary-state rule:** A normalized directory contains model IDs only. IDs are bounded, control-character filtered, exact-deduplicated and deterministically ordered; at most 200 are considered and the fixed `admin_sessions` payload capacity may reduce that further for unusually long IDs. The list is stored only in the authenticated Admin user's short-lived session. Telegram callback data carries a small page/index identity rather than a provider model ID. No permanent model cache or D1 migration is introduced.
+
+**Concurrency rule:** A selector session freezes both the active `AI_MODEL` override version and the monotonic latest `AI_MODEL` history version. Selection fails closed if either changed, including a SET-then-RESTORE-to-ENV race that would otherwise return the active version to zero. The selected ID is written through the existing `setPlainOverride` CAS/history path and Admin update receipts continue to deduplicate Telegram callbacks.
+
+**Runtime independence:** Model discovery is optional. Providers that do not expose a compatible `/models` endpoint retain manual model input. A discovery failure does not modify `AI_MODEL`, does not disable an already configured model, and does not become a prerequisite for editing `AI_BASE_URL`, `AI_API_KEY` or other AI settings. **测试 AI** remains a separate explicit `/chat/completions` health check; normal AI runtime depends only on the final configured provider tuple, not on successful model discovery.

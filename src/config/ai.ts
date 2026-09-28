@@ -25,7 +25,7 @@ function parseBoundedInt(val: string | undefined, def: number, min: number, max:
   return parsed;
 }
 
-function parseBaseUrl(value: string | undefined): string {
+export function canonicalizeAIBaseUrl(value: string | undefined): string {
   const raw = value?.trim() || '';
   if (!raw || raw.length > 2048) return '';
   try {
@@ -40,7 +40,7 @@ function parseBaseUrl(value: string | undefined): string {
 }
 
 export function getAIConfig(env: Env): AIConfig {
-  const baseUrl = parseBaseUrl(env.AI_BASE_URL);
+  const baseUrl = canonicalizeAIBaseUrl(env.AI_BASE_URL);
   const apiKey = env.AI_API_KEY?.trim() || '';
   const model = (env.AI_MODEL?.trim() || '').slice(0, 256);
 

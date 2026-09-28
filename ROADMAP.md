@@ -2,6 +2,14 @@
 
 Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C reliability closure reconciled with executable evidence plus explicit tooling/human/time-bound gaps / Production not validated**
 
+## v1.1.0 - Upstream AI Model Discovery + Telegram Model Selector
+
+Status: **DEVELOPMENT IMPLEMENTED / PRODUCTION NOT DEPLOYED**
+
+Telegram Admin gains a default model-discovery flow at **AI 设置 → 修改模型**. The control plane uses the current effective OpenAI-compatible base URL and API key to perform a bounded `GET /models`, normalizes only provider model IDs, presents eight selectable entries per Telegram page, and stores the temporary directory only in the authenticated Admin session. Selection reuses the existing `AI_MODEL` Runtime Config CAS/history contract; raw model IDs are not callback identities.
+
+The generic API URL/API Key edit paths remain provider-health independent. `/models` support is optional: manual model input remains available, discovery failure leaves the configured model unchanged, and normal AI runtime continues to depend only on the configured model and `/chat/completions`. The existing **测试 AI** action remains the explicit completion health check. No schema migration or permanent model-catalog table is introduced. Production deployment/release is intentionally deferred until after development/main closure.
+
 ## Crisp-01 - Basic Crisp support bridge
 
 Status: **COMPLETE / MERGED**

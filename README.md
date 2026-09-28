@@ -128,6 +128,9 @@ Optional AI configuration:
 - `AI_BASE_URL`: OpenAI-compatible API base URL, for example `https://api.openai.com/v1`
 - `AI_API_KEY`: API key
 - `AI_MODEL`: model name
+
+Telegram Admin **AI 设置 → 修改模型** uses the current effective `AI_BASE_URL` and `AI_API_KEY` to make a bounded `GET {AI_BASE_URL}/models` request. Valid model IDs are displayed eight per page, with at most 200 retained in a short-lived Admin session; Telegram callbacks contain only short server-side indices, never raw model IDs. Providers that do not expose a compatible `/models` endpoint can use **⌨️ 手动输入模型**. Model discovery is an optional Admin convenience, not an AI runtime dependency: an already configured `AI_MODEL` continues to work through `/chat/completions` even when discovery is unsupported or unavailable. The separate **测试 AI** action remains the explicit completion health check.
+
 - `AI_SYSTEM_PROMPT`: system instructions
 - `AI_REQUEST_TIMEOUT_MS`: request timeout, bounded by runtime validation
 - `AI_CONTEXT_MAX_MESSAGES`: recent message limit, default 20

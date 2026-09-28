@@ -78,6 +78,30 @@ describe('runtime config repository', () => {
     await expect(setPlainOverride(testEnv, 'AI_MODEL', 'new-runtime', 0, '1', '32')).resolves.toBe(3);
   });
 
+  it('supports an optional monotonic history fence without changing ordinary CAS semantics', async () => {
+    const db = new RuntimeDb();
+    const testEnv = env(db);
+    await expect(setPlainOverride(
+      testEnv, 'AI_MODEL', 'first', 0, '1', 'fence-1', 'SET',
+      { expectedHistoryVersion: 0 }
+    )).resolves.toBe(1);
+    await expect(restoreEnvOverride(testEnv, 'AI_MODEL', 1, '1', 'fence-2')).resolves.toBe(2);
+    expect(db.runtime).toHaveLength(0);
+
+    await expect(setPlainOverride(
+      testEnv, 'AI_MODEL', 'stale', 0, '1', 'fence-3', 'SET',
+      { expectedHistoryVersion: 0 }
+    )).rejects.toBeInstanceOf(RuntimeConfigConflictError);
+    expect(db.runtime).toHaveLength(0);
+    expect(db.history).toHaveLength(2);
+
+    await expect(setPlainOverride(
+      testEnv, 'AI_MODEL', 'fresh', 0, '1', 'fence-4', 'SET',
+      { expectedHistoryVersion: 2 }
+    )).resolves.toBe(3);
+    expect(db.runtime[0]).toMatchObject({ key: 'AI_MODEL', value_text: 'fresh', version: 3 });
+  });
+
   it('rejects stale Restore ENV CAS and preserves the newer runtime value', async () => {
     const db = new RuntimeDb();
     const testEnv = env(db);

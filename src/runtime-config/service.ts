@@ -31,7 +31,8 @@ export async function setPlainOverride(
   expectedVersion: number,
   actorUserId: string,
   sourceUpdateId: string,
-  action: RuntimeConfigAction = 'SET'
+  action: RuntimeConfigAction = 'SET',
+  options: { expectedHistoryVersion?: number } = {}
 ): Promise<number> {
   const definition = getRuntimeConfigDefinition(key);
   if (definition.kind !== 'PLAIN') throw new Error('CONFIG_KIND_MISMATCH');
@@ -42,6 +43,7 @@ export async function setPlainOverride(
     kind: 'PLAIN',
     valueText: normalized,
     expectedVersion,
+    expectedHistoryVersion: options.expectedHistoryVersion,
     actorUserId,
     sourceUpdateId,
     action

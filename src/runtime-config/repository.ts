@@ -24,6 +24,7 @@ export interface RuntimeConfigMutation {
   ciphertext?: string;
   nonce?: string;
   expectedVersion: number;
+  expectedHistoryVersion?: number;
   actorUserId: string;
   sourceUpdateId: string;
   action?: RuntimeConfigAction;
@@ -38,11 +39,15 @@ export async function getRuntimeConfig(env: Env, key: RuntimeConfigKey): Promise
   return env.DB.prepare('SELECT * FROM runtime_config WHERE key = ?').bind(key).first<RuntimeConfigRow>();
 }
 
-async function nextVersion(env: Env, key: RuntimeConfigKey): Promise<number> {
+export async function latestRuntimeHistoryVersion(env: Env, key: RuntimeConfigKey): Promise<number> {
   const row = await env.DB.prepare(
     'SELECT COALESCE(MAX(version), 0) AS version FROM runtime_config_history WHERE key = ?'
   ).bind(key).first<{ version: number }>();
-  return Number(row?.version || 0) + 1;
+  return Number(row?.version || 0);
+}
+
+async function nextVersion(env: Env, key: RuntimeConfigKey): Promise<number> {
+  return (await latestRuntimeHistoryVersion(env, key)) + 1;
 }
 
 function payload(input: RuntimeConfigMutation): [string | null, string | null, string | null] {
@@ -59,20 +64,42 @@ function writeStatements(
 ): D1PreparedStatement[] {
   const [valueText, ciphertext, nonce] = payload(input);
   const write = input.expectedVersion === 0
-    ? env.DB.prepare(
-        `INSERT INTO runtime_config
-         (key, value_kind, value_text, ciphertext, nonce, version, updated_by, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (key) DO NOTHING`
-      ).bind(input.key, input.kind, valueText, ciphertext, nonce, version, input.actorUserId, now)
-    : env.DB.prepare(
-        `UPDATE runtime_config
-         SET value_kind = ?, value_text = ?, ciphertext = ?, nonce = ?, version = ?, updated_by = ?, updated_at = ?
-         WHERE key = ? AND version = ?`
-      ).bind(
-        input.kind, valueText, ciphertext, nonce, version, input.actorUserId, now,
-        input.key, input.expectedVersion
-      );
+    ? input.expectedHistoryVersion === undefined
+      ? env.DB.prepare(
+          `INSERT INTO runtime_config
+           (key, value_kind, value_text, ciphertext, nonce, version, updated_by, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (key) DO NOTHING`
+        ).bind(input.key, input.kind, valueText, ciphertext, nonce, version, input.actorUserId, now)
+      : env.DB.prepare(
+          `INSERT INTO runtime_config
+           (key, value_kind, value_text, ciphertext, nonce, version, updated_by, updated_at)
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?
+           WHERE NOT EXISTS (SELECT 1 FROM runtime_config WHERE key = ?)
+             AND (SELECT COALESCE(MAX(version), 0) FROM runtime_config_history WHERE key = ?) = ?
+           ON CONFLICT (key) DO NOTHING`
+        ).bind(
+          input.key, input.kind, valueText, ciphertext, nonce, version, input.actorUserId, now,
+          input.key, input.key, input.expectedHistoryVersion
+        )
+    : input.expectedHistoryVersion === undefined
+      ? env.DB.prepare(
+          `UPDATE runtime_config
+           SET value_kind = ?, value_text = ?, ciphertext = ?, nonce = ?, version = ?, updated_by = ?, updated_at = ?
+           WHERE key = ? AND version = ?`
+        ).bind(
+          input.kind, valueText, ciphertext, nonce, version, input.actorUserId, now,
+          input.key, input.expectedVersion
+        )
+      : env.DB.prepare(
+          `UPDATE runtime_config
+           SET value_kind = ?, value_text = ?, ciphertext = ?, nonce = ?, version = ?, updated_by = ?, updated_at = ?
+           WHERE key = ? AND version = ?
+             AND (SELECT COALESCE(MAX(version), 0) FROM runtime_config_history WHERE key = ?) = ?`
+        ).bind(
+          input.kind, valueText, ciphertext, nonce, version, input.actorUserId, now,
+          input.key, input.expectedVersion, input.key, input.expectedHistoryVersion
+        );
   const history = env.DB.prepare(
     `INSERT INTO runtime_config_history
      (key, version, value_kind, value_text, ciphertext, nonce, is_deleted,
@@ -94,7 +121,14 @@ function changed(result: D1Result): boolean {
 export async function setRuntimeConfig(env: Env, input: RuntimeConfigMutation): Promise<number> {
   const current = await getRuntimeConfig(env, input.key);
   if (Number(current?.version || 0) !== input.expectedVersion) throw new RuntimeConfigConflictError();
-  const version = await nextVersion(env, input.key);
+  const historyVersion = await latestRuntimeHistoryVersion(env, input.key);
+  if (
+    input.expectedHistoryVersion !== undefined &&
+    historyVersion !== input.expectedHistoryVersion
+  ) {
+    throw new RuntimeConfigConflictError();
+  }
+  const version = historyVersion + 1;
   const now = Math.floor(Date.now() / 1000);
   try {
     const results = await env.DB.batch(writeStatements(env, input, version, now));

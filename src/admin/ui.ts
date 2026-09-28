@@ -125,7 +125,7 @@ export async function showPage(
       valueLine(env, 'AI_CONTEXT_MAX_CHARS'), valueLine(env, 'AI_GENERATION_LEASE_SECONDS'),
       valueLine(env, 'AI_OPERATOR_PAUSE_TIMEOUT_SECONDS')
     ].join('\n\n'), [
-      [edit('修改 API 地址', 'ab'), edit('修改模型', 'am')],
+      [edit('修改 API 地址', 'ab'), { text: '修改模型', callback_data: 'am:r' }],
       [edit('修改 API Key', 'ak'), edit('修改系统提示词', 'ap')],
       [edit('请求超时', 'at'), edit('上下文消息数', 'acm')],
       [edit('上下文字符数', 'acc'), edit('生成租约', 'agl')],
