@@ -31,6 +31,12 @@ transport to Crisp. Their accepted real-Staging evidence remains explicitly scop
 `PREPRODUCTION-ACCEPTANCE.md`; it does not imply full R2, concurrency/fault, Admin,
 load or Production acceptance.
 
+## Crisp Visitor Location Context
+
+For a Crisp customer-originated conversation, CZ2128 uses the existing Crisp plugin-tier credentials to read the fixed conversation-meta endpoint and may mirror one silent visitor-context card into the mapped Telegram Topic. The card contains only the visitor IP plus Crisp-provided IP-derived country/region/city values. It does not expose coordinates, does not add a third-party geolocation provider, and does not persist the IP/location into canonical CZ2128 D1 business state. This metadata is operator context only; it does not automatically route, price, prioritize, or otherwise decide service behavior.
+
+Metadata retrieval is best-effort and never sits on the customer-message success boundary. A stable outbound operation prevents duplicate Telegram context cards after successful or ambiguous delivery, while provider-read failure simply defers the informational card and leaves the customer bridge unchanged.
+
 ## v1.1.0 AI Model Discovery
 
 Telegram Admin now treats upstream model discovery as an authenticated control-plane convenience rather than a runtime dependency. **AI 设置 → 修改模型** uses the current effective OpenAI-compatible `AI_BASE_URL` and encrypted/effective `AI_API_KEY` to request the provider's bounded `/models` directory, stores only normalized model IDs in a short-lived Admin session, and writes the selected model through the existing `AI_MODEL` Runtime Config CAS/history path. Raw model IDs never enter Telegram callback data. Providers without a compatible model directory retain the manual model-ID fallback.

@@ -28,6 +28,8 @@ Normal pushes, pull requests and GitHub Releases do **not** deploy Production au
 
 CZ2128 connects the current Crisp helpdesk target to Telegram using Cloudflare Workers and an optional OpenAI-compatible auto-responder. Chatwoot remains a historical compatibility adapter and evidence surface.
 
+For Crisp customer conversations, CZ2128 may fetch the official Crisp conversation-meta endpoint once per conversation and send one **silent** Telegram Topic context card containing the visitor IP plus Crisp's IP-derived country/region/city when available. No third-party GeoIP service is used, precise coordinates are not forwarded, and the IP/geolocation card is not copied into CZ2128 D1 business tables. Failure to read visitor metadata never blocks the customer message bridge.
+
 Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are complete and frozen; Phase 4B-1 and Phase 4B-2A are complete. Phase 4B-2C-3, Phase 4B-3, Phase 4B-4A, Phase 4B-4B and Phase 4B-5 are accepted, complete, frozen and merged. Phase 4B-4 overall is complete, frozen and merged. Phase 4C is now **IN EXECUTION** with several separately bounded isolated-Staging results recorded: Crisp-02 basic support, Crisp-03 AI delivery/handoff fencing, Crisp-04 Crisp close/reopen to the same Telegram topic, and Crisp-05 attachment transport / temporary ordinary-file upload slices. These scoped results are not whole-platform or production validation. Real Queue/D1 load and fault injection, full R2 proxy/cleanup coverage, large-file limits, Admin reliability operations, bot/group migration, monitoring/rollback drills and Production remain unvalidated unless separately recorded in the acceptance matrix.
 
 ## Durable AI Reliability

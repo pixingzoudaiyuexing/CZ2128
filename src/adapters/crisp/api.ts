@@ -225,7 +225,7 @@ async function recordCrispHttp400Diagnostic(
   });
 }
 
-function crispAuth(env: Env): string {
+export function crispAuth(env: Env): string {
   if (!env.CRISP_API_IDENTIFIER || !env.CRISP_API_KEY) {
     throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP' });
   }

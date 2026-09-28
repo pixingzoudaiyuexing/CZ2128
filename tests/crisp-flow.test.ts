@@ -7,6 +7,8 @@ import * as aiState from '../src/core/ai-state';
 import * as attachmentRepository from '../src/core/attachment-repository';
 import { crispFingerprintForOperation } from '../src/adapters/crisp/fingerprint';
 import * as crispApi from '../src/adapters/crisp/api';
+import * as crispVisitorContext from '../src/adapters/crisp/visitor-context';
+import * as telegramApi from '../src/adapters/telegram/api';
 import { createCrispWelcomeConfig } from '../src/config/crisp-welcome';
 
 vi.mock('../src/core/conversation-service', () => ({
@@ -30,6 +32,19 @@ vi.mock('../src/adapters/telegram/api', () => ({
 vi.mock('../src/adapters/crisp/api', () => ({
   createCrispMessage: vi.fn(), createCrispPicker: vi.fn()
 }));
+vi.mock('../src/adapters/crisp/visitor-context', () => {
+  class CrispVisitorContextError extends Error {
+    constructor(public readonly reason: string, public readonly httpStatus?: number) {
+      super(reason);
+      this.name = 'CrispVisitorContextError';
+    }
+  }
+  return {
+    CrispVisitorContextError,
+    fetchCrispVisitorContext: vi.fn(),
+    formatCrispVisitorContext: vi.fn()
+  };
+});
 
 describe('Crisp basic bridge orchestration', () => {
   let env: any;
@@ -129,6 +144,10 @@ describe('Crisp basic bridge orchestration', () => {
     }));
     vi.mocked(aiState.applyTelegramOperatorAction).mockResolvedValue('APPLIED' as any);
     vi.mocked(aiState.checkAutoResume).mockResolvedValue(true);
+    vi.mocked(crispVisitorContext.fetchCrispVisitorContext).mockResolvedValue({});
+    vi.mocked(crispVisitorContext.formatCrispVisitorContext).mockReturnValue(null);
+    vi.mocked(telegramApi.sendTelegramMessage).mockResolvedValue({ messageId: 'tg-message-1' });
+    vi.mocked(telegramApi.createTelegramTopic).mockResolvedValue({ messageThreadId: '77' });
   });
 
   it('bridges one Crisp customer text and pauses on operator text without misrouting AI to Chatwoot', async () => {
@@ -205,6 +224,121 @@ describe('Crisp basic bridge orchestration', () => {
       disableNotification: false,
       controls: 'AI_TOGGLE_V1'
     });
+  });
+
+  it('sends a one-time silent Crisp visitor IP/location card to the Telegram topic', async () => {
+    const card = [
+      '🌍 Crisp 访客位置',
+      'IP：203.0.113.9',
+      '地区（IP 解析）：US · CA · Los Angeles'
+    ].join('\n');
+    vi.mocked(crispVisitorContext.fetchCrispVisitorContext).mockResolvedValue({
+      ip: '203.0.113.9',
+      country: 'US',
+      region: 'CA',
+      city: 'Los Angeles'
+    });
+    vi.mocked(crispVisitorContext.formatCrispVisitorContext).mockReturnValue(card);
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:visitor-context',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'visitor-context-1', actorRole: 'CUSTOMER', content: 'Hello'
+      }
+    }, env);
+
+    expect(crispVisitorContext.fetchCrispVisitorContext)
+      .toHaveBeenCalledWith(env, 'website-1', 'session-1');
+
+    const contextCall = vi.mocked(outbound.executeOutboundOperation).mock.calls.find(
+      call => call[5] === 'crisp_visitor_context_tg:conv-crisp'
+    );
+    expect(contextCall).toBeDefined();
+    expect(contextCall?.[6]).toMatchObject({
+      subject: { type: 'CONTROL_ACK', ref: 'crisp-visitor-context:conv-crisp' },
+      requestOptions: { version: 1, disableNotification: true }
+    });
+
+    const lifecycle = {
+      requestStarted: vi.fn(),
+      responseObserved: vi.fn(),
+      requestOptionsJson: JSON.stringify({ version: 1, disableNotification: true })
+    };
+    await contextCall?.[4]('crisp_visitor_context_tg:conv-crisp', lifecycle as any);
+    expect(telegramApi.sendTelegramMessage).toHaveBeenCalledWith(
+      env,
+      '-100',
+      '77',
+      card,
+      lifecycle,
+      { disableNotification: true }
+    );
+    expect(conversationService.insertMessage).not.toHaveBeenCalledWith(
+      env,
+      'conv-crisp',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      'SYSTEM',
+      'TEXT',
+      card
+    );
+  });
+
+  it('does not refetch or resend visitor context once its durable Telegram operation is SENT', async () => {
+    vi.mocked(outbound.getOutboundOperation).mockImplementation(async (_env: any, id: string) =>
+      id === 'crisp_visitor_context_tg:conv-crisp'
+        ? { id, status: 'SENT', conversation_id: 'conv-crisp' } as any
+        : null
+    );
+    vi.mocked(crispVisitorContext.formatCrispVisitorContext).mockReturnValue('unexpected');
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:visitor-context-sent',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'visitor-context-2', actorRole: 'CUSTOMER', content: 'Again'
+      }
+    }, env);
+
+    expect(crispVisitorContext.fetchCrispVisitorContext).not.toHaveBeenCalled();
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(
+      call => call[5] === 'crisp_visitor_context_tg:conv-crisp'
+    )).toBe(false);
+  });
+
+  it('does not fetch Crisp visitor location for operator-originated messages', async () => {
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:visitor-context-operator',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'visitor-context-3', actorRole: 'OPERATOR', content: 'Human'
+      }
+    }, env);
+
+    expect(crispVisitorContext.fetchCrispVisitorContext).not.toHaveBeenCalled();
+  });
+
+  it('keeps the customer bridge healthy when Crisp visitor metadata cannot be read', async () => {
+    vi.mocked(crispVisitorContext.fetchCrispVisitorContext).mockRejectedValue(
+      new crispVisitorContext.CrispVisitorContextError('HTTP', 503)
+    );
+
+    await expect(processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:visitor-context-fail',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'visitor-context-4', actorRole: 'CUSTOMER', content: 'Still deliver me'
+      }
+    }, env)).resolves.toBeUndefined();
+
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(
+      call => call[5] === 'send_tg_crisp_visitor-context-4'
+    )).toBe(true);
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(
+      call => call[5] === 'crisp_visitor_context_tg:conv-crisp'
+    )).toBe(false);
   });
 
   it('enqueues one stable AI trigger for configured ordinary Crisp customer text', async () => {

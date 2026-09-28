@@ -349,3 +349,13 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 **Concurrency rule:** A selector session freezes both the active `AI_MODEL` override version and the monotonic latest `AI_MODEL` history version. Selection fails closed if either changed, including a SET-then-RESTORE-to-ENV race that would otherwise return the active version to zero. The selected ID is written through the existing `setPlainOverride` CAS/history path and Admin update receipts continue to deduplicate Telegram callbacks.
 
 **Runtime independence:** Model discovery is optional. Providers that do not expose a compatible `/models` endpoint retain manual model input. A discovery failure does not modify `AI_MODEL`, does not disable an already configured model, and does not become a prerequisite for editing `AI_BASE_URL`, `AI_API_KEY` or other AI settings. **测试 AI** remains a separate explicit `/chat/completions` health check; normal AI runtime depends only on the final configured provider tuple, not on successful model discovery.
+
+## D-038 — Reuse Crisp conversation metadata for bounded Telegram visitor-location context
+
+**Decision:** CZ2128 may read Crisp's fixed plugin-tier `GET /website/{website_id}/conversation/{session_id}/meta` endpoint for customer-originated conversations and mirror one silent operator-context card into the mapped Telegram Topic. The card is limited to the Crisp-provided visitor IP and IP-derived country/region/city. Coordinates, ISP/ASN metadata and the raw provider response are not forwarded.
+
+**Privacy / storage rule:** The visitor IP and geolocation are not added to CZ2128 canonical D1 conversation/message schema and no migration is introduced. No third-party GeoIP service is called. The data is used only to provide human operators the context explicitly requested in Telegram; CZ2128 does not automatically infer customer treatment, routing, eligibility or pricing from location.
+
+**Reliability rule:** Visitor metadata is supplementary. Crisp meta read failure, timeout, malformed response or missing fields never blocks the ordinary customer-message bridge. A deterministic `CONTROL_ACK` outbound operation sends the card silently and prevents repeated successful/ambiguous delivery. Existing customer-message notification policy remains unchanged.
+
+**Credential boundary:** The adapter uses the existing Crisp API credentials only against the fixed `api.crisp.chat` origin, applies a finite timeout and bounded response body, and rejects redirects so Basic credentials cannot be forwarded to another origin. Logs contain only sanitized failure categories, never visitor IP, geolocation, response bodies or authorization material.

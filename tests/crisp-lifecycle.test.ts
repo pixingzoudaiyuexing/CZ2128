@@ -103,6 +103,9 @@ function mockProviders(
     if (url.startsWith('https://api.crisp.chat/') && url.endsWith('/state')) {
       return new Response(JSON.stringify({ data: { state: state() } }), { status: 200 });
     }
+    if (url.startsWith('https://api.crisp.chat/') && url.endsWith('/meta')) {
+      return new Response(JSON.stringify({ data: {} }), { status: 200 });
+    }
     const method = url.split('/').at(-1) || '';
     telegramMethods.push(method);
     if (telegramBodies && typeof init?.body === 'string') {

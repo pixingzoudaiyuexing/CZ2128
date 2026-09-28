@@ -129,8 +129,15 @@ function mockTelegramOnly() {
       messageId += 1;
       return new Response(JSON.stringify({ ok: true, result: { message_id: messageId } }), { status: 200 });
     }
+    if (url.startsWith('https://api.crisp.chat/') && url.endsWith('/meta')) {
+      return new Response(JSON.stringify({ error: false, data: {} }), { status: 200 });
+    }
     throw new Error(`Unexpected provider request: ${url}`);
   });
+}
+
+function visibleProviderCallCount(fetchMock: ReturnType<typeof vi.spyOn>): number {
+  return fetchMock.mock.calls.filter((call: any[]) => !String(call[0]).endsWith('/meta')).length;
 }
 
 async function receipt(db: SqliteD1, eventId: string) {
@@ -189,7 +196,7 @@ describe('Crisp Welcome historical outbound settlement on real local D1', () => 
     expect((await db.prepare(
       `SELECT status FROM outbound_operations WHERE id = ?`
     ).bind(`send_tg_crisp_message:${e.eventId}`).first<any>())?.status).toBe('SENT');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(visibleProviderCallCount(fetchMock)).toBe(2);
   });
 
   it.each([
@@ -233,7 +240,7 @@ describe('Crisp Welcome historical outbound settlement on real local D1', () => 
       attempt_count: 1,
       last_error: 'OUTBOUND_PRECONDITION_FAILED'
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(visibleProviderCallCount(fetchMock)).toBe(2);
   });
 
   it.each([
@@ -297,7 +304,7 @@ describe('Crisp Welcome historical outbound settlement on real local D1', () => 
         lease_until: leaseUntil,
         lease_token: `v2:${label}`
       });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(visibleProviderCallCount(fetchMock)).toBe(2);
       fetchMock.mockRestore();
     }
   });
@@ -328,7 +335,7 @@ describe('Crisp Welcome historical outbound settlement on real local D1', () => 
       reconciliation_status: 'PENDING'
     });
     expect(await receipt(db, e.eventId)).toMatchObject({ status: 'FAILED', attempt_count: 2 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(visibleProviderCallCount(fetchMock)).toBe(2);
   });
 
   it('preserves an already SENT legacy Welcome and completes the event without another Crisp request', async () => {
@@ -356,7 +363,7 @@ describe('Crisp Welcome historical outbound settlement on real local D1', () => 
     expect((await db.prepare(
       `SELECT COUNT(*) AS count FROM reliability_audit WHERE entity_id = ?`
     ).bind(OPERATION).first<{ count: number }>())?.count).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(visibleProviderCallCount(fetchMock)).toBe(2);
   });
 
   it('re-reads real D1 state after a zero-row finalization CAS and preserves concurrent SENT', async () => {

@@ -44,11 +44,15 @@ export function telegramCustomerRequestOptions(
   };
 }
 
-export function telegramCrispOperatorRequestOptions(): TelegramCustomerUxOptions {
+export function telegramSilentRequestOptions(): TelegramCustomerUxOptions {
   return {
     version: 1,
     disableNotification: true
   };
+}
+
+export function telegramCrispOperatorRequestOptions(): TelegramCustomerUxOptions {
+  return telegramSilentRequestOptions();
 }
 
 export function parseTelegramCustomerRequestOptions(value: string | null | undefined): TelegramCustomerUxOptions | null {
