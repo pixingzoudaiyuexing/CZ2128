@@ -1,6 +1,6 @@
 # CZ2128 4C Staging Foundation Deployment Plan
 
-Status: **V1.1.0 STAGING DEPLOYED / MODEL SELECTOR HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
+Status: **LATEST MAIN STAGING DEPLOYED / VISITOR LOCATION HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
@@ -13,9 +13,28 @@ Related documents:
 - [Migration, Backup and Recovery](MIGRATION-RECOVERY.md)
 - [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md)
 
-## Current v1.1.0 Staging Deployment — 2026-09-28
+## Current Crisp Visitor Location Staging Deployment — 2026-09-28
 
-This section is the current runtime snapshot. The Phase 4C foundation and acceptance material below is retained as historical evidence and is not rewritten as though those earlier states never existed.
+This section is the current runtime snapshot. The prior v1.1.0 model-selector deployment and older Phase 4C material below remain historical evidence and are not rewritten.
+
+- Exact deployed executable source: `a48a06f069802e9835e2e38f2ad2de3fe2dc27c6` (`v1.1.0`, `feat: show Crisp visitor location in Telegram`).
+- Active Worker: `cz2128-4c-staging`, deployment `172550d5-87a6-42d1-b673-b1e70c54688a`, version `5839e87b-387b-469d-9ccb-d52d4aeb05e0` (version 67, 100%), created 2026-09-28T16:25:18.488483Z. Both upload and deployment annotations record the exact executable Git SHA above.
+- Actual rollback point recorded before mutation: deployment `48fccdbd-1117-4ae1-9246-98b8e7e87644`, version `f1ea01a1-4197-458a-9a7e-3a42fd294909` (version 66, 100%), annotated exact main `254fd2880a6ffc23e17a19227d1fee944877f8e1`. Any rollback for this work unit is Worker executable only; D1 is not rolled back.
+- D1 remains `cz2128-4c-staging-db`, UUID `6482f216-5357-4e93-9796-89eaf0c1299c`, with exactly migrations `0001` through `0010`. This work unit ran **no migration write**, created no `0011`, and made no schema or learning-table mutation.
+- Queue topology remains unchanged: main `cz2128-4c-staging-queue` / `6a4ed17bccbb4d6db22fb5cd8407eeb3` has the staging Worker as its one producer and one consumer; `cz2128-4c-staging-dlq` / `6ec943a39dfe461ba33504593a5692f0` has the staging Worker as its one consumer.
+- `ATTACHMENTS_BUCKET` remains `cz2128-4c-staging-attachments` and currently reports one pre-existing object / 1.06 kB; it was deliberately not cleaned or mutated by this deployment. `DLQ_QUARANTINE` remains `cz2128-4c-staging-dlq-quarantine` at zero objects. Cron remains `0 * * * *`.
+- All 22 pre-existing secret **names** remain bound to the new Worker version; secret values were not read or rewritten. The four plaintext variables remain the two staging Queue identities plus `AI_TEST_SCOPE_ENABLED=true` and the existing synthetic allowlist. No `NOTION_*` secret, binding or plaintext variable is present.
+- Bounded D1 counts were unchanged across deployment: `learning_candidates 81 -> 81`, `learning_candidate_history 151 -> 151`, `knowledge_entries 0 -> 0`, `knowledge_entry_history 0 -> 0`, `AMBIGUOUS outbound 0 -> 0`, `OPEN dlq_receipts 3 -> 3`, `admin_sessions 0 -> 0`.
+- Visitor-location implementation deployed from the exact source above: Crisp conversation `/meta` is read only for CUSTOMER events with plugin Basic Auth, 5-second timeout, 64 KiB response bound and `redirect: manual`; only IP and coarse country/region/city fields are used. Telegram delivery is a deterministic, silent `disableNotification=true` outbound operation, and successful durable delivery prevents another card for the same conversation. Metadata failure remains isolated from normal customer-message delivery.
+- Visitor IP/location is not added to the canonical conversation message store, AI context, learning candidate, knowledge base or Notion by this feature, and no new schema field or migration was introduced.
+- Post-deploy typecheck passed. Focused visitor/lifecycle/welcome regression passed 55/55 tests. Model-selector/Admin regression passed 131/131 tests, including the `AI 设置 -> 修改模型` automatic upstream discovery path; no current AI model was changed for this check.
+- Required independent review used `/Users/wang/bin/agy` with `gemini-3.1-pro-high`, effort `high`, both before and after deployment. Pre-deploy verdict was `STATUS: PASS`; final verdict was **STAGING DEPLOYMENT PASS**.
+- A fresh real Crisp customer conversation has **not** yet been created after this deployment, so actual Crisp `/meta` values, the real Telegram silent visitor-location card, and real one-card-per-conversation observation remain **HUMAN ACCEPTANCE PENDING**. Automated/static evidence must not be substituted for that interaction.
+- **Production untouched.** No Production Worker, D1, Queue, R2, secret, webhook, tag or release command was executed.
+
+## Previous v1.1.0 Model Selector Staging Deployment — 2026-09-28
+
+This section records the previous runtime snapshot. The Phase 4C foundation and acceptance material below is retained as historical evidence and is not rewritten as though those earlier states never existed.
 
 - Exact deployed source: `254fd2880a6ffc23e17a19227d1fee944877f8e1` (`v1.1.0`, `feat: add Telegram AI model selector`).
 - Active Worker: `cz2128-4c-staging`, deployment `48fccdbd-1117-4ae1-9246-98b8e7e87644`, version `f1ea01a1-4197-458a-9a7e-3a42fd294909` (version 66, 100%), created 2026-09-28T14:14:22.585036Z. The deployment annotation records the exact Git SHA above.
