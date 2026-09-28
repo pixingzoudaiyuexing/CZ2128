@@ -1,4 +1,5 @@
 import { Env } from '../config/env';
+import { getAIConfig } from '../config/ai';
 import { getRuntimeConfigDefinition } from '../runtime-config/registry';
 import { listRuntimeHistory } from '../runtime-config/repository';
 import { maskSecret, runtimeSource } from '../runtime-config/resolver';
@@ -154,14 +155,14 @@ export async function showPage(
       `Telegram 设置\n\n${unified ? '模式：单 Bot\n私聊 = 后台管理\n客服群 = 对话\n\n' : ''}客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n` +
       `配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_SUPPORT_PROFILE')}\n\n` +
       `${valueLine(env, 'BOT_GROUP_ID')}\n\nBot Token：${maskSecret(env.TELEGRAM_BOT_TOKEN)}\n\n` +
-      `Crisp 接管通知：${env.TELEGRAM_NOTIFY_CRISP_OPERATOR || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_CRISP_OPERATOR')}\n` +
-      `Telegram 接管通知：${env.TELEGRAM_NOTIFY_TELEGRAM_OPERATOR || 'normal（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR')}\n` +
-      `手动关闭 AI 通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_MANUAL_OFF')}`,
+      `Crisp 接管后客户消息通知：${env.TELEGRAM_NOTIFY_CRISP_OPERATOR || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_CRISP_OPERATOR')}\n` +
+      `Telegram 接管后客户消息通知：${env.TELEGRAM_NOTIFY_TELEGRAM_OPERATOR || 'normal（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR')}\n` +
+      `手动关闭 AI 后客户消息通知：${env.TELEGRAM_NOTIFY_MANUAL_OFF || 'silent（默认）'}\n配置来源：${runtimeSource(env.runtimeConfigSnapshot, 'TELEGRAM_NOTIFY_MANUAL_OFF')}`,
       [
         identityActions,
         [{ text: unified ? '刷新 Bot Webhook' : '刷新客服 Bot Webhook', callback_data: 't:tgw' }],
-        [edit('Crisp 接管通知', 'tnc'), edit('Telegram 接管通知', 'tnt')],
-        [edit('手动关闭通知', 'tnm')],
+        [edit('Crisp 接管后客户消息', 'tnc'), edit('Telegram 接管后客户消息', 'tnt')],
+        [edit('手动关闭 AI 后客户消息', 'tnm')],
         [{ text: '恢复 ENV 默认值', callback_data: 'p:tgr' }],
         [{ text: '返回', callback_data: 'm' }]
       ]
@@ -170,9 +171,9 @@ export async function showPage(
   }
   if (page === 'tgr') {
     await reply(bootstrap, ctx, '恢复 Telegram 通知 ENV 默认值', [
-      [{ text: 'Crisp 接管通知', callback_data: 'x:tnc' }],
-      [{ text: 'Telegram 接管通知', callback_data: 'x:tnt' }],
-      [{ text: '手动关闭通知', callback_data: 'x:tnm' }],
+      [{ text: 'Crisp 接管后客户消息', callback_data: 'x:tnc' }],
+      [{ text: 'Telegram 接管后客户消息', callback_data: 'x:tnt' }],
+      [{ text: '手动关闭 AI 后客户消息', callback_data: 'x:tnm' }],
       [{ text: '返回 Telegram 设置', callback_data: 'p:tg' }]
     ]);
     return;
@@ -284,7 +285,7 @@ export async function showPage(
     await reply(bootstrap, ctx,
       `系统状态\n\n当前客服平台：Crisp\n运行时配置：${health}\nD1 配置覆盖：${snapshot?.overrideCount || 0}\n` +
       `当前配置版本：${revisions}\n配置错误：${errors}\n` +
-      `AI：${env.AI_BASE_URL && env.AI_API_KEY && env.AI_MODEL ? '已启用' : '未启用'}\n` +
+      `AI：${getAIConfig(env).enabled ? '已启用' : '未启用'}\n` +
       `客服 Bot：${configured(env.TELEGRAM_BOT_TOKEN)}\n客服群：${configured(env.BOT_GROUP_ID)}\n` +
       `Crisp：${env.CRISP_WEBSITE_ID && env.CRISP_API_IDENTIFIER && env.CRISP_API_KEY ? '已配置' : '未完整配置'}`,
       [[{ text: '返回', callback_data: 'm' }]]

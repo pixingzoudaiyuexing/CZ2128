@@ -29,6 +29,23 @@ describe('runtime config repository', () => {
     expect(() => validateRuntimeValue('CHATWOOT_API_URL', 'http://chatwoot.example'))
       .toThrow('INVALID_PROVIDER_URL');
   });
+  it('keeps the AI request-timeout and generation-lease safety invariant explicit', async () => {
+    const db = new RuntimeDb();
+    await expect(setPlainOverride(env(db), 'AI_REQUEST_TIMEOUT_MS', '60000', 0, '1', '9'))
+      .rejects.toThrow('AI_LEASE_TOO_SHORT');
+    await expect(setPlainOverride({
+      ...env(db),
+      AI_REQUEST_TIMEOUT_MS: '30000',
+      AI_GENERATION_LEASE_SECONDS: '70'
+    } as any, 'AI_REQUEST_TIMEOUT_MS', '60000', 0, '1', '10')).resolves.toBe(1);
+    await expect(setPlainOverride({
+      ...env(new RuntimeDb()),
+      AI_REQUEST_TIMEOUT_MS: '30000',
+      AI_GENERATION_LEASE_SECONDS: '60'
+    } as any, 'AI_GENERATION_LEASE_SECONDS', '39', 0, '1', '11'))
+      .rejects.toThrow('AI_LEASE_TOO_SHORT');
+  });
+
   it('uses CAS versions and records immutable plain history', async () => {
     const db = new RuntimeDb();
     const testEnv = env(db);

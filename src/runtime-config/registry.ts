@@ -148,9 +148,9 @@ const definitions: RuntimeConfigDefinition[] = [
   { key: 'CRISP_OPERATOR_AVATAR_URL', kind: 'PLAIN', label: 'Crisp 人工客服头像', shortCode: 'coa', rollback: 'GENERIC', highImpact: false, validate: crispAvatar },
   { key: 'CRISP_AI_NICKNAME', kind: 'PLAIN', label: 'Crisp AI 昵称', shortCode: 'can', rollback: 'GENERIC', highImpact: false, validate: crispNickname },
   { key: 'CRISP_AI_AVATAR_URL', kind: 'PLAIN', label: 'Crisp AI 头像', shortCode: 'caa', rollback: 'GENERIC', highImpact: false, validate: crispAvatar },
-  { key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR', kind: 'PLAIN', label: 'Crisp 接管通知', shortCode: 'tnc', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
-  { key: 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', kind: 'PLAIN', label: 'Telegram 接管通知', shortCode: 'tnt', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
-  { key: 'TELEGRAM_NOTIFY_MANUAL_OFF', kind: 'PLAIN', label: '手动关闭 AI 通知', shortCode: 'tnm', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
+  { key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR', kind: 'PLAIN', label: 'Crisp 接管后客户消息通知', shortCode: 'tnc', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
+  { key: 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', kind: 'PLAIN', label: 'Telegram 接管后客户消息通知', shortCode: 'tnt', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
+  { key: 'TELEGRAM_NOTIFY_MANUAL_OFF', kind: 'PLAIN', label: '手动关闭 AI 后客户消息通知', shortCode: 'tnm', rollback: 'GENERIC', highImpact: false, validate: notifyMode },
   { key: 'TELEGRAM_SUPPORT_PROFILE', kind: 'SECRET', label: '客服 Telegram Bot', shortCode: 'tb', rollback: 'DEDICATED', highImpact: true, validate: supportProfile },
   { key: 'BOT_GROUP_ID', kind: 'PLAIN', label: '客服 Telegram 群', shortCode: 'tg', rollback: 'DEDICATED', highImpact: true, validate: value => {
     const normalized = value.trim();

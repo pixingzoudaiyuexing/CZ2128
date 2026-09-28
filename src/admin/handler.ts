@@ -383,15 +383,9 @@ async function processSetInput(
     ? await deleteAdminInput(bootstrap.token, ctx.chatId, ctx.messageId)
     : true;
   const normalized = validateRuntimeValue(key, ctx.text);
-  let validationNote = '';
-  if (key === 'AI_BASE_URL' || key === 'AI_MODEL' || key === 'AI_API_KEY') {
-    try {
-      await testAiCandidate(env, { [key]: normalized });
-    } catch (error) {
-      if (safeErrorCode(error) !== 'AI_CONFIG_INCOMPLETE') throw error;
-      validationNote = '\nAI Provider 测试未执行：AI_CONFIG_INCOMPLETE。Provider 配置完整前，AI 保持未启用。';
-    }
-  }
+  const validationNote = key === 'AI_BASE_URL' || key === 'AI_MODEL' || key === 'AI_API_KEY'
+    ? '\n已保存。请在 API 地址、API Key、模型全部设置完成后点击「测试 AI」验证整套 Provider 配置。'
+    : '';
   if (secretInput) {
     await setSecretOverride(env, key, normalized, session.expected_version, ctx.userId, ctx.updateId);
   } else {

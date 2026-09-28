@@ -89,6 +89,27 @@ const crisp12RestoreCases = [
   ['TELEGRAM_NOTIFY_MANUAL_OFF', 'tnm', 'silent', 'normal']
 ] as const;
 
+const localOnlyAdminEditCases = [
+  ['ap', 'AI_SYSTEM_PROMPT', 'New bounded system prompt'],
+  ['at', 'AI_REQUEST_TIMEOUT_MS', '30000'],
+  ['acm', 'AI_CONTEXT_MAX_MESSAGES', '25'],
+  ['acc', 'AI_CONTEXT_MAX_CHARS', '13000'],
+  ['agl', 'AI_GENERATION_LEASE_SECONDS', '60'],
+  ['aop', 'AI_OPERATOR_PAUSE_TIMEOUT_SECONDS', '7200'],
+  ['con', 'CRISP_OPERATOR_NICKNAME', 'Runtime 人工客服'],
+  ['coa', 'CRISP_OPERATOR_AVATAR_URL', 'https://example.com/runtime-operator.png'],
+  ['can', 'CRISP_AI_NICKNAME', 'Runtime 智能客服'],
+  ['caa', 'CRISP_AI_AVATAR_URL', 'https://example.com/runtime-ai.png'],
+  ['tnc', 'TELEGRAM_NOTIFY_CRISP_OPERATOR', 'normal'],
+  ['tnt', 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', 'silent'],
+  ['tnm', 'TELEGRAM_NOTIFY_MANUAL_OFF', 'normal'],
+  ['fb', 'ATTACHMENT_MAX_BYTES', '1048576'],
+  ['fc', 'ATTACHMENT_MAX_COUNT_PER_MESSAGE', '5'],
+  ['ft', 'ATTACHMENT_TTL_SECONDS', '3600'],
+  ['fs', 'ATTACHMENT_SOURCE_TIMEOUT_MS', '15000'],
+  ['fd', 'ATTACHMENT_DESTINATION_TIMEOUT_MS', '15000']
+] as const;
+
 describe('Telegram admin control plane', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -218,9 +239,7 @@ describe('Telegram admin control plane', () => {
     await handleAdminTelegramWebhook(message(41, secretValue), testEnv);
     const urls = fetchMock.mock.calls.map(call => String(call[0]));
     expect(urls.some(url => url.endsWith('/deleteMessage'))).toBe(true);
-    const aiCall = fetchMock.mock.calls.find(call => String(call[0]).startsWith('https://ai.example/'));
-    const aiBody = JSON.parse(String(aiCall?.[1]?.body));
-    expect(aiBody).toMatchObject({ max_tokens: 1, messages: [{ role: 'user', content: 'Reply with OK.' }] });
+    expect(fetchMock.mock.calls.some(call => String(call[0]).startsWith('https://ai.example/'))).toBe(false);
     expect(testEnv.DB.runtime[0]).toMatchObject({ key: 'AI_API_KEY', value_text: null });
     const sentReplies = fetchMock.mock.calls
       .filter(call => String(call[0]).endsWith('/sendMessage'))
@@ -249,19 +268,59 @@ describe('Telegram admin control plane', () => {
     expect(sentTexts.join('\n')).not.toContain(secretValue);
   });
 
-  it('keeps active config unchanged when AI candidate validation fails', async () => {
+  it.each([
+    ['e:ab', 'AI_BASE_URL', 'https://new-ai.example/v1'],
+    ['e:am', 'AI_MODEL', 'runtime-model']
+  ] as const)('saves %s without coupling the field update to the old AI provider tuple', async (editCode, key, value) => {
     const testEnv = env();
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
+    const sentTexts: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init) => {
       const target = String(url);
-      if (target.startsWith('https://ai.example/')) return new Response('private body', { status: 401 });
+      if (target.startsWith('https://ai.example/')) {
+        return new Response('old provider rejects candidate tuple', { status: 401 });
+      }
+      if (target.endsWith('/sendMessage')) sentTexts.push(JSON.parse(String(init?.body)).text);
       return ok(true);
     });
-    await begin(testEnv, 401, 'e:am');
-    await handleAdminTelegramWebhook(message(1401, 'runtime-model'), testEnv);
-    expect(testEnv.DB.runtime).toHaveLength(0);
+    await begin(testEnv, 401, editCode);
+    await handleAdminTelegramWebhook(message(1401, value), testEnv);
+    expect(testEnv.DB.runtime.at(-1)).toMatchObject({ key, value_text: value });
+    expect(fetchMock.mock.calls.some(call => String(call[0]).startsWith('https://ai.example/'))).toBe(false);
+    expect(sentTexts.join('\n')).toContain('点击「测试 AI」');
+    expect((await resolveEffectiveEnv(testEnv) as any)[key]).toBe(value);
   });
 
-  it('allows locally valid incomplete AI settings with an explicit no-provider-test warning', async () => {
+  it('saves a replacement AI API key even when the previous provider tuple would reject it', async () => {
+    const testEnv = env();
+    const secretValue = 'replacement-ai-key';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
+      if (String(url).startsWith('https://ai.example/')) {
+        return new Response('old provider rejects candidate tuple', { status: 401 });
+      }
+      return ok(true);
+    });
+    await begin(testEnv, 1402, 'e:ak');
+    await handleAdminTelegramWebhook(message(1403, secretValue), testEnv);
+    expect(testEnv.DB.runtime.at(-1)).toMatchObject({ key: 'AI_API_KEY', value_text: null });
+    expect(fetchMock.mock.calls.some(call => String(call[0]).startsWith('https://ai.example/'))).toBe(false);
+    expect((await resolveEffectiveEnv(testEnv)).AI_API_KEY).toBe(secretValue);
+  });
+
+  it('still performs a real provider health check only when Test AI is explicitly requested', async () => {
+    const testEnv = env();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
+      if (String(url).startsWith('https://ai.example/')) return new Response('rejected', { status: 401 });
+      return ok(true);
+    });
+    await handleAdminTelegramWebhook(callback(1404, 't:ai'), testEnv);
+    expect(fetchMock.mock.calls.some(call => String(call[0]).startsWith('https://ai.example/'))).toBe(true);
+    const replies = fetchMock.mock.calls
+      .filter(call => String(call[0]).endsWith('/sendMessage'))
+      .map(call => JSON.parse(String(call[1]?.body)).text);
+    expect(replies.join('\n')).toContain('AI_PROVIDER_4XX');
+  });
+
+  it('allows locally valid incomplete AI settings and defers provider validation to Test AI', async () => {
     const testEnv = env();
     delete testEnv.AI_BASE_URL;
     delete testEnv.AI_MODEL;
@@ -271,11 +330,49 @@ describe('Telegram admin control plane', () => {
       if (String(url).endsWith('/sendMessage')) sentTexts.push(JSON.parse(String(init?.body)).text);
       return ok(true);
     });
-    await begin(testEnv, 1400, 'e:ab');
-    await handleAdminTelegramWebhook(message(1401, 'https://new-ai.example/v1'), testEnv);
-    expect(testEnv.DB.runtime[0]).toMatchObject({ key: 'AI_BASE_URL', value_text: 'https://new-ai.example/v1' });
-    expect(sentTexts.join('\n')).toContain('AI_CONFIG_INCOMPLETE');
+    await begin(testEnv, 1405, 'e:ab');
+    await handleAdminTelegramWebhook(message(1406, 'https://new-ai.example/v1'), testEnv);
+    expect(testEnv.DB.runtime.at(-1)).toMatchObject({ key: 'AI_BASE_URL', value_text: 'https://new-ai.example/v1' });
+    expect(sentTexts.join('\n')).toContain('点击「测试 AI」');
     expect((await resolveEffectiveEnv(testEnv)).AI_BASE_URL).toBe('https://new-ai.example/v1');
+  });
+
+  it.each(localOnlyAdminEditCases)(
+    'keeps generic Admin edit %s for %s local-only with no hidden provider call',
+    async (code, key, value) => {
+      const testEnv = env();
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
+        const target = String(url);
+        if (!target.startsWith('https://api.telegram.org/')) {
+          throw new Error(`unexpected provider call during config save: ${target}`);
+        }
+        return ok({ message_id: 1 });
+      });
+      await begin(testEnv, 1450, `e:${code}`);
+      await handleAdminTelegramWebhook(message(1451, value), testEnv);
+      expect(testEnv.DB.runtime.at(-1)).toMatchObject({ key });
+      expect(fetchMock.mock.calls.every(call => String(call[0]).startsWith('https://api.telegram.org/'))).toBe(true);
+    }
+  );
+
+  it('labels notification settings as customer-message policy after takeover', async () => {
+    const testEnv = env();
+    const fetchMock = defaultTelegramMock();
+    await handleAdminTelegramWebhook(callback(1460, 'p:tg'), testEnv);
+    const body = JSON.parse(String(fetchMock.mock.calls.find(call => String(call[0]).endsWith('/sendMessage'))?.[1]?.body));
+    expect(body.text).toContain('Crisp 接管后客户消息通知');
+    expect(body.text).toContain('Telegram 接管后客户消息通知');
+    expect(body.text).toContain('手动关闭 AI 后客户消息通知');
+    expect(body.text).not.toContain('Crisp 接管通知：');
+  });
+
+  it('reports AI disabled in system status when the configured URL is syntactically unusable at runtime', async () => {
+    const testEnv = env();
+    testEnv.AI_BASE_URL = 'not-a-valid-url';
+    const fetchMock = defaultTelegramMock();
+    await handleAdminTelegramWebhook(callback(1461, 'p:sys'), testEnv);
+    const body = JSON.parse(String(fetchMock.mock.calls.find(call => String(call[0]).endsWith('/sendMessage'))?.[1]?.body));
+    expect(body.text).toContain('AI：未启用');
   });
 
   it('shows Crisp bootstrap status without exposing sensitive values or Chatwoot settings', async () => {
