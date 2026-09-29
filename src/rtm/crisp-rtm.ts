@@ -22,6 +22,23 @@ type CrispConnectEndpointsResponse = {
   data?: { socket?: { app?: unknown } };
 };
 
+export function buildCrispRtmAuthentication(env: Env): {
+  tier: 'plugin';
+  username: string;
+  password: string;
+  events: ['message:send'];
+} {
+  if (!env.CRISP_API_IDENTIFIER || !env.CRISP_API_KEY) {
+    throw new Error('CRISP_RTM_AUTH_MISSING');
+  }
+  return {
+    tier: 'plugin',
+    username: env.CRISP_API_IDENTIFIER,
+    password: env.CRISP_API_KEY,
+    events: ['message:send']
+  };
+}
+
 async function readBoundedRtmEndpointResponse(response: Response): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length') || 0);
   if (Number.isFinite(declaredLength) && declaredLength > RTM_ENDPOINT_MAX_BYTES) {
@@ -272,16 +289,9 @@ export class CrispRtmBridge {
       return;
     }
     if (frame.type === 'SOCKET_OPEN') {
-      if (!this.env.CRISP_API_IDENTIFIER || !this.env.CRISP_API_KEY || !this.env.CRISP_WEBSITE_ID) return;
       socket.send(`42${JSON.stringify([
         'authentication',
-        {
-          tier: 'plugin',
-          username: this.env.CRISP_API_IDENTIFIER,
-          password: this.env.CRISP_API_KEY,
-          events: ['message:send'],
-          rooms: [this.env.CRISP_WEBSITE_ID]
-        }
+        buildCrispRtmAuthentication(this.env)
       ])}`);
       return;
     }

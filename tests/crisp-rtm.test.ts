@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { normalizeCrispEvent } from '../src/index';
 import {
+  buildCrispRtmAuthentication,
   buildCrispRtmSocketUrl,
   fetchCrispRtmSocketEndpoint,
   kickCrispRtm,
@@ -9,6 +10,22 @@ import {
 } from '../src/rtm/crisp-rtm';
 
 describe('Crisp RTM fast path', () => {
+  it('matches the current official plugin authentication payload exactly', () => {
+    expect(buildCrispRtmAuthentication({
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as any)).toEqual({
+      tier: 'plugin',
+      username: 'identifier',
+      password: 'key',
+      events: ['message:send']
+    });
+    expect(buildCrispRtmAuthentication({
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as any)).not.toHaveProperty('rooms');
+  });
+
   it('builds the Engine.IO v4 websocket URL from the dynamic Crisp endpoint', () => {
     expect(buildCrispRtmSocketUrl('wss://app.relay.crisp.chat/w/f43/'))
       .toBe('wss://app.relay.crisp.chat/w/f43/?EIO=4&transport=websocket');
