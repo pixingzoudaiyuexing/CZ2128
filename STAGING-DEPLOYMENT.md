@@ -1,6 +1,6 @@
 # CZ2128 4C Staging Foundation Deployment Plan
 
-Status: **LATEST MAIN STAGING DEPLOYED / VISITOR LOCATION HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
+Status: **LATEST MAIN STAGING DEPLOYED / CRISP PROFILE + HUMAN MIRROR HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
@@ -13,9 +13,27 @@ Related documents:
 - [Migration, Backup and Recovery](MIGRATION-RECOVERY.md)
 - [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md)
 
-## Current Crisp Visitor Location Staging Deployment — 2026-09-28
+## Current Crisp Profile Card + Human Operator Mirror Staging Deployment — 2026-09-29
 
-This section is the current runtime snapshot. The prior v1.1.0 model-selector deployment and older Phase 4C material below remain historical evidence and are not rewritten.
+This section is the current runtime snapshot. The prior Crisp visitor-location deployment, v1.1.0 model-selector deployment and older Phase 4C material below remain historical evidence and are not rewritten.
+
+- Exact deployed executable source: `546533f8d485fd96ba182a77ce3d5b97189822b6` (`v1.1.0`, `feat: add Crisp profile card and human mirror`), tree `01fdb53c8249c0780b920bf35870c5eaeb20a058`. Candidate CI #291 and main CI #292 both passed for this exact SHA before Staging promotion.
+- Active Worker: `cz2128-4c-staging`, deployment `18f4f2d5-d9ad-4656-bc7a-d7b37982d880`, version `fa27e5da-99cb-4a94-b761-d4ff31a4131e` (version 68, 100%). The version was created 2026-09-29T07:16:12.569505Z and the deployment at 2026-09-29T07:16:52.072842Z. Both version-upload and deployment annotations record the exact executable Git SHA above.
+- Actual rollback point recorded before mutation: deployment `172550d5-87a6-42d1-b673-b1e70c54688a`, version `5839e87b-387b-469d-9ccb-d52d4aeb05e0` (version 67, 100%), annotated exact main `a48a06f069802e9835e2e38f2ad2de3fe2dc27c6`. Any rollback for this work unit is Worker executable only; D1 is not rolled back.
+- D1 remains `cz2128-4c-staging-db`, UUID `6482f216-5357-4e93-9796-89eaf0c1299c`. Remote migration inspection reported **no migrations to apply**; this deployment ran no migration write and introduced no schema change.
+- Queue topology remains unchanged: main `cz2128-4c-staging-queue` / `6a4ed17bccbb4d6db22fb5cd8407eeb3` has the staging Worker as its one producer and one consumer; `cz2128-4c-staging-dlq` / `6ec943a39dfe461ba33504593a5692f0` has the staging Worker as its one consumer.
+- `ATTACHMENTS_BUCKET` remains `cz2128-4c-staging-attachments` with the same one pre-existing object / 1.06 kB before and after deployment; it was not cleaned or mutated. `DLQ_QUARANTINE` remains `cz2128-4c-staging-dlq-quarantine` at zero objects. No trigger change was applied; the existing hourly cron remains `0 * * * *`.
+- All 22 pre-existing secret **names** are present on version 68; secret values were not read or rewritten. The four plaintext variables remain the two staging Queue identities plus `AI_TEST_SCOPE_ENABLED=true` and the existing synthetic allowlist.
+- Bounded D1 counts were unchanged across deployment: `learning_candidates 81 -> 81`, `learning_candidate_history 284 -> 284`, `knowledge_entries 0 -> 0`, `knowledge_entry_history 0 -> 0`, `AMBIGUOUS outbound 0 -> 0`, `OPEN dlq_receipts 3 -> 3`, `admin_sessions 0 -> 0`. Both pre/post read-only queries reported zero writes.
+- The deployed Crisp behavior now uses one bounded first-conversation profile card before the first customer mirror and distinguishes genuine Crisp human replies from `automated=true` messages in Telegram. Human/operator mirrors remain silent; profile/custom/IP/location context remains outside canonical conversation messages, AI context, learning candidates, knowledge and Notion.
+- Exact-source post-deploy `npm run typecheck` and `npm run lint` passed. Focused Crisp profile/human/attachment/manual-retry/Worker regression passed **173/173** tests. The same executable SHA previously passed the full **91 files / 1335 tests** regression in CI.
+- Required independent review used `/Users/wang/bin/agy` with `gemini-3.1-pro-high`, effort `high`. Pre-deploy verdict was **PASS**; final verdict was **STAGING DEPLOYMENT PASS**.
+- No Provider-visible test message, webhook mutation, secret rewrite, Queue injection or R2 cleanup was performed. A safe read-only command did not expose the assigned workers.dev hostname, so no root-URL HTTP smoke was fabricated through a preview or trigger mutation. Real Crisp/Telegram observation of the unified first-conversation card and Crisp human mirror therefore remains **HUMAN ACCEPTANCE PENDING**.
+- **Production untouched.** No Production Worker, D1, Queue, R2, secret, webhook, tag or release command was executed.
+
+## Previous Crisp Visitor Location Staging Deployment — 2026-09-28
+
+This section records the previous runtime snapshot. The later Crisp profile/human-mirror deployment is recorded above; the v1.1.0 model-selector deployment and older Phase 4C material below remain historical evidence and are not rewritten.
 
 - Exact deployed executable source: `a48a06f069802e9835e2e38f2ad2de3fe2dc27c6` (`v1.1.0`, `feat: show Crisp visitor location in Telegram`).
 - Active Worker: `cz2128-4c-staging`, deployment `172550d5-87a6-42d1-b673-b1e70c54688a`, version `5839e87b-387b-469d-9ccb-d52d4aeb05e0` (version 67, 100%), created 2026-09-28T16:25:18.488483Z. Both upload and deployment annotations record the exact executable Git SHA above.
