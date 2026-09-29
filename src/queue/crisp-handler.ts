@@ -720,22 +720,20 @@ async function ensureTelegramTopic(
   return updateOperatorThreadRef(env, conversationId, result.providerMessageRef);
 }
 
-async function ensureCrispConversationProfileCard(
+async function prepareCrispConversationProfileCard(
   env: Env,
   conversationId: string,
   websiteRef: string,
-  sessionRef: string,
-  threadRef: string
-): Promise<void> {
+  sessionRef: string
+): Promise<string | null> {
   const operationId = `crisp_profile_card_tg:${conversationId}`;
   const existing = await getOutboundOperation(env, operationId);
-  if (existing && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(existing.status)) return;
+  if (existing && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(existing.status)) return null;
   const legacy = await getOutboundOperation(env, `crisp_visitor_context_tg:${conversationId}`);
-  if (legacy && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(legacy.status)) return;
+  if (legacy && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(legacy.status)) return null;
 
-  let text: string | null;
   try {
-    text = formatCrispVisitorContext(
+    return formatCrispVisitorContext(
       await fetchCrispVisitorContext(env, websiteRef, sessionRef)
     );
   } catch (error) {
@@ -744,10 +742,19 @@ async function ensureCrispConversationProfileCard(
       result: 'DEFERRED',
       error_category: error instanceof CrispVisitorContextError ? error.reason : 'UNKNOWN'
     });
-    return;
+    return null;
   }
+}
+
+async function sendCrispConversationProfileCard(
+  env: Env,
+  conversationId: string,
+  threadRef: string,
+  text: string | null
+): Promise<void> {
   if (!text) return;
 
+  const operationId = `crisp_profile_card_tg:${conversationId}`;
   const requestOptions = telegramSilentRequestOptions();
   try {
     await executeOutboundOperation(
@@ -898,18 +905,26 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     }
   }
 
+  const profileCardPromise = !isOperator && bootstrapIntent
+    ? prepareCrispConversationProfileCard(
+        env,
+        conv.id,
+        payload.websiteRef,
+        payload.sessionRef
+      )
+    : null;
+
   const threadRef = await ensureTelegramTopic(
     env, conv.id, payload.customerName, payload.sessionRef, conv.operator_thread_ref
   );
   if (!threadRef) return;
 
-  if (!isOperator && bootstrapIntent) {
-    await ensureCrispConversationProfileCard(
+  if (profileCardPromise) {
+    await sendCrispConversationProfileCard(
       env,
       conv.id,
-      payload.websiteRef,
-      payload.sessionRef,
-      threadRef
+      threadRef,
+      await profileCardPromise
     );
   }
 

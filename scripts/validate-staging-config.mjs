@@ -207,7 +207,7 @@ export function validateStagingConfig(config, options = {}) {
   );
   onlyKeys(dlq, ['queue', 'max_batch_size', 'max_batch_timeout'], 'DLQ consumer');
   exactly(main.max_batch_size, 10, 'main Queue max_batch_size');
-  exactly(main.max_batch_timeout, 1, 'main Queue max_batch_timeout');
+  exactly(main.max_batch_timeout, 0, 'main Queue max_batch_timeout');
   exactly(main.max_retries, 3, 'main Queue max_retries');
   exactly(main.dead_letter_queue, EXPECTED.dlq, 'main Queue dead-letter target');
   exactly(dlq.max_batch_size, 10, 'DLQ max_batch_size');

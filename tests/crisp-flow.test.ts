@@ -309,6 +309,39 @@ describe('Crisp basic bridge orchestration', () => {
     );
   });
 
+  it('starts Crisp profile metadata fetch before new-topic creation finishes', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',
+      helpdesk_account_ref: 'website-1', helpdesk_conversation_ref: 'session-1'
+    } as any);
+    let fetchStarted = false;
+    vi.mocked(crispVisitorContext.fetchCrispVisitorContext).mockImplementation(async () => {
+      fetchStarted = true;
+      return {};
+    });
+    vi.mocked(crispVisitorContext.formatCrispVisitorContext).mockReturnValue(null);
+    vi.mocked(outbound.executeOutboundOperation).mockImplementation(async (...args: any[]) => {
+      if (args[3] === 'CREATE_TOPIC') {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(fetchStarted).toBe(true);
+        return { status: 'SENT', providerMessageRef: '77' } as any;
+      }
+      return { status: 'SENT', providerMessageRef: 'p1' } as any;
+    });
+
+    await processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:profile-parallel',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'profile-parallel-1', actorRole: 'CUSTOMER', content: 'Hello'
+      }
+    }, env);
+
+    expect(fetchStarted).toBe(true);
+  });
+
   it('does not refetch or resend the profile card once its durable Telegram operation is SENT', async () => {
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
       id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',

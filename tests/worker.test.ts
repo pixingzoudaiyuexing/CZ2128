@@ -152,6 +152,39 @@ describe('Worker Integration', () => {
     });
   });
 
+  it('does not read runtime config on the Crisp text ingress hot path', async () => {
+    const base = env.DB.prepare.bind(env.DB);
+    env.DB.prepare = (query: string) => {
+      if (query.includes('runtime_config')) throw new Error('runtime config hot-path read');
+      return base(query);
+    };
+    const payload = {
+      event: 'message:send',
+      data: {
+        website_id: 'website-1', session_id: 'session-hot', fingerprint: 102,
+        type: 'text', from: 'user', content: 'Hot path', user: { user_id: 'visitor-hot' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('https://worker.example/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const response = await Worker.fetch(request, env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({
+      source: 'crisp',
+      payload: { sessionRef: 'session-hot', content: 'Hot path' }
+    });
+  });
+
   it('accepts a signed Crisp customer image file and queues provider-qualified attachment metadata only', async () => {
     const payload = {
       event: 'message:send',

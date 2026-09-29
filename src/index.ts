@@ -291,12 +291,14 @@ export default {
       const eventId = lifecycleSignal
         ? crispLifecycleEventId(lifecycleSignal)
         : await crispMessageEventId(verified.payload, verified.rawBody);
-      const effectiveEnv = await resolveEffectiveEnv(env);
+      const attachmentConfig = verified.payload.data?.type === 'file'
+        ? getAttachmentConfig(await resolveEffectiveEnv(env))
+        : undefined;
       const event = normalizeCrispEvent(
         verified.payload,
         eventId,
         env.CRISP_WEBSITE_ID,
-        getAttachmentConfig(effectiveEnv)
+        attachmentConfig
       );
       if (!event) return new Response('Ignored', { status: 200 });
       await env.QUEUE.send(event);
