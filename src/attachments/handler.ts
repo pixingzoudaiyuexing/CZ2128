@@ -31,7 +31,10 @@ import {
   storeAttachmentStream
 } from './source';
 import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence } from '../core/outbound-evidence';
-import { parseTelegramCustomerRequestOptions } from '../config/telegram-customer-ux';
+import {
+  parseTelegramCustomerRequestOptions,
+  telegramMirrorAttachmentCaption
+} from '../config/telegram-customer-ux';
 import { crispIdentityRequestOptions, parseCrispIdentityRequestOptions } from '../config/crisp-identities';
 
 export async function processAttachmentTransfer(event: AttachmentTransferEvent, env: Env): Promise<void> {
@@ -195,7 +198,10 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
                 env, config, row, conversation.operator_thread_ref, bytes!, lifecycle,
                 (() => {
                   const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
-                  return frozen ? { disableNotification: frozen.disableNotification } : undefined;
+                  return frozen ? {
+                    disableNotification: frozen.disableNotification,
+                    caption: telegramMirrorAttachmentCaption(frozen)
+                  } : undefined;
                 })()
               ),
       operationId,

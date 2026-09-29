@@ -152,6 +152,7 @@ class HandlerDb {
           operation_type: params[3], status: params[4], attempt_count: 0,
           created_at: params[5], updated_at: params[6],
           subject_type: params[7], subject_ref: params[8], target_evidence_json: params[9],
+          parent_operation_id: params[10], request_options_json: params[11],
           reconciliation_status: 'NOT_REQUIRED', request_started_at: null
         });
         changes = 1;
@@ -429,8 +430,14 @@ describe('attachment transfer ledger', () => {
     fixture.db.attachments[0].attachment_type = 'photo';
     fixture.db.attachments[0].mime_type = 'image/png';
     fixture.db.attachments[0].safe_filename = 'customer.png';
+    fixture.db.attachments[0].request_options_json = JSON.stringify({
+      version: 1,
+      disableNotification: true,
+      origin: 'CRISP_HUMAN_OPERATOR'
+    });
     const bytes = new Uint8Array([1, 2, 3]);
     const storedParts: Uint8Array[] = [];
+    let telegramForm: FormData | undefined;
     fixture.env.ATTACHMENTS_BUCKET = {
       createMultipartUpload: async () => ({
         uploadPart: async (partNumber: number, value: Uint8Array) => {
@@ -442,7 +449,7 @@ describe('attachment transfer ledger', () => {
       }),
       get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
     };
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.startsWith('https://storage.crisp.chat/')) {
         return new Response(new Blob([bytes]).stream(), {
@@ -450,6 +457,7 @@ describe('attachment transfer ledger', () => {
         });
       }
       expect(url).toContain('/sendPhoto');
+      telegramForm = init?.body as FormData;
       return new Response(JSON.stringify({ ok: true, result: { message_id: 91 } }), { status: 200 });
     });
 
@@ -458,6 +466,8 @@ describe('attachment transfer ledger', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(storedParts.reduce((sum, part) => sum + part.byteLength, 0)).toBe(3);
+    expect(telegramForm?.get('disable_notification')).toBe('true');
+    expect(telegramForm?.get('caption')).toBe('👤 Crisp 人工客服 → 用户');
     expect(fixture.db.attachments[0]).toMatchObject({
       source_provider: 'crisp', destination_provider: 'telegram', status: 'DELIVERED'
     });

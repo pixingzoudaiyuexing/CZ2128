@@ -1,7 +1,11 @@
 import { createChatwootMessage } from '../adapters/chatwoot/api';
 import { createCrispMessage } from '../adapters/crisp/api';
 import { parseCrispIdentityRequestOptions } from '../config/crisp-identities';
-import { parseTelegramCustomerRequestOptions } from '../config/telegram-customer-ux';
+import {
+  parseTelegramCustomerRequestOptions,
+  telegramMirrorAttachmentCaption,
+  telegramMirrorText
+} from '../config/telegram-customer-ux';
 import {
   closeTelegramTopic,
   createTelegramTopic,
@@ -266,7 +270,7 @@ async function prepareMessageRetry(
           env,
           env.BOT_GROUP_ID,
           conversation.operator_thread_ref,
-          message.text_content!,
+          telegramMirrorText(message.text_content!, frozen),
           lifecycle,
           frozen ? {
             disableNotification: frozen.disableNotification,
@@ -387,7 +391,10 @@ async function prepareAttachmentRetry(
           conversation.operator_thread_ref!,
           bytes,
           lifecycle,
-          frozen ? { disableNotification: frozen.disableNotification } : undefined
+          frozen ? {
+            disableNotification: frozen.disableNotification,
+            caption: telegramMirrorAttachmentCaption(frozen)
+          } : undefined
         );
       }
     };

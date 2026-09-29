@@ -147,7 +147,8 @@ export function normalizeCrispEvent(
 
   const selection = readCrispPickerSelection(payload as CrispWebhookPayload);
   if (payload.event === 'message:updated' && !selection) return null;
-  const attachments = payload.event === 'message:send' && data.type === 'file' && attachmentConfig
+  const attachments = (payload.event === 'message:send' || payload.event === 'message:received') &&
+    data.type === 'file' && attachmentConfig
     ? boundedAttachments(
         discoverCrispAttachments(payload, attachmentConfig),
         attachmentConfig.maxCountPerMessage,

@@ -234,7 +234,7 @@ export async function deliverAttachmentToTelegram(
   threadRef: string,
   bytes: ArrayBuffer,
   lifecycle?: OutboundAttemptLifecycle,
-  options?: { disableNotification?: boolean }
+  options?: { disableNotification?: boolean; caption?: string }
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
@@ -247,6 +247,7 @@ export async function deliverAttachmentToTelegram(
   form.set('chat_id', env.BOT_GROUP_ID);
   form.set('message_thread_id', threadRef);
   if (options?.disableNotification) form.set('disable_notification', 'true');
+  if (options?.caption) form.set('caption', options.caption);
   form.append(target.field, new Blob([bytes], { type: row.mime_type }), row.safe_filename);
   const request = await visibleFetch(
     'TELEGRAM',

@@ -31,11 +31,13 @@ transport to Crisp. Their accepted real-Staging evidence remains explicitly scop
 `PREPRODUCTION-ACCEPTANCE.md`; it does not imply full R2, concurrency/fault, Admin,
 load or Production acceptance.
 
-## Crisp Visitor Location Context
+## Crisp Conversation Header and Human Operator Mirror
 
-For a Crisp customer-originated conversation, CZ2128 uses the existing Crisp plugin-tier credentials to read the fixed conversation-meta endpoint and may mirror one silent visitor-context card into the mapped Telegram Topic. The card contains only the visitor IP plus Crisp-provided IP-derived country/region/city values. It does not expose coordinates, does not add a third-party geolocation provider, and does not persist the IP/location into canonical CZ2128 D1 business state. This metadata is operator context only; it does not automatically route, price, prioritize, or otherwise decide service behavior.
+For the first customer event of a genuinely new Crisp conversation, CZ2128 uses the existing Crisp plugin-tier credentials to read the fixed conversation-meta endpoint and may mirror one silent unified customer-information card into the newly created Telegram Topic before the first customer message. The card may contain bounded nickname/contact/subject/segment fields, bounded deterministic custom visitor data, visitor IP and Crisp-provided country/region/city. It excludes coordinates, ISP/ASN, raw device/browser metadata, raw provider payloads and authentication material. No third-party geolocation provider is used.
 
-Metadata retrieval is best-effort and never sits on the customer-message success boundary. A stable outbound operation prevents duplicate Telegram context cards after successful or ambiguous delivery, while provider-read failure simply defers the informational card and leaves the customer bridge unchanged.
+The unified card is human-support context only. It is not inserted as a canonical conversation message and does not enter AI prompts/context, learning candidates, knowledge entries or Notion. A stable outbound operation plus the existing first-event bootstrap boundary prevents repeat cards on duplicate/retried/later events and avoids backfilling historical Topics. Metadata retrieval remains best-effort and never sits on the customer-message success boundary.
+
+Genuine Crisp-side human operator replies are mirrored back into the mapped Telegram Topic with an explicit human-support provenance label and always-silent delivery. Crisp operator attachments carry the same provenance in their Telegram media caption. `automated=true` Crisp messages use a distinct automated label rather than being presented as human. Existing operation-marker/provider-fingerprint self-echo fencing remains authoritative, so Telegram-originated operator work that Crisp echoes back is not mirrored twice. Human reply text remains canonical conversation history and retains the existing human-learning capture path; the Telegram presentation wrapper itself is not canonical content.
 
 ## v1.1.0 AI Model Discovery
 

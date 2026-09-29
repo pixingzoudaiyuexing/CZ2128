@@ -197,6 +197,56 @@ describe('Worker Integration', () => {
     expect(env.QUEUE.messages[0].payload.content).toBeUndefined();
   });
 
+  it.each([
+    ['human.png', 'image/png', 'photo'],
+    ['report.pdf', 'application/pdf', 'document']
+  ] as const)('accepts a signed Crisp human operator %s reply as a Telegram-bound attachment', async (name, mime, attachmentType) => {
+    const payload = {
+      event: 'message:received',
+      data: {
+        website_id: 'website-1', session_id: 'session-human-file', fingerprint: 211,
+        type: 'file', from: 'operator', automated: false,
+        content: {
+          name,
+          url: `https://storage.crisp.chat/users/upload/session/${name}`,
+          type: mime
+        },
+        user: { user_id: 'operator-1', nickname: 'Support' }
+      }
+    };
+    const timestamp = Math.floor(Date.now() / 1000);
+    const request = new Request('https://worker.example/webhooks/crisp', {
+      method: 'POST',
+      headers: {
+        'X-Crisp-Request-Timestamp': String(timestamp),
+        'X-Crisp-Signature': await signCrisp(payload, timestamp)
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const response = await Worker.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0]).toMatchObject({
+      source: 'crisp',
+      type: 'message_created',
+      payload: {
+        actorRole: 'OPERATOR',
+        messageRef: '211',
+        attachments: [{
+          sourceAttachmentRef: 'file',
+          attachmentType,
+          originalFilename: name,
+          mimeType: mime,
+          locator: {
+            provider: 'crisp',
+            dataUrl: `https://storage.crisp.chat/users/upload/session/${name}`
+          }
+        }]
+      }
+    });
+  });
+
   it('ignores a signed Crisp ordinary file because Stage B owns the ordinary customer-file entry point', async () => {
     const payload = {
       event: 'message:send',

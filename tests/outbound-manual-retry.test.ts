@@ -71,7 +71,7 @@ async function seedParent(
 
 async function seedMessage(
   db: SqliteD1,
-  provider: 'chatwoot' | 'telegram',
+  provider: 'chatwoot' | 'crisp' | 'telegram',
   providerRef: string,
   text: string,
   conversationId = 'conv'
@@ -137,6 +137,43 @@ describe('manual retry child operations', () => {
       .bind('parent-op').first<{ count: number }>()).toEqual({ count: 1 });
     expect(await db.prepare("SELECT COUNT(*) AS count FROM reliability_audit WHERE action = 'MANUAL_RETRY_CHILD_CREATED'")
       .first<{ count: number }>()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('preserves frozen Crisp-human label and silence when manually retrying a Telegram mirror', async () => {
+    const db = new SqliteD1();
+    db.migrate();
+    await seedConversation(db);
+    const env = makeEnv(db);
+    const parentEvidence = buildTelegramTargetEvidence(env, '-1001', '77', 'sendMessage');
+    await seedParent(db, parentEvidence, { subjectRef: 'crisp:human-retry-1' });
+    await db.prepare(
+      'UPDATE outbound_operations SET request_options_json = ? WHERE id = ?'
+    ).bind(JSON.stringify({
+      version: 1,
+      disableNotification: true,
+      origin: 'CRISP_HUMAN_OPERATOR'
+    }), 'parent-op').run();
+    await seedMessage(db, 'crisp', 'human-retry-1', 'Retry this human answer');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: { message_id: 904 } }), { status: 200 })
+    );
+
+    const result = await manualRetryOutboundOperation(
+      env, 'parent-op', { type: 'ADMIN', ref: '42' }, 'OPERATOR_ACCEPTS_DUPLICATE_RISK'
+    );
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const child = await loadOperation(db, result.childOperationId);
+
+    expect(requestBody).toMatchObject({
+      text: '👤 Crisp 人工客服 → 用户\n\nRetry this human answer',
+      disable_notification: true
+    });
+    expect(JSON.parse(child.request_options_json!)).toEqual({
+      version: 1,
+      disableNotification: true,
+      origin: 'CRISP_HUMAN_OPERATOR'
+    });
     db.close();
   });
 

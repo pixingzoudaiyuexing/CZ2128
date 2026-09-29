@@ -72,7 +72,7 @@ describe('v1.0.1 Crisp human Telegram silence', () => {
     expect(bodies[0]).toMatchObject({
       chat_id: '-1001',
       message_thread_id: '77',
-      text: 'Human reply',
+      text: '👤 Crisp 人工客服 → 用户\n\nHuman reply',
       disable_notification: true
     });
 
@@ -82,13 +82,60 @@ describe('v1.0.1 Crisp human Telegram silence', () => {
     expect(operation.status).toBe('SENT');
     expect(JSON.parse(operation.request_options_json)).toEqual({
       version: 1,
-      disableNotification: true
+      disableNotification: true,
+      origin: 'CRISP_HUMAN_OPERATOR'
     });
 
     const message = await db.prepare(
       'SELECT actor_role, direction FROM messages WHERE provider = ? AND provider_message_ref = ?'
     ).bind('crisp', 'human-1').first<any>();
     expect(message).toEqual({ actor_role: 'OPERATOR', direction: 'OUTBOUND' });
+    db.close();
+  });
+
+  it('distinguishes an automated Crisp operator message from a real human reply while keeping it silent', async () => {
+    const db = new SqliteD1();
+    db.migrateThroughHumanLearning();
+    seedConversation(db, 'conv-auto', 'session-auto');
+    const env = makeEnv(db);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: { message_id: 503 } }), { status: 200 })
+    );
+
+    await processCrispEvent({
+      version: 1,
+      source: 'crisp',
+      type: 'message_created',
+      eventId: 'crisp:auto:1',
+      payload: {
+        websiteRef: 'website-1',
+        sessionRef: 'session-auto',
+        customerRef: 'visitor-1',
+        messageRef: 'auto-1',
+        actorRole: 'OPERATOR',
+        automated: true,
+        content: 'Automation reply'
+      }
+    }, env);
+
+    const bodies = telegramBodies(fetchMock);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      text: '⚙️ Crisp 自动消息 → 用户\n\nAutomation reply',
+      disable_notification: true
+    });
+    expect(String(bodies[0].text)).not.toContain('人工客服');
+    const operation = await db.prepare(
+      'SELECT request_options_json FROM outbound_operations WHERE id = ?'
+    ).bind('send_tg_crisp_auto-1').first<any>();
+    expect(JSON.parse(operation.request_options_json)).toEqual({
+      version: 1,
+      disableNotification: true,
+      origin: 'CRISP_AUTOMATED_OPERATOR'
+    });
+    expect(await db.prepare(
+      'SELECT COUNT(*) AS count FROM learning_candidates'
+    ).first<{ count: number }>()).toEqual({ count: 0 });
     db.close();
   });
 

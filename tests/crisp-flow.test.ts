@@ -192,7 +192,11 @@ describe('Crisp basic bridge orchestration', () => {
     expect(aiState.pauseOperator).toHaveBeenCalledWith(env, 'conv-crisp', 'CRISP_OPERATOR');
     const operatorOutbound = vi.mocked(outbound.executeOutboundOperation).mock.calls.at(-1);
     expect(operatorOutbound?.[6]).toMatchObject({
-      requestOptions: { version: 1, disableNotification: true }
+      requestOptions: {
+        version: 1,
+        disableNotification: true,
+        origin: 'CRISP_HUMAN_OPERATOR'
+      }
     });
     const operatorAttachments = vi.mocked(attachmentRepository.enqueueAttachmentJobs).mock.calls.at(-1);
     expect(operatorAttachments?.[5]).toEqual([
@@ -201,7 +205,8 @@ describe('Crisp basic bridge orchestration', () => {
     ]);
     expect(JSON.parse(String(operatorAttachments?.[8]))).toEqual({
       version: 1,
-      disableNotification: true
+      disableNotification: true,
+      origin: 'CRISP_HUMAN_OPERATOR'
     });
   });
 
@@ -226,13 +231,25 @@ describe('Crisp basic bridge orchestration', () => {
     });
   });
 
-  it('sends a one-time silent Crisp visitor IP/location card to the Telegram topic', async () => {
+  it('sends one silent unified Crisp profile card before the first customer message', async () => {
     const card = [
-      '🌍 Crisp 访客位置',
+      '👤 客户资料',
+      '昵称：John',
+      '',
+      '📋 访客资料',
+      'plan：VIP',
+      '',
+      '🌍 访客位置',
       'IP：203.0.113.9',
-      '地区（IP 解析）：US · CA · Los Angeles'
+      '地区：US · CA · Los Angeles'
     ].join('\n');
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',
+      helpdesk_account_ref: 'website-1', helpdesk_conversation_ref: 'session-1'
+    } as any);
     vi.mocked(crispVisitorContext.fetchCrispVisitorContext).mockResolvedValue({
+      nickname: 'John',
+      customData: [{ key: 'plan', value: 'VIP' }],
       ip: '203.0.113.9',
       country: 'US',
       region: 'CA',
@@ -251,12 +268,18 @@ describe('Crisp basic bridge orchestration', () => {
     expect(crispVisitorContext.fetchCrispVisitorContext)
       .toHaveBeenCalledWith(env, 'website-1', 'session-1');
 
-    const contextCall = vi.mocked(outbound.executeOutboundOperation).mock.calls.find(
-      call => call[5] === 'crisp_visitor_context_tg:conv-crisp'
+    const calls = vi.mocked(outbound.executeOutboundOperation).mock.calls;
+    const contextIndex = calls.findIndex(
+      call => call[5] === 'crisp_profile_card_tg:conv-crisp'
     );
-    expect(contextCall).toBeDefined();
+    const customerIndex = calls.findIndex(
+      call => call[5] === 'send_tg_crisp_visitor-context-1'
+    );
+    expect(contextIndex).toBeGreaterThanOrEqual(0);
+    expect(customerIndex).toBeGreaterThan(contextIndex);
+    const contextCall = calls[contextIndex];
     expect(contextCall?.[6]).toMatchObject({
-      subject: { type: 'CONTROL_ACK', ref: 'crisp-visitor-context:conv-crisp' },
+      subject: { type: 'CONTROL_ACK', ref: 'crisp-profile-card:conv-crisp' },
       requestOptions: { version: 1, disableNotification: true }
     });
 
@@ -265,7 +288,7 @@ describe('Crisp basic bridge orchestration', () => {
       responseObserved: vi.fn(),
       requestOptionsJson: JSON.stringify({ version: 1, disableNotification: true })
     };
-    await contextCall?.[4]('crisp_visitor_context_tg:conv-crisp', lifecycle as any);
+    await contextCall?.[4]('crisp_profile_card_tg:conv-crisp', lifecycle as any);
     expect(telegramApi.sendTelegramMessage).toHaveBeenCalledWith(
       env,
       '-100',
@@ -286,9 +309,13 @@ describe('Crisp basic bridge orchestration', () => {
     );
   });
 
-  it('does not refetch or resend visitor context once its durable Telegram operation is SENT', async () => {
+  it('does not refetch or resend the profile card once its durable Telegram operation is SENT', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',
+      helpdesk_account_ref: 'website-1', helpdesk_conversation_ref: 'session-1'
+    } as any);
     vi.mocked(outbound.getOutboundOperation).mockImplementation(async (_env: any, id: string) =>
-      id === 'crisp_visitor_context_tg:conv-crisp'
+      id === 'crisp_profile_card_tg:conv-crisp'
         ? { id, status: 'SENT', conversation_id: 'conv-crisp' } as any
         : null
     );
@@ -304,7 +331,7 @@ describe('Crisp basic bridge orchestration', () => {
 
     expect(crispVisitorContext.fetchCrispVisitorContext).not.toHaveBeenCalled();
     expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(
-      call => call[5] === 'crisp_visitor_context_tg:conv-crisp'
+      call => call[5] === 'crisp_profile_card_tg:conv-crisp'
     )).toBe(false);
   });
 
@@ -320,7 +347,11 @@ describe('Crisp basic bridge orchestration', () => {
     expect(crispVisitorContext.fetchCrispVisitorContext).not.toHaveBeenCalled();
   });
 
-  it('keeps the customer bridge healthy when Crisp visitor metadata cannot be read', async () => {
+  it('keeps the first customer bridge healthy when Crisp profile metadata cannot be read', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',
+      helpdesk_account_ref: 'website-1', helpdesk_conversation_ref: 'session-1'
+    } as any);
     vi.mocked(crispVisitorContext.fetchCrispVisitorContext).mockRejectedValue(
       new crispVisitorContext.CrispVisitorContextError('HTTP', 503)
     );
@@ -337,7 +368,7 @@ describe('Crisp basic bridge orchestration', () => {
       call => call[5] === 'send_tg_crisp_visitor-context-4'
     )).toBe(true);
     expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(
-      call => call[5] === 'crisp_visitor_context_tg:conv-crisp'
+      call => call[5] === 'crisp_profile_card_tg:conv-crisp'
     )).toBe(false);
   });
 

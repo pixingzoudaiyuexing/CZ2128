@@ -2,11 +2,13 @@ import { Env } from './env';
 import { Conversation } from '../core/domain';
 
 export type TelegramNotifyMode = 'normal' | 'silent';
+export type TelegramMirrorOrigin = 'CRISP_HUMAN_OPERATOR' | 'CRISP_AUTOMATED_OPERATOR';
 
 export interface TelegramCustomerUxOptions {
   version: 1;
   disableNotification: boolean;
   controls?: 'AI_TOGGLE_V1';
+  origin?: TelegramMirrorOrigin;
 }
 
 function configuredNotifyMode(env: Env, key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR' | 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR' | 'TELEGRAM_NOTIFY_MANUAL_OFF', fallback: TelegramNotifyMode): TelegramNotifyMode {
@@ -51,8 +53,27 @@ export function telegramSilentRequestOptions(): TelegramCustomerUxOptions {
   };
 }
 
-export function telegramCrispOperatorRequestOptions(): TelegramCustomerUxOptions {
-  return telegramSilentRequestOptions();
+export function telegramCrispOperatorRequestOptions(automated = false): TelegramCustomerUxOptions {
+  return {
+    ...telegramSilentRequestOptions(),
+    origin: automated ? 'CRISP_AUTOMATED_OPERATOR' : 'CRISP_HUMAN_OPERATOR'
+  };
+}
+
+export function telegramMirrorText(content: string, options: TelegramCustomerUxOptions | null | undefined): string {
+  if (options?.origin === 'CRISP_HUMAN_OPERATOR') {
+    return `👤 Crisp 人工客服 → 用户\n\n${content}`;
+  }
+  if (options?.origin === 'CRISP_AUTOMATED_OPERATOR') {
+    return `⚙️ Crisp 自动消息 → 用户\n\n${content}`;
+  }
+  return content;
+}
+
+export function telegramMirrorAttachmentCaption(options: TelegramCustomerUxOptions | null | undefined): string | undefined {
+  if (options?.origin === 'CRISP_HUMAN_OPERATOR') return '👤 Crisp 人工客服 → 用户';
+  if (options?.origin === 'CRISP_AUTOMATED_OPERATOR') return '⚙️ Crisp 自动消息 → 用户';
+  return undefined;
 }
 
 export function parseTelegramCustomerRequestOptions(value: string | null | undefined): TelegramCustomerUxOptions | null {
@@ -62,14 +83,22 @@ export function parseTelegramCustomerRequestOptions(value: string | null | undef
     if (
       parsed.version !== 1 ||
       typeof parsed.disableNotification !== 'boolean' ||
-      (parsed.controls !== undefined && parsed.controls !== 'AI_TOGGLE_V1')
+      (parsed.controls !== undefined && parsed.controls !== 'AI_TOGGLE_V1') ||
+      (parsed.origin !== undefined &&
+        parsed.origin !== 'CRISP_HUMAN_OPERATOR' &&
+        parsed.origin !== 'CRISP_AUTOMATED_OPERATOR')
     ) return null;
-    const keys = Object.keys(parsed).sort().join(',');
-    if (keys !== 'disableNotification,version' && keys !== 'controls,disableNotification,version') return null;
+    const allowed = new Set(['version', 'disableNotification', 'controls', 'origin']);
+    if (Object.keys(parsed).some(key => !allowed.has(key))) return null;
+    if (parsed.controls !== undefined && parsed.origin !== undefined) return null;
+    if (parsed.origin !== undefined && parsed.disableNotification !== true) return null;
     return {
       version: 1,
       disableNotification: parsed.disableNotification,
-      ...(parsed.controls === 'AI_TOGGLE_V1' ? { controls: 'AI_TOGGLE_V1' as const } : {})
+      ...(parsed.controls === 'AI_TOGGLE_V1' ? { controls: 'AI_TOGGLE_V1' as const } : {}),
+      ...(parsed.origin === 'CRISP_HUMAN_OPERATOR' || parsed.origin === 'CRISP_AUTOMATED_OPERATOR'
+        ? { origin: parsed.origin }
+        : {})
     };
   } catch {
     return null;

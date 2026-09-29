@@ -91,17 +91,100 @@ describe('Crisp visitor context adapter', () => {
     });
   });
 
-  it('formats a plain Telegram visitor card without exposing precise coordinates', () => {
+  it('formats the unified Telegram profile card without exposing precise coordinates', () => {
     expect(formatCrispVisitorContext({
+      nickname: 'John',
+      email: 'john@example.com',
+      customData: [{ key: 'plan', value: 'VIP' }],
       ip: '203.0.113.9',
       country: 'US',
       region: 'CA',
       city: 'Los Angeles'
     })).toBe([
-      '🌍 Crisp 访客位置',
+      '👤 客户资料',
+      '昵称：John',
+      '邮箱：john@example.com',
+      '',
+      '📋 访客资料',
+      'plan：VIP',
+      '',
+      '🌍 访客位置',
       'IP：203.0.113.9',
-      '地区（IP 解析）：US · CA · Los Angeles'
+      '地区：US · CA · Los Angeles'
     ].join('\n'));
+  });
+
+  it('extracts bounded customer fields and deterministic custom data while excluding sensitive metadata', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(metaResponse({
+      nickname: 'John',
+      email: 'john@example.com',
+      phone: '+1 555 0100',
+      address: { street: 'Main St', city: 'Los Angeles', secret: 'never-address-secret' },
+      subject: 'Billing',
+      segments: ['vip', 'english'],
+      ip: '203.0.113.9',
+      connection: { isp: 'Secret ISP', asn: 'AS64500' },
+      geolocation: {
+        country: 'US',
+        region: 'CA',
+        city: 'Los Angeles',
+        coordinates: { latitude: 34, longitude: -118 }
+      },
+      data: {
+        source: 'website',
+        order_id: 123456,
+        plan: 'VIP',
+        nested: { product: 'Pro' },
+        coordinates: 'never',
+        api_key: 'never',
+        bad: 'line\nbreak'
+      }
+    }));
+
+    const result = await fetchCrispVisitorContext(env, 'site', 'session');
+    expect(result).toMatchObject({
+      nickname: 'John',
+      email: 'john@example.com',
+      phone: '+1 555 0100',
+      address: 'Los Angeles · Main St',
+      subject: 'Billing',
+      segments: ['vip', 'english'],
+      ip: '203.0.113.9',
+      country: 'US',
+      region: 'CA',
+      city: 'Los Angeles',
+      customData: [
+        { key: 'nested.product', value: 'Pro' },
+        { key: 'order_id', value: '123456' },
+        { key: 'plan', value: 'VIP' },
+        { key: 'source', value: 'website' }
+      ]
+    });
+    expect(JSON.stringify(result)).not.toContain('Secret ISP');
+    expect(JSON.stringify(result)).not.toContain('AS64500');
+    expect(JSON.stringify(result)).not.toContain('coordinates');
+    expect(JSON.stringify(result)).not.toContain('api_key');
+    expect(JSON.stringify(result)).not.toContain('line\\nbreak');
+    expect(JSON.stringify(result)).not.toContain('never-address-secret');
+  });
+
+  it('bounds custom data field count, values, nesting and final Telegram card length', async () => {
+    const data: Record<string, unknown> = {};
+    for (let index = 0; index < 40; index += 1) {
+      data[`field_${String(index).padStart(2, '0')}`] = 'x'.repeat(500);
+    }
+    data.deep = { one: { two: 'not-rendered' } };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(metaResponse({ data }));
+
+    const result = await fetchCrispVisitorContext(env, 'site', 'session');
+    expect(result.customData).toHaveLength(20);
+    expect(result.customDataTruncated).toBe(true);
+    expect(result.customData?.every(item => item.value.length <= 256)).toBe(true);
+    expect(JSON.stringify(result.customData)).not.toContain('not-rendered');
+    const card = formatCrispVisitorContext(result);
+    expect(card).not.toBeNull();
+    expect(Array.from(card!).length).toBeLessThanOrEqual(3500);
+    expect(card).toContain('…还有更多资料未显示');
   });
 
   it('returns null when Crisp has no usable IP or location fields', () => {

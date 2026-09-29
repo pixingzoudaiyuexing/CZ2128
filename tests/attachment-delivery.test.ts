@@ -134,7 +134,7 @@ describe('attachment multipart delivery', () => {
       '7',
       bytes,
       undefined,
-      { disableNotification: true }
+      { disableNotification: true, caption: '👤 Crisp 人工客服 → 用户' }
     );
     expect(result.providerMessageRef).toBe('55');
     expect(fetchMock.mock.calls[0][0]).toBe(`https://api.telegram.org/bottelegram-secret/${method}`);
@@ -142,6 +142,7 @@ describe('attachment multipart delivery', () => {
     expect(form.get(field)).toBeInstanceOf(Blob);
     expect(form.get('message_thread_id')).toBe('7');
     expect(form.get('disable_notification')).toBe('true');
+    expect(form.get('caption')).toBe('👤 Crisp 人工客服 → 用户');
   });
 
   it.each([

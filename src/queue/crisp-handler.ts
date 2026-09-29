@@ -9,7 +9,13 @@ import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/a
 import { getAIConfig } from '../config/ai';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
-import { parseTelegramCustomerRequestOptions, telegramCrispOperatorRequestOptions, telegramCustomerRequestOptions, telegramSilentRequestOptions } from '../config/telegram-customer-ux';
+import {
+  parseTelegramCustomerRequestOptions,
+  telegramCrispOperatorRequestOptions,
+  telegramCustomerRequestOptions,
+  telegramMirrorText,
+  telegramSilentRequestOptions
+} from '../config/telegram-customer-ux';
 import { checkAutoResume, pauseOperator, pauseOperatorForCrispSelection } from '../core/ai-state';
 import { getOrCreateConversation, insertMessage, updateOperatorThreadRef } from '../core/conversation-service';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
@@ -714,16 +720,18 @@ async function ensureTelegramTopic(
   return updateOperatorThreadRef(env, conversationId, result.providerMessageRef);
 }
 
-async function ensureCrispVisitorContextCard(
+async function ensureCrispConversationProfileCard(
   env: Env,
   conversationId: string,
   websiteRef: string,
   sessionRef: string,
   threadRef: string
 ): Promise<void> {
-  const operationId = `crisp_visitor_context_tg:${conversationId}`;
+  const operationId = `crisp_profile_card_tg:${conversationId}`;
   const existing = await getOutboundOperation(env, operationId);
   if (existing && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(existing.status)) return;
+  const legacy = await getOutboundOperation(env, `crisp_visitor_context_tg:${conversationId}`);
+  if (legacy && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(legacy.status)) return;
 
   let text: string | null;
   try {
@@ -731,7 +739,7 @@ async function ensureCrispVisitorContextCard(
       await fetchCrispVisitorContext(env, websiteRef, sessionRef)
     );
   } catch (error) {
-    logger.warn('Crisp visitor context unavailable', {
+    logger.warn('Crisp conversation profile unavailable', {
       conversation_id: conversationId,
       result: 'DEFERRED',
       error_category: error instanceof CrispVisitorContextError ? error.reason : 'UNKNOWN'
@@ -761,13 +769,13 @@ async function ensureCrispVisitorContextCard(
       },
       operationId,
       {
-        subject: { type: 'CONTROL_ACK', ref: `crisp-visitor-context:${conversationId}` },
+        subject: { type: 'CONTROL_ACK', ref: `crisp-profile-card:${conversationId}` },
         targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage'),
         requestOptions
       }
     );
   } catch {
-    logger.warn('Crisp visitor context Telegram delivery deferred', {
+    logger.warn('Crisp conversation profile Telegram delivery deferred', {
       conversation_id: conversationId,
       result: 'DEFERRED'
     });
@@ -844,6 +852,7 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     conv = reconciled;
   }
   const isOperator = payload.actorRole === 'OPERATOR';
+  const isHumanOperator = isOperator && payload.automated !== true;
   if (await isOwnCrispEcho(env, conv.id, payload)) {
     logger.info('Crisp self echo suppressed', {
       conversation_id: conv.id,
@@ -858,7 +867,7 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     if (resumed) conv = resumed;
   }
   const telegramUx = isOperator
-    ? telegramCrispOperatorRequestOptions()
+    ? telegramCrispOperatorRequestOptions(payload.automated === true)
     : telegramCustomerRequestOptions(env, conv);
   const telegramUxJson = JSON.stringify(telegramUx);
   const menu = parseCrispMenu(env.CRISP_MENU_JSON);
@@ -872,7 +881,7 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
       env, conv.id, 'crisp', payload.messageRef,
       isOperator ? 'OUTBOUND' : 'INBOUND', payload.actorRole, 'TEXT', content
     );
-    if (isOperator) {
+    if (isHumanOperator) {
       try {
         await captureLearningCandidateByProviderRef(
           env,
@@ -893,6 +902,16 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     env, conv.id, payload.customerName, payload.sessionRef, conv.operator_thread_ref
   );
   if (!threadRef) return;
+
+  if (!isOperator && bootstrapIntent) {
+    await ensureCrispConversationProfileCard(
+      env,
+      conv.id,
+      payload.websiteRef,
+      payload.sessionRef,
+      threadRef
+    );
+  }
 
   await enqueueAttachmentJobs(
     env,
@@ -918,7 +937,7 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
           env,
           env.BOT_GROUP_ID,
           threadRef,
-          content,
+          telegramMirrorText(content, frozen),
           lifecycle,
           frozen ? {
             disableNotification: frozen.disableNotification,
@@ -940,16 +959,6 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
         targetEvidence: buildTelegramTargetEvidence(env, env.BOT_GROUP_ID, threadRef, 'sendMessage'),
         requestOptions: telegramUx
       }
-    );
-  }
-
-  if (!isOperator) {
-    await ensureCrispVisitorContextCard(
-      env,
-      conv.id,
-      payload.websiteRef,
-      payload.sessionRef,
-      threadRef
     );
   }
 
