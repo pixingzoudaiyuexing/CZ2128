@@ -1,6 +1,7 @@
 import type { Env } from '../config/env';
 import type { CrispMessageEvent } from '../core/events';
 import { logger } from '../observability/logger';
+import { io, type Socket } from 'socket.io-client';
 
 const CRISP_CONNECT_ENDPOINTS = 'https://api.crisp.chat/v1/plugin/connect/endpoints';
 const RTM_INSTANCE_NAME = 'crisp-primary';
@@ -9,17 +10,14 @@ const RTM_ENDPOINT_MAX_BYTES = 64 * 1024;
 const HEALTHY_ALARM_MS = 5 * 60 * 1000;
 const CONNECTING_ALARM_MS = 10 * 1000;
 const RECONNECT_ALARM_MS = 5 * 1000;
-const CONNECTING_STALE_MS = 20 * 1000;
-
-type CrispRtmFrame =
-  | { type: 'ENGINE_OPEN' }
-  | { type: 'PING' }
-  | { type: 'SOCKET_OPEN' }
-  | { type: 'EVENT'; name: string; payload?: unknown }
-  | { type: 'UNKNOWN' };
 
 type CrispConnectEndpointsResponse = {
   data?: { socket?: { app?: unknown } };
+};
+
+export type CrispRtmSocketTarget = {
+  origin: string;
+  path: string;
 };
 
 export function buildCrispRtmAuthentication(env: Env): {
@@ -105,36 +103,22 @@ export async function fetchCrispRtmSocketEndpoint(env: Env): Promise<string> {
     }
     const endpoint = payload.data?.socket?.app;
     if (typeof endpoint !== 'string' || !endpoint) throw new Error('CRISP_RTM_ENDPOINT_MISSING');
-    return buildCrispRtmSocketUrl(endpoint);
+    const target = buildCrispRtmSocketTarget(endpoint);
+    return `${target.origin}${target.path}`;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export function buildCrispRtmSocketUrl(endpoint: string): string {
+export function buildCrispRtmSocketTarget(endpoint: string): CrispRtmSocketTarget {
   const url = new URL(endpoint);
   if (url.protocol !== 'wss:' || (url.hostname !== 'crisp.chat' && !url.hostname.endsWith('.crisp.chat'))) {
     throw new Error('CRISP_RTM_ENDPOINT_INVALID');
   }
   if (!url.pathname.endsWith('/')) url.pathname += '/';
   url.search = '';
-  url.searchParams.set('EIO', '4');
-  url.searchParams.set('transport', 'websocket');
-  return url.toString();
-}
-
-export function parseCrispRtmFrame(frame: string): CrispRtmFrame {
-  if (frame === '2') return { type: 'PING' };
-  if (frame.startsWith('0')) return { type: 'ENGINE_OPEN' };
-  if (frame.startsWith('40')) return { type: 'SOCKET_OPEN' };
-  if (!frame.startsWith('42')) return { type: 'UNKNOWN' };
-  try {
-    const parsed = JSON.parse(frame.slice(2));
-    if (!Array.isArray(parsed) || typeof parsed[0] !== 'string') return { type: 'UNKNOWN' };
-    return { type: 'EVENT', name: parsed[0], payload: parsed[1] };
-  } catch {
-    return { type: 'UNKNOWN' };
-  }
+  url.hash = '';
+  return { origin: url.origin, path: url.pathname };
 }
 
 export function normalizeCrispRtmMessage(
@@ -191,7 +175,7 @@ export async function kickCrispRtm(env: Env): Promise<void> {
 }
 
 export class CrispRtmBridge {
-  private socket?: WebSocket;
+  private socket?: Socket;
   private authenticated = false;
   private connectingSince = 0;
 
@@ -224,53 +208,87 @@ export class CrispRtmBridge {
   private async ensureConnected(): Promise<void> {
     if (!this.env.CRISP_WEBSITE_ID || !this.env.CRISP_API_IDENTIFIER || !this.env.CRISP_API_KEY) return;
 
-    if (this.socket?.readyState === WebSocket.OPEN && this.authenticated) {
+    if (this.socket?.connected && this.authenticated) {
       await this.setAlarm(HEALTHY_ALARM_MS);
       return;
     }
-    if (
-      this.socket?.readyState === WebSocket.CONNECTING &&
-      this.connectingSince > 0 &&
-      Date.now() - this.connectingSince < CONNECTING_STALE_MS
-    ) {
+    // Socket.IO owns transport reconnects once a client instance is active.
+    // The Durable Object alarm is only a watchdog/wake-up mechanism; it must
+    // not create a second client while Socket.IO is already reconnecting.
+    if (this.socket?.active) {
       await this.setAlarm(CONNECTING_ALARM_MS);
       return;
     }
 
-    if (this.socket && this.socket.readyState < WebSocket.CLOSING) {
-      try {
-        this.socket.close(4000, 'reconnect');
-      } catch {
-        // Best-effort close before reconnecting.
-      }
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
     }
     this.socket = undefined;
     this.authenticated = false;
 
     try {
-      const socketUrl = await this.fetchSocketEndpoint();
-      const socket = new WebSocket(socketUrl);
+      const target = buildCrispRtmSocketTarget(await this.fetchSocketEndpoint());
+      const socket = io(target.origin, {
+        path: target.path,
+        transports: ['websocket'],
+        timeout: 10_000,
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1_000,
+        reconnectionDelayMax: 5_000,
+        randomizationFactor: 0.5,
+        autoConnect: false
+      });
       this.socket = socket;
       this.connectingSince = Date.now();
 
-      socket.addEventListener('message', event => {
-        if (this.socket !== socket || typeof event.data !== 'string') return;
-        this.state.waitUntil(this.handleSocketMessage(socket, event.data));
+      socket.on('connect', () => {
+        if (this.socket !== socket) return;
+        this.connectingSince = Date.now();
+        socket.emit('authentication', buildCrispRtmAuthentication(this.env));
       });
-      socket.addEventListener('close', () => {
+
+      socket.on('authenticated', () => {
+        if (this.socket !== socket) return;
+        this.authenticated = true;
+        this.connectingSince = 0;
+        logger.info('Crisp RTM authenticated', { source: 'crisp', stage: 'RTM', result: 'SUCCESS' });
+        this.state.waitUntil(this.setAlarm(HEALTHY_ALARM_MS));
+      });
+
+      socket.on('unauthorized', () => {
+        if (this.socket !== socket) return;
+        this.authenticated = false;
+        logger.warn('Crisp RTM authentication rejected', { source: 'crisp', stage: 'RTM' });
+        socket.disconnect();
+        this.state.waitUntil(this.setAlarm(HEALTHY_ALARM_MS));
+      });
+
+      socket.on('message:send', data => {
+        if (this.socket !== socket) return;
+        this.state.waitUntil(this.handleRtmCustomerMessage(data));
+      });
+
+      socket.on('disconnect', () => {
         if (this.socket === socket) {
-          this.socket = undefined;
           this.authenticated = false;
+          this.connectingSince = Date.now();
         }
         logger.warn('Crisp RTM disconnected', { source: 'crisp', stage: 'RTM' });
         this.state.waitUntil(this.setAlarm(RECONNECT_ALARM_MS));
       });
-      socket.addEventListener('error', () => {
+
+      socket.on('connect_error', () => {
         logger.warn('Crisp RTM socket error', { source: 'crisp', stage: 'RTM' });
+        this.state.waitUntil(this.setAlarm(RECONNECT_ALARM_MS));
       });
 
+      socket.connect();
       await this.setAlarm(CONNECTING_ALARM_MS);
     } catch {
+      this.socket?.removeAllListeners();
+      this.socket?.disconnect();
       this.socket = undefined;
       this.authenticated = false;
       logger.warn('Crisp RTM connection setup failed', { source: 'crisp', stage: 'RTM' });
@@ -278,46 +296,8 @@ export class CrispRtmBridge {
     }
   }
 
-  private async handleSocketMessage(socket: WebSocket, raw: string): Promise<void> {
-    const frame = parseCrispRtmFrame(raw);
-    if (frame.type === 'PING') {
-      socket.send('3');
-      return;
-    }
-    if (frame.type === 'ENGINE_OPEN') {
-      socket.send('40');
-      return;
-    }
-    if (frame.type === 'SOCKET_OPEN') {
-      socket.send(`42${JSON.stringify([
-        'authentication',
-        buildCrispRtmAuthentication(this.env)
-      ])}`);
-      return;
-    }
-    if (frame.type !== 'EVENT') return;
-
-    if (frame.name === 'authenticated') {
-      this.authenticated = true;
-      this.connectingSince = 0;
-      logger.info('Crisp RTM authenticated', { source: 'crisp', stage: 'RTM', result: 'SUCCESS' });
-      await this.setAlarm(HEALTHY_ALARM_MS);
-      return;
-    }
-    if (frame.name === 'unauthorized') {
-      this.authenticated = false;
-      logger.warn('Crisp RTM authentication rejected', { source: 'crisp', stage: 'RTM' });
-      try {
-        socket.close(4003, 'unauthorized');
-      } catch {
-        // Close best effort; webhook remains the fallback.
-      }
-      await this.setAlarm(HEALTHY_ALARM_MS);
-      return;
-    }
-    if (frame.name !== 'message:send') return;
-
-    const event = normalizeCrispRtmMessage(frame.payload, this.env.CRISP_WEBSITE_ID);
+  private async handleRtmCustomerMessage(data: unknown): Promise<void> {
+    const event = normalizeCrispRtmMessage(data, this.env.CRISP_WEBSITE_ID);
     if (!event) return;
     await this.env.QUEUE.send(event);
     logger.info('Crisp RTM customer event enqueued', {

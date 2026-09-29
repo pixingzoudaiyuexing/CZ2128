@@ -2,12 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { normalizeCrispEvent } from '../src/index';
 import {
   buildCrispRtmAuthentication,
-  buildCrispRtmSocketUrl,
+  buildCrispRtmSocketTarget,
   fetchCrispRtmSocketEndpoint,
   kickCrispRtm,
-  normalizeCrispRtmMessage,
-  parseCrispRtmFrame
+  normalizeCrispRtmMessage
 } from '../src/rtm/crisp-rtm';
+import { io } from 'socket.io-client';
+
+vi.mock('socket.io-client', () => ({
+  io: vi.fn()
+}));
 
 describe('Crisp RTM fast path', () => {
   it('matches the current official plugin authentication payload exactly', () => {
@@ -26,10 +30,12 @@ describe('Crisp RTM fast path', () => {
     } as any)).not.toHaveProperty('rooms');
   });
 
-  it('builds the Engine.IO v4 websocket URL from the dynamic Crisp endpoint', () => {
-    expect(buildCrispRtmSocketUrl('wss://app.relay.crisp.chat/w/f43/'))
-      .toBe('wss://app.relay.crisp.chat/w/f43/?EIO=4&transport=websocket');
-    expect(() => buildCrispRtmSocketUrl('wss://example.com/w/f43/'))
+  it('builds the official Socket.IO origin and path from the dynamic Crisp endpoint', () => {
+    expect(buildCrispRtmSocketTarget('wss://app.relay.crisp.chat/w/f43/')).toEqual({
+      origin: 'wss://app.relay.crisp.chat',
+      path: '/w/f43/'
+    });
+    expect(() => buildCrispRtmSocketTarget('wss://example.com/w/f43/'))
       .toThrow('CRISP_RTM_ENDPOINT_INVALID');
   });
 
@@ -46,7 +52,7 @@ describe('Crisp RTM fast path', () => {
     } as any;
 
     await expect(fetchCrispRtmSocketEndpoint(env))
-      .resolves.toBe('wss://app.relay.crisp.chat/w/f43/?EIO=4&transport=websocket');
+      .resolves.toBe('wss://app.relay.crisp.chat/w/f43/');
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.crisp.chat/v1/plugin/connect/endpoints',
@@ -79,22 +85,6 @@ describe('Crisp RTM fast path', () => {
       CRISP_API_IDENTIFIER: 'identifier',
       CRISP_API_KEY: 'key'
     } as any)).rejects.toThrow('CRISP_RTM_ENDPOINT_TOO_LARGE');
-  });
-
-  it('parses the minimum Engine.IO and Socket.IO frames used by Crisp', () => {
-    expect(parseCrispRtmFrame('0{"sid":"abc"}')).toEqual({ type: 'ENGINE_OPEN' });
-    expect(parseCrispRtmFrame('2')).toEqual({ type: 'PING' });
-    expect(parseCrispRtmFrame('40{"sid":"socket"}')).toEqual({ type: 'SOCKET_OPEN' });
-    expect(parseCrispRtmFrame('42["authenticated"]')).toEqual({
-      type: 'EVENT',
-      name: 'authenticated',
-      payload: undefined
-    });
-    expect(parseCrispRtmFrame('42["message:send",{"type":"text"}]')).toEqual({
-      type: 'EVENT',
-      name: 'message:send',
-      payload: { type: 'text' }
-    });
   });
 
   it('normalizes visitor text to the exact same event identity as the webhook path', () => {
@@ -161,5 +151,45 @@ describe('Crisp RTM fast path', () => {
     expect(idFromName).toHaveBeenCalledWith('crisp-primary');
     expect(get).toHaveBeenCalledWith('rtm-id');
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets an active Socket.IO client own reconnects instead of creating a second client on alarm', async () => {
+    const setAlarm = vi.fn().mockResolvedValue(undefined);
+    const activeSocket = {
+      connected: false,
+      active: true,
+      on: vi.fn(),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      removeAllListeners: vi.fn()
+    };
+    vi.mocked(io).mockReturnValue(activeSocket as any);
+    const state = {
+      storage: { setAlarm },
+      waitUntil: vi.fn()
+    } as any;
+    const env = {
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key',
+      CRISP_WEBSITE_ID: 'website-1',
+      QUEUE: { send: vi.fn() }
+    } as any;
+    const { CrispRtmBridge } = await import('../src/rtm/crisp-rtm');
+    const bridge = new CrispRtmBridge(state, env);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: { socket: { app: 'wss://app.relay.crisp.chat/w/f43/' } }
+    }), { status: 200 }));
+
+    await bridge.fetch(new Request('https://crisp-rtm.internal/start', { method: 'POST' }));
+    expect(io).toHaveBeenCalledTimes(1);
+    activeSocket.active = true;
+
+    await bridge.alarm();
+    await bridge.alarm();
+
+    expect(io).toHaveBeenCalledTimes(1);
+    expect(activeSocket.removeAllListeners).not.toHaveBeenCalled();
+    expect(activeSocket.disconnect).not.toHaveBeenCalled();
+    expect(setAlarm).toHaveBeenCalled();
   });
 });
