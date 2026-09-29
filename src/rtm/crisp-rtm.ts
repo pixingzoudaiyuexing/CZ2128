@@ -2,6 +2,8 @@ import type { Env } from '../config/env';
 import type { CrispMessageEvent } from '../core/events';
 import { insertReliabilityAuditOnce } from '../core/reliability-audit';
 import { logger } from '../observability/logger';
+import { resolveEffectiveEnv } from '../runtime-config/resolver';
+import { handleQueueEvent } from '../queue/consumer';
 import { io, type Socket } from 'socket.io-client';
 import { WebSocket as EngineIoWebSocketTransport } from 'engine.io-client';
 
@@ -409,18 +411,56 @@ export class CrispRtmBridge {
   private async handleRtmCustomerMessage(data: unknown): Promise<void> {
     const event = normalizeCrispRtmMessage(data, this.env.CRISP_WEBSITE_ID);
     if (!event) return;
+
+    // Queue first so the event is durably recoverable even if the low-latency
+    // in-process attempt is interrupted. Both paths converge through the same
+    // event_receipts claim and outbound ledger.
     await this.env.QUEUE.send(event);
-    await recordRtmDiagnostic(
+    this.state.waitUntil(recordRtmDiagnostic(
       this.env,
       'RTM_EVENT_ENQUEUED',
       'ENQUEUED',
       'CRISP_RTM_EVENT_ENQUEUED',
       diagnosticTimeBucket()
-    );
+    ));
     logger.info('Crisp RTM customer event enqueued', {
       source: 'crisp',
       stage: 'RTM',
       result: 'SUCCESS'
     });
+
+    try {
+      const effectiveEnv = await resolveEffectiveEnv(this.env);
+      await handleQueueEvent(event, effectiveEnv);
+      this.state.waitUntil(recordRtmDiagnostic(
+        this.env,
+        'RTM_FAST_COMPLETED',
+        'COMPLETED',
+        'CRISP_RTM_FAST_COMPLETED',
+        diagnosticTimeBucket()
+      ));
+      logger.info('Crisp RTM fast path completed', {
+        source: 'crisp',
+        source_event_ref: event.eventId,
+        stage: 'RTM_FAST_PATH',
+        result: 'SUCCESS'
+      });
+    } catch {
+      // The Queue copy is already durable. Any direct-processing failure,
+      // including claim contention with a faster Queue consumer, is therefore
+      // safely delegated to the existing Queue retry/idempotency path.
+      this.state.waitUntil(recordRtmDiagnostic(
+        this.env,
+        'RTM_FAST_DEFERRED',
+        'DEFERRED',
+        'CRISP_RTM_FAST_DEFERRED',
+        diagnosticTimeBucket()
+      ));
+      logger.warn('Crisp RTM fast path deferred to Queue', {
+        source: 'crisp',
+        source_event_ref: event.eventId,
+        stage: 'RTM_FAST_PATH'
+      });
+    }
   }
 }
