@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { normalizeCrispEvent } from '../src/index';
 import {
+  adaptCloudflareWebSocketForEngineIo,
   buildCrispRtmAuthentication,
   buildCrispRtmSocketTarget,
+  CloudflareEngineIoWebSocketTransport,
   fetchCrispRtmSocketEndpoint,
   kickCrispRtm,
   normalizeCrispRtmMessage
@@ -14,6 +16,37 @@ vi.mock('socket.io-client', () => ({
 }));
 
 describe('Crisp RTM fast path', () => {
+  it('adapts Cloudflare EventTarget WebSockets to Engine.IO property handlers', () => {
+    const listeners = new Map<string, EventListenerOrEventListenerObject>();
+    const native = {
+      binaryType: 'arraybuffer' as 'blob' | 'arraybuffer',
+      addEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+        listeners.set(type, listener);
+      }),
+      removeEventListener: vi.fn((type: string) => {
+        listeners.delete(type);
+      }),
+      send: vi.fn(),
+      close: vi.fn()
+    };
+    const adapted = adaptCloudflareWebSocketForEngineIo(native);
+    const first = vi.fn();
+    const second = vi.fn();
+
+    adapted.onmessage = first;
+    expect(native.addEventListener).toHaveBeenCalledWith('message', first);
+    adapted.onmessage = second;
+    expect(native.removeEventListener).toHaveBeenCalledWith('message', first);
+    expect(native.addEventListener).toHaveBeenCalledWith('message', second);
+
+    adapted.binaryType = 'blob';
+    adapted.send('hello');
+    adapted.close(1000, 'done');
+    expect(native.binaryType).toBe('blob');
+    expect(native.send).toHaveBeenCalledWith('hello');
+    expect(native.close).toHaveBeenCalledWith(1000, 'done');
+  });
+
   it('matches the current official plugin authentication payload exactly', () => {
     expect(buildCrispRtmAuthentication({
       CRISP_API_IDENTIFIER: 'identifier',
@@ -182,6 +215,13 @@ describe('Crisp RTM fast path', () => {
 
     await bridge.fetch(new Request('https://crisp-rtm.internal/start', { method: 'POST' }));
     expect(io).toHaveBeenCalledTimes(1);
+    expect(io).toHaveBeenCalledWith(
+      'wss://app.relay.crisp.chat',
+      expect.objectContaining({
+        path: '/w/f43/',
+        transportImplementations: [CloudflareEngineIoWebSocketTransport]
+      })
+    );
     activeSocket.active = true;
 
     await bridge.alarm();

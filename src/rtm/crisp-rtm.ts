@@ -1,7 +1,9 @@
 import type { Env } from '../config/env';
 import type { CrispMessageEvent } from '../core/events';
+import { insertReliabilityAuditOnce } from '../core/reliability-audit';
 import { logger } from '../observability/logger';
 import { io, type Socket } from 'socket.io-client';
+import { WebSocket as EngineIoWebSocketTransport } from 'engine.io-client';
 
 const CRISP_CONNECT_ENDPOINTS = 'https://api.crisp.chat/v1/plugin/connect/endpoints';
 const RTM_INSTANCE_NAME = 'crisp-primary';
@@ -10,6 +12,7 @@ const RTM_ENDPOINT_MAX_BYTES = 64 * 1024;
 const HEALTHY_ALARM_MS = 5 * 60 * 1000;
 const CONNECTING_ALARM_MS = 10 * 1000;
 const RECONNECT_ALARM_MS = 5 * 1000;
+const RTM_DIAGNOSTIC_BUCKET_MS = 60 * 1000;
 
 type CrispConnectEndpointsResponse = {
   data?: { socket?: { app?: unknown } };
@@ -19,6 +22,78 @@ export type CrispRtmSocketTarget = {
   origin: string;
   path: string;
 };
+
+type EngineIoEventHandler = ((event: any) => void) | null;
+type CloudflareWebSocketLike = {
+  binaryType: 'blob' | 'arraybuffer';
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+  send(data: any): void;
+  close(code?: number, reason?: string): void;
+};
+
+export function adaptCloudflareWebSocketForEngineIo(socket: CloudflareWebSocketLike): any {
+  const handlers = new Map<string, EngineIoEventHandler>();
+  const replace = (type: string, handler: EngineIoEventHandler) => {
+    const previous = handlers.get(type);
+    if (previous) socket.removeEventListener(type, previous as EventListener);
+    handlers.set(type, handler);
+    if (handler) socket.addEventListener(type, handler as EventListener);
+  };
+  return {
+    get binaryType() { return socket.binaryType; },
+    set binaryType(value: 'blob' | 'arraybuffer') { socket.binaryType = value; },
+    set onopen(handler: EngineIoEventHandler) { replace('open', handler); },
+    set onclose(handler: EngineIoEventHandler) { replace('close', handler); },
+    set onmessage(handler: EngineIoEventHandler) { replace('message', handler); },
+    set onerror(handler: EngineIoEventHandler) { replace('error', handler); },
+    send(data: any) { socket.send(data); },
+    close(code?: number, reason?: string) { socket.close(code, reason); }
+  };
+}
+
+export class CloudflareEngineIoWebSocketTransport extends EngineIoWebSocketTransport {
+  createSocket(uri: string, protocols: string | string[] | undefined): any {
+    const socket = protocols
+      ? new globalThis.WebSocket(uri, protocols)
+      : new globalThis.WebSocket(uri);
+    return adaptCloudflareWebSocketForEngineIo(socket as unknown as CloudflareWebSocketLike);
+  }
+}
+
+async function rtmDiagnosticId(action: string, uniquenessKey: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${action}:${uniquenessKey}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `crisp_rtm:${action}:${hex}`;
+}
+
+async function recordRtmDiagnostic(
+  env: Env,
+  action: string,
+  newState: string,
+  reasonCode: string,
+  uniquenessKey: string
+): Promise<void> {
+  try {
+    await insertReliabilityAuditOnce(env, {
+      id: await rtmDiagnosticId(action, uniquenessKey),
+      entityType: 'CRISP_RTM',
+      entityId: RTM_INSTANCE_NAME,
+      action,
+      actorType: 'SYSTEM',
+      newState,
+      reasonCode,
+      createdAt: Math.floor(Date.now() / 1000)
+    });
+  } catch {
+    logger.warn('Crisp RTM diagnostic audit failed', { source: 'crisp', stage: 'RTM' });
+  }
+}
+
+function diagnosticTimeBucket(): string {
+  return String(Math.floor(Date.now() / RTM_DIAGNOSTIC_BUCKET_MS));
+}
 
 export function buildCrispRtmAuthentication(env: Env): {
   tier: 'plugin';
@@ -231,7 +306,7 @@ export class CrispRtmBridge {
       const target = buildCrispRtmSocketTarget(await this.fetchSocketEndpoint());
       const socket = io(target.origin, {
         path: target.path,
-        transports: ['websocket'],
+        transportImplementations: [CloudflareEngineIoWebSocketTransport],
         timeout: 10_000,
         reconnection: true,
         reconnectionAttempts: Infinity,
@@ -254,6 +329,13 @@ export class CrispRtmBridge {
         this.authenticated = true;
         this.connectingSince = 0;
         logger.info('Crisp RTM authenticated', { source: 'crisp', stage: 'RTM', result: 'SUCCESS' });
+        this.state.waitUntil(recordRtmDiagnostic(
+          this.env,
+          'RTM_AUTHENTICATED',
+          'AUTHENTICATED',
+          'CRISP_RTM_AUTHENTICATED',
+          diagnosticTimeBucket()
+        ));
         this.state.waitUntil(this.setAlarm(HEALTHY_ALARM_MS));
       });
 
@@ -261,6 +343,13 @@ export class CrispRtmBridge {
         if (this.socket !== socket) return;
         this.authenticated = false;
         logger.warn('Crisp RTM authentication rejected', { source: 'crisp', stage: 'RTM' });
+        this.state.waitUntil(recordRtmDiagnostic(
+          this.env,
+          'RTM_AUTH_REJECTED',
+          'UNAUTHORIZED',
+          'CRISP_RTM_AUTH_REJECTED',
+          diagnosticTimeBucket()
+        ));
         socket.disconnect();
         this.state.waitUntil(this.setAlarm(HEALTHY_ALARM_MS));
       });
@@ -276,11 +365,25 @@ export class CrispRtmBridge {
           this.connectingSince = Date.now();
         }
         logger.warn('Crisp RTM disconnected', { source: 'crisp', stage: 'RTM' });
+        this.state.waitUntil(recordRtmDiagnostic(
+          this.env,
+          'RTM_DISCONNECTED',
+          'DISCONNECTED',
+          'CRISP_RTM_DISCONNECTED',
+          diagnosticTimeBucket()
+        ));
         this.state.waitUntil(this.setAlarm(RECONNECT_ALARM_MS));
       });
 
       socket.on('connect_error', () => {
         logger.warn('Crisp RTM socket error', { source: 'crisp', stage: 'RTM' });
+        this.state.waitUntil(recordRtmDiagnostic(
+          this.env,
+          'RTM_CONNECT_ERROR',
+          'CONNECT_ERROR',
+          'CRISP_RTM_CONNECT_ERROR',
+          diagnosticTimeBucket()
+        ));
         this.state.waitUntil(this.setAlarm(RECONNECT_ALARM_MS));
       });
 
@@ -292,6 +395,13 @@ export class CrispRtmBridge {
       this.socket = undefined;
       this.authenticated = false;
       logger.warn('Crisp RTM connection setup failed', { source: 'crisp', stage: 'RTM' });
+      this.state.waitUntil(recordRtmDiagnostic(
+        this.env,
+        'RTM_SETUP_FAILED',
+        'SETUP_FAILED',
+        'CRISP_RTM_SETUP_FAILED',
+        diagnosticTimeBucket()
+      ));
       await this.setAlarm(RECONNECT_ALARM_MS);
     }
   }
@@ -300,6 +410,13 @@ export class CrispRtmBridge {
     const event = normalizeCrispRtmMessage(data, this.env.CRISP_WEBSITE_ID);
     if (!event) return;
     await this.env.QUEUE.send(event);
+    await recordRtmDiagnostic(
+      this.env,
+      'RTM_EVENT_ENQUEUED',
+      'ENQUEUED',
+      'CRISP_RTM_EVENT_ENQUEUED',
+      diagnosticTimeBucket()
+    );
     logger.info('Crisp RTM customer event enqueued', {
       source: 'crisp',
       stage: 'RTM',
