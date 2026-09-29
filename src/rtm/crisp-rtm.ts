@@ -4,6 +4,8 @@ import { logger } from '../observability/logger';
 
 const CRISP_CONNECT_ENDPOINTS = 'https://api.crisp.chat/v1/plugin/connect/endpoints';
 const RTM_INSTANCE_NAME = 'crisp-primary';
+const RTM_ENDPOINT_TIMEOUT_MS = 5_000;
+const RTM_ENDPOINT_MAX_BYTES = 64 * 1024;
 const HEALTHY_ALARM_MS = 5 * 60 * 1000;
 const CONNECTING_ALARM_MS = 10 * 1000;
 const RECONNECT_ALARM_MS = 5 * 1000;
@@ -19,6 +21,78 @@ type CrispRtmFrame =
 type CrispConnectEndpointsResponse = {
   data?: { socket?: { app?: unknown } };
 };
+
+async function readBoundedRtmEndpointResponse(response: Response): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > RTM_ENDPOINT_MAX_BYTES) {
+    throw new Error('CRISP_RTM_ENDPOINT_TOO_LARGE');
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > RTM_ENDPOINT_MAX_BYTES) {
+        try { await reader.cancel(); } catch { /* best effort */ }
+        throw new Error('CRISP_RTM_ENDPOINT_TOO_LARGE');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    try { reader.releaseLock(); } catch { /* no-op */ }
+  }
+}
+
+export async function fetchCrispRtmSocketEndpoint(env: Env): Promise<string> {
+  if (!env.CRISP_API_IDENTIFIER || !env.CRISP_API_KEY) {
+    throw new Error('CRISP_RTM_AUTH_MISSING');
+  }
+  const authorization = `Basic ${btoa(`${env.CRISP_API_IDENTIFIER}:${env.CRISP_API_KEY}`)}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RTM_ENDPOINT_TIMEOUT_MS);
+  try {
+    let response: Response;
+    try {
+      response = await fetch(CRISP_CONNECT_ENDPOINTS, {
+        method: 'GET',
+        headers: {
+          Authorization: authorization,
+          'X-Crisp-Tier': 'plugin',
+          Accept: 'application/json'
+        },
+        redirect: 'manual',
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('CRISP_RTM_ENDPOINT_TIMEOUT');
+      }
+      throw new Error('CRISP_RTM_ENDPOINT_TRANSPORT');
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error('CRISP_RTM_ENDPOINT_REDIRECT');
+    }
+    if (!response.ok) throw new Error('CRISP_RTM_ENDPOINT_HTTP');
+    let payload: CrispConnectEndpointsResponse;
+    try {
+      payload = JSON.parse(await readBoundedRtmEndpointResponse(response)) as CrispConnectEndpointsResponse;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'CRISP_RTM_ENDPOINT_TOO_LARGE') throw error;
+      throw new Error('CRISP_RTM_ENDPOINT_INVALID_RESPONSE');
+    }
+    const endpoint = payload.data?.socket?.app;
+    if (typeof endpoint !== 'string' || !endpoint) throw new Error('CRISP_RTM_ENDPOINT_MISSING');
+    return buildCrispRtmSocketUrl(endpoint);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export function buildCrispRtmSocketUrl(endpoint: string): string {
   const url = new URL(endpoint);
@@ -127,22 +201,7 @@ export class CrispRtmBridge {
   }
 
   private async fetchSocketEndpoint(): Promise<string> {
-    if (!this.env.CRISP_API_IDENTIFIER || !this.env.CRISP_API_KEY) {
-      throw new Error('CRISP_RTM_AUTH_MISSING');
-    }
-    const authorization = `Basic ${btoa(`${this.env.CRISP_API_IDENTIFIER}:${this.env.CRISP_API_KEY}`)}`;
-    const response = await fetch(CRISP_CONNECT_ENDPOINTS, {
-      headers: {
-        Authorization: authorization,
-        'X-Crisp-Tier': 'plugin',
-        Accept: 'application/json'
-      }
-    });
-    if (!response.ok) throw new Error('CRISP_RTM_ENDPOINT_HTTP');
-    const payload = await response.json() as CrispConnectEndpointsResponse;
-    const endpoint = payload.data?.socket?.app;
-    if (typeof endpoint !== 'string' || !endpoint) throw new Error('CRISP_RTM_ENDPOINT_MISSING');
-    return buildCrispRtmSocketUrl(endpoint);
+    return fetchCrispRtmSocketEndpoint(this.env);
   }
 
   private async ensureConnected(): Promise<void> {

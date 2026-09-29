@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { normalizeCrispEvent } from '../src/index';
 import {
   buildCrispRtmSocketUrl,
+  fetchCrispRtmSocketEndpoint,
   kickCrispRtm,
   normalizeCrispRtmMessage,
   parseCrispRtmFrame
@@ -13,6 +14,54 @@ describe('Crisp RTM fast path', () => {
       .toBe('wss://app.relay.crisp.chat/w/f43/?EIO=4&transport=websocket');
     expect(() => buildCrispRtmSocketUrl('wss://example.com/w/f43/'))
       .toThrow('CRISP_RTM_ENDPOINT_INVALID');
+  });
+
+  it('fetches the dynamic endpoint with bounded fixed-origin plugin auth and no redirect following', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ data: { socket: { app: 'wss://app.relay.crisp.chat/w/f43/' } } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const env = {
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as any;
+
+    await expect(fetchCrispRtmSocketEndpoint(env))
+      .resolves.toBe('wss://app.relay.crisp.chat/w/f43/?EIO=4&transport=websocket');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.crisp.chat/v1/plugin/connect/endpoints',
+      expect.objectContaining({
+        method: 'GET',
+        redirect: 'manual',
+        signal: expect.any(AbortSignal),
+        headers: expect.objectContaining({
+          Authorization: expect.stringMatching(/^Basic /),
+          'X-Crisp-Tier': 'plugin',
+          Accept: 'application/json'
+        })
+      })
+    );
+  });
+
+  it('rejects endpoint redirects and oversized responses without following them', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    fetchMock.mockResolvedValueOnce(new Response(null, {
+      status: 302,
+      headers: { Location: 'https://example.com/redirect' }
+    }));
+    await expect(fetchCrispRtmSocketEndpoint({
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as any)).rejects.toThrow('CRISP_RTM_ENDPOINT_REDIRECT');
+
+    fetchMock.mockResolvedValueOnce(new Response('x'.repeat(64 * 1024 + 1), { status: 200 }));
+    await expect(fetchCrispRtmSocketEndpoint({
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key'
+    } as any)).rejects.toThrow('CRISP_RTM_ENDPOINT_TOO_LARGE');
   });
 
   it('parses the minimum Engine.IO and Socket.IO frames used by Crisp', () => {
