@@ -43,6 +43,7 @@ export interface Env {
   };
   DB: D1Database;
   QUEUE: Queue<SupportEvent>;
+  CRISP_RTM?: DurableObjectNamespace;
   CHATWOOT_WEBHOOK_SECRET: string;
   CHATWOOT_API_TOKEN: string;
   CHATWOOT_API_URL: string;

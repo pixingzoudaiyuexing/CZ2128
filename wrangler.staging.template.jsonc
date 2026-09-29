@@ -23,6 +23,20 @@
       "migrations_dir": "migrations"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CRISP_RTM",
+        "class_name": "CrispRtmBridge"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "crisp-rtm-v1",
+      "new_sqlite_classes": ["CrispRtmBridge"]
+    }
+  ],
   "queues": {
     "producers": [
       {

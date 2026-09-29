@@ -30,8 +30,10 @@ import { persistDlqQuarantine } from './queue/dlq-quarantine';
 import { resolveQueueIdentities } from './config/queue-identities';
 import { handleUploadCapabilityRequest } from './uploads/handler';
 import { runLearningMaintenance } from './learning/maintenance';
+import { kickCrispRtm } from './rtm/crisp-rtm';
 
 export type { Env } from './config/env';
+export { CrispRtmBridge } from './rtm/crisp-rtm';
 
 async function chatwootFallbackEventId(eventType: string, rawBody: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawBody));
@@ -198,6 +200,11 @@ export function normalizeCrispEvent(
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (env.CRISP_RTM) {
+      ctx.waitUntil(kickCrispRtm(env).catch(() => {
+        logger.warn('Crisp RTM wake failed', { source: 'crisp', stage: 'RTM' });
+      }));
+    }
     const url = new URL(request.url);
 
     if (url.pathname.startsWith('/uploads/')) {
@@ -492,6 +499,11 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (env.CRISP_RTM) {
+      ctx.waitUntil(kickCrispRtm(env).catch(() => {
+        logger.warn('Crisp RTM scheduled wake failed', { source: 'crisp', stage: 'RTM' });
+      }));
+    }
     ctx.waitUntil(cleanupExpiredAttachments(env));
     ctx.waitUntil((async () => {
       try {

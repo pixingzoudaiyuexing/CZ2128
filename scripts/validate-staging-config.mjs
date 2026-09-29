@@ -39,6 +39,8 @@ const ALLOWED_ROOT_KEYS = new Set([
   'vars',
   'triggers',
   'd1_databases',
+  'durable_objects',
+  'migrations',
   'queues',
   'r2_buckets'
 ]);
@@ -177,6 +179,25 @@ export function validateStagingConfig(config, options = {}) {
     if (!UUID_PATTERN.test(database.database_id)) fail('D1 database ID must be a real UUID');
     if (!expectedD1Id || !UUID_PATTERN.test(expectedD1Id)) fail('an independently verified expected D1 UUID is required');
     exactly(database.database_id, expectedD1Id, 'D1 database identity');
+  }
+
+  const durableObjects = record(root.durable_objects, 'durable_objects');
+  onlyKeys(durableObjects, ['bindings'], 'durable_objects');
+  const durableBindings = array(durableObjects.bindings, 'durable_objects.bindings');
+  if (durableBindings.length !== 1) fail('exactly one Durable Object binding is required');
+  const durableBinding = record(durableBindings[0], 'Durable Object binding');
+  onlyKeys(durableBinding, ['name', 'class_name'], 'Durable Object binding');
+  exactly(durableBinding.name, 'CRISP_RTM', 'Crisp RTM Durable Object binding name');
+  exactly(durableBinding.class_name, 'CrispRtmBridge', 'Crisp RTM Durable Object class');
+
+  const durableMigrations = array(root.migrations, 'migrations');
+  if (durableMigrations.length !== 1) fail('exactly one Durable Object migration is required');
+  const durableMigration = record(durableMigrations[0], 'Durable Object migration');
+  onlyKeys(durableMigration, ['tag', 'new_sqlite_classes'], 'Durable Object migration');
+  exactly(durableMigration.tag, 'crisp-rtm-v1', 'Crisp RTM Durable Object migration tag');
+  const newSqliteClasses = array(durableMigration.new_sqlite_classes, 'new_sqlite_classes');
+  if (newSqliteClasses.length !== 1 || newSqliteClasses[0] !== 'CrispRtmBridge') {
+    fail('Durable Object migration must create only CrispRtmBridge');
   }
 
   const r2Rows = array(root.r2_buckets, 'r2_buckets');

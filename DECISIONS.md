@@ -379,3 +379,11 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 For a genuinely new customer conversation, the profile metadata read starts concurrently with Telegram Topic creation, but the visible ordering remains Topic → profile card → first customer message. Bootstrap-audit reconstruction is deliberately retained even after a Topic exists because a first-event retry may already have created the Topic before Welcome/Picker processing failed; that durable continuation path takes precedence over eliminating one D1 read. The existing durable outbound ledger, event receipts, self-echo fencing, customer notification policy and profile-card failure isolation remain unchanged.
 
 **RTM boundary:** The historical Docker implementation used a long-lived Crisp RTM WebSocket and therefore remains useful latency evidence, but this Worker does not introduce a process-lifetime RTM socket. A persistent RTM fast path would require a lifecycle-appropriate long-lived runtime (for example a dedicated service or Durable Object design) and separate reliability review; it is not emulated with an unreliable per-request Worker connection.
+
+## D-041 — Use a Staging-only Durable Object for the Crisp RTM latency fast path
+
+**Decision:** Add one named SQLite-backed `CrispRtmBridge` Durable Object to isolated Staging. The object owns the outbound Crisp RTM WebSocket lifecycle, dynamically resolves the current plugin endpoint, subscribes only to `message:send` for the configured website and enqueues only customer text. It does not replace the normal Worker, Queue consumer, D1 state machine or outbound ledger.
+
+**Convergence:** RTM and webhook customer text use the same provider-derived event identity, including the same Crisp fingerprint. The first path to the existing event receipt performs the bridge; the later path is an ordinary duplicate. Webhook remains the fallback for RTM outage and remains the only accepted path for signed file normalization, Picker updates and lifecycle events.
+
+**Scope boundary:** This is a narrow exception to D-004 for a single integration-level connection owner, not a move to per-conversation Durable Objects. The binding and `new_sqlite_classes` migration are Staging-only until real latency, reconnect, duplicate and failure evidence justify any broader rollout. Production configuration remains unchanged.
