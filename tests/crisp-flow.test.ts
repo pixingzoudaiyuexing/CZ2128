@@ -342,6 +342,30 @@ describe('Crisp basic bridge orchestration', () => {
     expect(fetchStarted).toBe(true);
   });
 
+  it('keeps a new-conversation bridge healthy when profile operation lookup fails', async () => {
+    vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
+      id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',
+      helpdesk_account_ref: 'website-1', helpdesk_conversation_ref: 'session-1'
+    } as any);
+    vi.mocked(outbound.getOutboundOperation).mockImplementation(async (_env: any, id: string) => {
+      if (id === 'crisp_profile_card_tg:conv-crisp') throw new Error('D1 unavailable');
+      return null;
+    });
+
+    await expect(processCrispEvent({
+      version: 1, source: 'crisp', type: 'message_created', eventId: 'crisp:profile-lookup-fail',
+      payload: {
+        websiteRef: 'website-1', sessionRef: 'session-1', customerRef: 'visitor-1',
+        messageRef: 'profile-lookup-fail-1', actorRole: 'CUSTOMER', content: 'Still bridge'
+      }
+    }, env)).resolves.toBeUndefined();
+
+    expect(crispVisitorContext.fetchCrispVisitorContext).not.toHaveBeenCalled();
+    expect(vi.mocked(outbound.executeOutboundOperation).mock.calls.some(
+      call => call[5] === 'send_tg_crisp_profile-lookup-fail-1'
+    )).toBe(true);
+  });
+
   it('does not refetch or resend the profile card once its durable Telegram operation is SENT', async () => {
     vi.mocked(conversationService.getOrCreateConversation).mockResolvedValueOnce({
       id: 'conv-crisp', operator_thread_ref: null, helpdesk_provider: 'crisp',

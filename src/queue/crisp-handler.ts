@@ -726,13 +726,13 @@ async function prepareCrispConversationProfileCard(
   websiteRef: string,
   sessionRef: string
 ): Promise<string | null> {
-  const operationId = `crisp_profile_card_tg:${conversationId}`;
-  const existing = await getOutboundOperation(env, operationId);
-  if (existing && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(existing.status)) return null;
-  const legacy = await getOutboundOperation(env, `crisp_visitor_context_tg:${conversationId}`);
-  if (legacy && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(legacy.status)) return null;
-
   try {
+    const operationId = `crisp_profile_card_tg:${conversationId}`;
+    const existing = await getOutboundOperation(env, operationId);
+    if (existing && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(existing.status)) return null;
+    const legacy = await getOutboundOperation(env, `crisp_visitor_context_tg:${conversationId}`);
+    if (legacy && ['SENT', 'AMBIGUOUS', 'FAILED_FINAL'].includes(legacy.status)) return null;
+
     return formatCrispVisitorContext(
       await fetchCrispVisitorContext(env, websiteRef, sessionRef)
     );
