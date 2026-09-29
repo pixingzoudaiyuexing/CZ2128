@@ -386,4 +386,6 @@ For a genuinely new customer conversation, the profile metadata read starts conc
 
 **Convergence:** RTM and webhook customer text use the same provider-derived event identity, including the same Crisp fingerprint. The first path to the existing event receipt performs the bridge; the later path is an ordinary duplicate. Webhook remains the fallback for RTM outage and remains the only accepted path for signed file normalization, Picker updates and lifecycle events.
 
+**Keepalive:** Staging schedules the RTM wake path every five minutes so a newly deployed or evicted bridge does not wait for an hourly maintenance tick before reconnecting. The same scheduled handler gates attachment cleanup and learning maintenance to UTC minute 00, preserving their original hourly cadence rather than running those heavier jobs every five minutes. The Durable Object's own alarms remain responsible for connection health once the bridge is active.
+
 **Scope boundary:** This is a narrow exception to D-004 for a single integration-level connection owner, not a move to per-conversation Durable Objects. The binding and `new_sqlite_classes` migration are Staging-only until real latency, reconnect, duplicate and failure evidence justify any broader rollout. Production configuration remains unchanged.

@@ -163,7 +163,9 @@ export function validateStagingConfig(config, options = {}) {
   const triggers = record(root.triggers, 'triggers');
   onlyKeys(triggers, ['crons'], 'triggers');
   const crons = array(triggers.crons, 'triggers.crons');
-  if (crons.length !== 1 || crons[0] !== '0 * * * *') fail('hourly cron must be exactly 0 * * * *');
+  if (crons.length !== 1 || crons[0] !== '*/5 * * * *') {
+    fail('Staging RTM keepalive cron must be exactly */5 * * * *');
+  }
 
   const databases = array(root.d1_databases, 'd1_databases');
   if (databases.length !== 1) fail('exactly one D1 binding is required');

@@ -77,7 +77,7 @@ describe('isolated staging configuration', () => {
     ['missing RTM Durable Object binding', (config: any) => { config.durable_objects.bindings = []; }, 'exactly one Durable Object binding'],
     ['wrong RTM Durable Object class', (config: any) => { config.durable_objects.bindings[0].class_name = 'Other'; }, 'Crisp RTM Durable Object class'],
     ['missing RTM Durable Object migration', (config: any) => { config.migrations = []; }, 'exactly one Durable Object migration'],
-    ['wrong cron', (config: any) => { config.triggers.crons = ['*/5 * * * *']; }, 'hourly cron'],
+    ['wrong cron', (config: any) => { config.triggers.crons = ['0 * * * *']; }, 'RTM keepalive cron'],
     ['missing main Queue identity', (config: any) => { delete config.vars.EXPECTED_MAIN_QUEUE_NAME; }, 'both approved Queue identity keys'],
     ['missing DLQ identity', (config: any) => { delete config.vars.EXPECTED_DLQ_QUEUE_NAME; }, 'both approved Queue identity keys'],
     ['empty main Queue identity', (config: any) => { config.vars.EXPECTED_MAIN_QUEUE_NAME = ''; }, 'expected main Queue identity'],

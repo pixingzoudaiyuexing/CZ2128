@@ -504,6 +504,10 @@ export default {
         logger.warn('Crisp RTM scheduled wake failed', { source: 'crisp', stage: 'RTM' });
       }));
     }
+    const scheduledTime = Number(controller.scheduledTime);
+    const isHourlyMaintenance = Number.isFinite(scheduledTime) &&
+      new Date(scheduledTime).getUTCMinutes() === 0;
+    if (!isHourlyMaintenance) return;
     ctx.waitUntil(cleanupExpiredAttachments(env));
     ctx.waitUntil((async () => {
       try {

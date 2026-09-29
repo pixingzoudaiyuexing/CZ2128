@@ -882,9 +882,37 @@ describe('Worker Integration', () => {
       ATTACHMENTS_BUCKET: {}
     };
     if (Worker.scheduled) {
-      await Worker.scheduled({} as any, scheduledEnv as any, { waitUntil } as any);
+      await Worker.scheduled({
+        cron: '*/5 * * * *',
+        scheduledTime: Date.UTC(2026, 8, 30, 2, 0, 0)
+      } as any, scheduledEnv as any, { waitUntil } as any);
     }
     expect(waitUntil).toHaveBeenCalledTimes(2);
     await expect(Promise.all(waitUntil.mock.calls.map(call => call[0]))).resolves.toEqual([undefined, undefined]);
+  });
+
+  it('scheduled() keeps Crisp RTM warm every five minutes without running hourly maintenance', async () => {
+    const waitUntil = vi.fn();
+    const rtmFetch = vi.fn(async () => new Response(null, { status: 202 }));
+    const scheduledEnv = {
+      CRISP_RTM: {
+        idFromName: vi.fn(() => 'rtm-id'),
+        get: vi.fn(() => ({ fetch: rtmFetch }))
+      },
+      CRISP_API_IDENTIFIER: 'identifier',
+      CRISP_API_KEY: 'key',
+      CRISP_WEBSITE_ID: 'website-1',
+      DB: { prepare: vi.fn(() => { throw new Error('maintenance must not run'); }) },
+      ATTACHMENTS_BUCKET: {}
+    };
+    if (Worker.scheduled) {
+      await Worker.scheduled({
+        cron: '*/5 * * * *',
+        scheduledTime: Date.UTC(2026, 8, 30, 2, 5, 0)
+      } as any, scheduledEnv as any, { waitUntil } as any);
+    }
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+    expect(rtmFetch).toHaveBeenCalledTimes(1);
   });
 });
