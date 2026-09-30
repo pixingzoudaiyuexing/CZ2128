@@ -219,6 +219,7 @@ describe('Crisp RTM fast path', () => {
       'wss://app.relay.crisp.chat',
       expect.objectContaining({
         path: '/w/f43/',
+        transports: ['websocket'],
         transportImplementations: [CloudflareEngineIoWebSocketTransport]
       })
     );
