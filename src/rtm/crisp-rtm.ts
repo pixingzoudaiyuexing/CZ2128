@@ -308,8 +308,7 @@ export class CrispRtmBridge {
       const target = buildCrispRtmSocketTarget(await this.fetchSocketEndpoint());
       const socket = io(target.origin, {
         path: target.path,
-        transports: ['websocket'],
-        transportImplementations: [CloudflareEngineIoWebSocketTransport],
+        transports: [CloudflareEngineIoWebSocketTransport],
         timeout: 10_000,
         reconnection: true,
         reconnectionAttempts: Infinity,

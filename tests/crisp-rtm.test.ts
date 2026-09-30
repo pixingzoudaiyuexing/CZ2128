@@ -219,10 +219,10 @@ describe('Crisp RTM fast path', () => {
       'wss://app.relay.crisp.chat',
       expect.objectContaining({
         path: '/w/f43/',
-        transports: ['websocket'],
-        transportImplementations: [CloudflareEngineIoWebSocketTransport]
+        transports: [CloudflareEngineIoWebSocketTransport]
       })
     );
+    expect(vi.mocked(io).mock.calls[0][1]).not.toHaveProperty('transportImplementations');
     activeSocket.active = true;
 
     await bridge.alarm();
