@@ -719,7 +719,15 @@ The Crisp metadata adapter remains a fixed-origin plugin-authenticated read to `
 
 For Crisp operator-originated traffic, the durable Telegram request options freeze both notification policy and provenance. Genuine human replies use `CRISP_HUMAN_OPERATOR`, render `👤 Crisp 人工客服 → 用户` for text and media captions, and remain silent. `automated=true` replies use `CRISP_AUTOMATED_OPERATOR` and a distinct automated label. The same frozen options are consumed by normal text sends, attachment sends and duplicate-risk manual retry. Existing `isOwnCrispEcho()` operation-marker/fingerprint fencing executes before these mirrors, so Telegram-originated operator work cannot round-trip back as a second Crisp-human mirror.
 
-## 23. Crisp Low-Latency Staging Path
+## 23. Independent Crisp Human Notification Quiet Window
+
+`conversations.last_crisp_human_reply_at` is an independent nullable notification clock. It is not AI pause provenance or `last_operator_reply_at`. Genuine Crisp human replies that pass gateway echo fencing record their original provider message timestamp in one D1 batch: insert immutable `(conversation_id, provider_message_ref)` receipt, then advance the conversation clock only to a newer original second. Missing/invalid timestamps freeze a null receipt; delayed delivery never substitutes arrival time. Future timestamps beyond 60 seconds are rejected; small clock skew is clamped once at first observation. Existing canonical text messages and media rows protect pre-migration duplicates. Migration 0011 does not infer quiet state from old AI pause rows.
+
+Human and automated operator mirrors remain silent, but only human replies advance this clock. A customer event within `TELEGRAM_CRISP_HUMAN_QUIET_MINUTES` (default 15, range 1–1440) is silent regardless of AI mode or Telegram operator activity. On expiry, normal customer notification resumes unless an independent manual/Telegram policy applies. Legacy `TELEGRAM_NOTIFY_CRISP_OPERATOR` values/history remain readable but cannot impose permanent silence. Text outbound preparation and attachment discovery retain their frozen version-1 options; retries never recalculate an old operation from a newer window or setting. AI leases, handoff, pause timeout and auto-resume remain unchanged.
+
+The existing Admin authentication, runtime-config snapshot and D1 history system owns the minute setting. Quiet pages carry a short random reference, TTL, active version and history high-water mark; SQL CAS blocks absent-row SET/RESTORE/SET ABA. Rollback requires a fresh version-bound confirmation. Invalid or stale callbacks cannot overwrite another active configuration input. Configuration changes apply to subsequent events without restarting the Worker, and persist across process restarts.
+
+## 24. Crisp Low-Latency Staging Path
 
 The latency-critical Crisp text path minimizes work before durable Queue handoff: signature verification, event identity and normalization run at ingress, while D1-backed runtime configuration is deferred to Queue processing unless a file event needs effective attachment limits at ingress. The Staging main Queue is configured with `max_batch_timeout = 0`; retry count, DLQ target and batch size remain unchanged. This is a Staging-specific latency setting and does not silently modify Production Queue timing.
 

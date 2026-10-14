@@ -129,7 +129,7 @@ describe('Crisp-12 legacy UX contracts', () => {
   it('uses source-specific default notification policy while preserving legacy paused rows', () => {
     const env = {} as any;
     expect(customerNotificationMode(env, { ai_mode: 'ENABLED' } as any)).toBe('normal');
-    expect(customerNotificationMode(env, { ai_mode: 'PAUSED_OPERATOR', ai_pause_source: 'CRISP_OPERATOR' } as any)).toBe('silent');
+    expect(customerNotificationMode(env, { ai_mode: 'PAUSED_OPERATOR', ai_pause_source: 'CRISP_OPERATOR' } as any)).toBe('normal');
     expect(customerNotificationMode(env, { ai_mode: 'PAUSED_OPERATOR', ai_pause_source: 'TELEGRAM_OPERATOR' } as any)).toBe('normal');
     expect(customerNotificationMode(env, { ai_mode: 'PAUSED_MANUAL', ai_pause_source: 'MANUAL' } as any)).toBe('silent');
     expect(customerNotificationMode(env, { ai_mode: 'PAUSED_OPERATOR', ai_pause_source: null } as any)).toBe('normal');

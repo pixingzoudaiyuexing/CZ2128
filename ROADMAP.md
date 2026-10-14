@@ -1,5 +1,9 @@
 # CZ2128 Roadmap
 
+## Current Work Unit: Crisp Human Notification Quiet Window
+
+Independent persistent 15-minute notification silence and existing Telegram Admin setting are in implementation/validation. Candidate CI, Formal Independent Review, fast-forward main, exact-main CI and existing-Staging real UI acceptance remain required gates. This work does not authorize Production or Docker/release changes. Historical phase entries below retain their original evidence scope.
+
 Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C reliability closure reconciled with executable evidence plus explicit tooling/human/time-bound gaps / Production not validated**
 
 ## v1.1.0 - Upstream AI Model Discovery + Telegram Model Selector

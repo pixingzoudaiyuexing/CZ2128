@@ -1,5 +1,13 @@
 # CZ2128 4C Staging Foundation Deployment Plan
 
+## Current quiet-window rollout (migration 0011)
+
+This authorized work unit adds independent Crisp human notification silence. Implementation/CI/review are separate from deployment and actual provider acceptance. Deploy only after candidate CI + Formal Independent Review + fast-forward main + exact-main CI pass. Before migration, record the live Staging deployment/version, D1 Time Travel bookmark and complete bindings/secret-name/Queue/cron/domain metadata. Apply only pending forward migrations, verify 0011 and null historical clocks, then deploy the exact reviewed main.
+
+Generate the local Stage config from the tracked template plus the current live D1 UUID and all four live nonsecret variables. In particular, preserve live `AI_TEST_SCOPE_ENABLED=true` and the existing synthetic conversation allowlist; template defaults are not live truth. Keep all existing D1, Queue/DLQ, R2 and Crisp RTM bindings, its original migration tag and five-minute cron. Use Wrangler `--keep-vars` to retain existing secrets/variables; never print secret values or reconfigure Bot/webhooks. Leave routes undeclared to preserve the already configured `cz2128.482658.xyz` custom domain, and verify it afterward.
+
+Record resulting Worker version/deployment, exact SHA annotation, migration list and unchanged resources. Real acceptance uses only the designated test conversation/Topic, authentic Crisp operator UI, customer text/photo/tiny ordinary-file upload and Telegram Admin. A brief one-minute window may speed expiry verification, but must be restored to 15 minutes and reread before acceptance. Prior attachment limit/domain defects are not changed by this rollout. Previous Worker rollback leaves additive 0011 and durable operations intact; it restores old notification behavior, and is distinct from destructive database recovery.
+
 Status: **LATEST MAIN STAGING DEPLOYED / CRISP PROFILE + HUMAN MIRROR HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`

@@ -8,6 +8,7 @@ export interface Conversation {
   operator_thread_ref: string | null;
   operator_thread_status: 'OPEN' | 'CLOSED';
   last_operator_reply_at: number | null;
+  last_crisp_human_reply_at?: number | null;
   ai_mode: 'ENABLED' | 'PAUSED_OPERATOR' | 'PAUSED_MANUAL';
   ai_pause_source?: 'CRISP_OPERATOR' | 'TELEGRAM_OPERATOR' | 'MANUAL' | 'HELPDESK_OPERATOR' | null;
   ai_generation_id: string | null;

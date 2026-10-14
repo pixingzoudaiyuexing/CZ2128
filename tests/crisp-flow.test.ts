@@ -56,6 +56,7 @@ describe('Crisp basic bridge orchestration', () => {
   ) {
     const audits = new Map<string, any>();
     return {
+      batch: async () => [],
       prepare: (sql: string) => {
         let params: any[] = [];
         const statement = {

@@ -1,5 +1,6 @@
 import { Env } from './env';
 import { Conversation } from '../core/domain';
+import { crispQuietMinutes } from './crisp-quiet';
 
 export type TelegramNotifyMode = 'normal' | 'silent';
 export type TelegramMirrorOrigin = 'CRISP_HUMAN_OPERATOR' | 'CRISP_AUTOMATED_OPERATOR';
@@ -21,13 +22,17 @@ function configuredNotifyMode(env: Env, key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR' | 
 }
 
 export function customerNotificationMode(env: Env, conversation: Conversation): TelegramNotifyMode {
+  const now = Math.floor(Date.now() / 1000);
+  const lastHumanReply = conversation.last_crisp_human_reply_at;
+  if (typeof lastHumanReply === 'number' && Number.isSafeInteger(lastHumanReply) &&
+      lastHumanReply >= 1 && lastHumanReply <= now &&
+      now - lastHumanReply < crispQuietMinutes(env) * 60) return 'silent';
   if (conversation.ai_mode === 'ENABLED') return 'normal';
   if (conversation.ai_mode === 'PAUSED_MANUAL' || conversation.ai_pause_source === 'MANUAL') {
     return configuredNotifyMode(env, 'TELEGRAM_NOTIFY_MANUAL_OFF', 'silent');
   }
-  if (conversation.ai_pause_source === 'CRISP_OPERATOR') {
-    return configuredNotifyMode(env, 'TELEGRAM_NOTIFY_CRISP_OPERATOR', 'silent');
-  }
+  // The legacy Crisp normal/silent key remains historical configuration, not an
+  // indefinite notification policy. Only the independent human clock silences it.
   if (conversation.ai_pause_source === 'TELEGRAM_OPERATOR') {
     return configuredNotifyMode(env, 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', 'normal');
   }

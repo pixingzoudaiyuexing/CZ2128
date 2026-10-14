@@ -42,6 +42,8 @@ export interface CrispMessageEvent extends QueueEventBase {
     actorRole: 'CUSTOMER' | 'OPERATOR';
     content?: string;
     automated?: boolean;
+    /** Original Crisp message time in milliseconds; absent on legacy queued events. */
+    providerTimestamp?: number;
     operationMarker?: string;
     attachments?: AttachmentDescriptor[];
     selection?: {

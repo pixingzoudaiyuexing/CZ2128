@@ -92,7 +92,8 @@ export async function rollbackOverride(
   historyId: number,
   expectedVersion: number,
   actorUserId: string,
-  sourceUpdateId: string
+  sourceUpdateId: string,
+  options: { expectedHistoryVersion?: number } = {}
 ): Promise<number> {
   const history = await getRuntimeHistory(env, historyId);
   if (!history) throw new Error('HISTORY_NOT_FOUND');
@@ -107,7 +108,7 @@ export async function rollbackOverride(
       history.nonce
     );
   }
-  return rollbackRuntimeConfig(env, history, expectedVersion, actorUserId, sourceUpdateId);
+  return rollbackRuntimeConfig(env, history, expectedVersion, actorUserId, sourceUpdateId, options);
 }
 
 export async function migrateTelegramGroup(

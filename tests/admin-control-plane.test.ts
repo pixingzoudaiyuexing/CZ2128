@@ -84,7 +84,6 @@ const crisp12RestoreCases = [
   ['CRISP_OPERATOR_AVATAR_URL', 'coa', 'https://example.com/env-operator.png', 'https://example.com/runtime-operator.png'],
   ['CRISP_AI_NICKNAME', 'can', 'ENV 智能客服', 'Runtime 智能客服'],
   ['CRISP_AI_AVATAR_URL', 'caa', 'https://example.com/env-ai.png', 'https://example.com/runtime-ai.png'],
-  ['TELEGRAM_NOTIFY_CRISP_OPERATOR', 'tnc', 'silent', 'normal'],
   ['TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', 'tnt', 'normal', 'silent'],
   ['TELEGRAM_NOTIFY_MANUAL_OFF', 'tnm', 'silent', 'normal']
 ] as const;
@@ -100,7 +99,6 @@ const localOnlyAdminEditCases = [
   ['coa', 'CRISP_OPERATOR_AVATAR_URL', 'https://example.com/runtime-operator.png'],
   ['can', 'CRISP_AI_NICKNAME', 'Runtime 智能客服'],
   ['caa', 'CRISP_AI_AVATAR_URL', 'https://example.com/runtime-ai.png'],
-  ['tnc', 'TELEGRAM_NOTIFY_CRISP_OPERATOR', 'normal'],
   ['tnt', 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', 'silent'],
   ['tnm', 'TELEGRAM_NOTIFY_MANUAL_OFF', 'normal'],
   ['fb', 'ATTACHMENT_MAX_BYTES', '1048576'],
@@ -360,7 +358,7 @@ describe('Telegram admin control plane', () => {
     const fetchMock = defaultTelegramMock();
     await handleAdminTelegramWebhook(callback(1460, 'p:tg'), testEnv);
     const body = JSON.parse(String(fetchMock.mock.calls.find(call => String(call[0]).endsWith('/sendMessage'))?.[1]?.body));
-    expect(body.text).toContain('Crisp 接管后客户消息通知');
+    expect(body.text).toContain('Crisp 人工静默时间：15 分钟');
     expect(body.text).toContain('Telegram 接管后客户消息通知');
     expect(body.text).toContain('手动关闭 AI 后客户消息通知');
     expect(body.text).not.toContain('Crisp 接管通知：');
@@ -421,7 +419,7 @@ describe('Telegram admin control plane', () => {
       .toEqual(['x:con', 'x:coa', 'x:can', 'x:caa', 'p:crisp']);
     expect(telegramPage.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data)).toContain('p:tgr');
     expect(telegramRestore.reply_markup.inline_keyboard.flat().map((item: any) => item.callback_data))
-      .toEqual(['x:tnc', 'x:tnt', 'x:tnm', 'p:tg']);
+      .toEqual(['cq:o', 'x:tnt', 'x:tnm', 'p:tg']);
   });
 
   it.each(crisp12RestoreCases)(

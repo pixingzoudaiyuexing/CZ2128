@@ -1,4 +1,6 @@
 import { Env } from '../config/env';
+import { CRISP_QUIET_KEY } from '../config/crisp-quiet';
+import { clearQuietInput, confirmCrispQuietRollback, processCrispQuietCallback, processCrispQuietMessage, showCrispQuietSetting } from './crisp-quiet';
 import { encryptRuntimeSecret, decryptRuntimeSecret, generateOpaqueSecret, validateMasterKey } from '../runtime-config/crypto';
 import { testAiCandidate } from '../runtime-config/candidate-validation';
 import { getRuntimeConfigDefinition, parseTelegramSupportProfile, RUNTIME_CONFIG_SHORT_CODES, validateRuntimeValue } from '../runtime-config/registry';
@@ -254,7 +256,8 @@ async function retryBotRetirement(
   return 'BOT_ROTATION_RETIREMENT_COMPLETE';
 }
 
-async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string): Promise<string> {
+async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string, rawEnv = env): Promise<string> {
+  if (code === 'cqm' || code === 'tnc') return showCrispQuietSetting(rawEnv, bootstrap, ctx);
   if (code === 'cw') {
     const menu = parseCrispMenu(env.CRISP_MENU_JSON);
     const welcome = resolveCrispWelcome(env, menu?.welcome);
@@ -304,7 +307,8 @@ async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext,
   return `SET_BEGIN_${definition.key}`;
 }
 
-async function beginRestore(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string): Promise<string> {
+async function beginRestore(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string, rawEnv = env): Promise<string> {
+  if (code === 'cqm' || code === 'tnc') return showCrispQuietSetting(rawEnv, bootstrap, ctx);
   const definition = RUNTIME_CONFIG_SHORT_CODES.get(code);
   if (!definition || definition.rollback === 'DEDICATED') throw new Error('DEDICATED_WORKFLOW_REQUIRED');
   if (isLegacyChatwootRuntimeKey(definition.key)) {
@@ -344,6 +348,7 @@ async function beginRollback(env: Env, bootstrap: AdminBootstrap, ctx: AdminCont
   }
   const definition = getRuntimeConfigDefinition(history.key);
   if (definition.rollback === 'DEDICATED') throw new Error('DEDICATED_WORKFLOW_REQUIRED');
+  if (history.key === CRISP_QUIET_KEY) return confirmCrispQuietRollback(env, bootstrap, ctx, history.id);
   const expectedVersion = await currentRuntimeVersion(env, history.key);
   if (definition.highImpact) {
     await saveAdminSession(env, {
@@ -619,9 +624,15 @@ async function processCallback(
   if (ctx.callbackId) {
     try { await answerAdminCallback(bootstrap.token, ctx.callbackId); } catch { /* mutation remains authoritative */ }
   }
-  if (data === 'm') { await showMain(bootstrap, ctx); return 'MAIN'; }
+  if (data === 'm') { await clearQuietInput(rawEnv, ctx); await showMain(bootstrap, ctx); return 'MAIN'; }
+  if (data.startsWith('cq:')) {
+    const action = await processCrispQuietCallback(rawEnv, bootstrap, ctx);
+    if (action === 'CRISP_QUIET_BACK') await showPage(env, bootstrap, ctx, 'tg');
+    return action;
+  }
   if (/^p:(ai|air|tg|tgr|crisp|crispr|cwelcome|cmenu|cw|cwr|att|attr|sys|hist|rel|kw|kb|learn)$/.test(data)) {
     const page = data.slice(2);
+    await clearQuietInput(rawEnv, ctx);
     await showPage(env, bootstrap, ctx, page);
     return `PAGE_${page.toUpperCase()}`;
   }
@@ -632,8 +643,8 @@ async function processCallback(
   if (data.startsWith('b:')) return await processKnowledgeCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('l:')) return await processLearningCallback(env, bootstrap, ctx, data.slice(2));
   if (data.startsWith('am:')) return processAIModelSelectorCallback(rawEnv, env, bootstrap, ctx, data);
-  if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2));
-  if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2));
+  if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2), rawEnv);
+  if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2), rawEnv);
   if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3));
   if (data === 't:tgw') {
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_SECRET_PATH || !env.TELEGRAM_WEBHOOK_SECRET) {
@@ -684,6 +695,8 @@ async function processMessage(
     await showMain(bootstrap, ctx);
     return 'MAIN';
   }
+  const quietAction = await processCrispQuietMessage(rawEnv, bootstrap, ctx);
+  if (quietAction) return quietAction;
   const session = await getAdminSession(env, ctx.userId);
   if (!session) {
     await showMain(bootstrap, ctx);

@@ -35,7 +35,9 @@ See [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md) for state handling 
 
 ## 2. Schema History
 
-The migration set is exactly `0001` through `0005`. There is no `0006`.
+The historical Phase 4B recovery baseline was `0001` through `0005`. The current canonical forward migration inventory is `0001` through `0011`; use the actual reviewed Git inventory for any new rollout. Migrations `0006`–`0010` add Crisp attachment/upload/UX and knowledge/learning state. `0011_crisp_human_quiet.sql` adds only a nullable conversation notification clock and immutable human-message-time receipts. It does not backfill or modify existing conversations, Topic mappings, messages, attachments, runtime config or AI state. Apply 0011 before running the new Worker.
+
+For the quiet-window Staging rollout, capture the existing Worker version, bindings, secret-name set, queues/cron, complete migration list and immediate pre-migration D1 Time Travel bookmark. Time Travel is the full-database recovery point, including FTS state; D1 portable export currently cannot export a database containing virtual tables. Do not drop FTS to manufacture an export. Any optional table-scoped export must be encrypted and its limited coverage stated. Worker-only rollback to the prior version is compatible with additive 0011 and must leave the database/receipts intact; it restores the older notification behavior. Database restore is a separate destructive recovery action, not part of automatic code rollback.
 
 | Migration | Durable contract introduced | Recovery concern |
 | --- | --- | --- |

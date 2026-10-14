@@ -31,6 +31,7 @@ function rules(keyword: string, reply = 'preset reply', enabled = true): CrispKe
 
 function db(mode: 'ENABLED' | 'PAUSED_OPERATOR' | 'PAUSED_MANUAL' = 'ENABLED', historyValue?: string) {
   return {
+    batch: async () => [],
     prepare: (sql: string) => {
       let params: any[] = [];
       const statement = {

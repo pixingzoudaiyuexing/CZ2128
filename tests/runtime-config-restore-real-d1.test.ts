@@ -19,7 +19,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-describe('Runtime Config Restore ENV against real local D1', () => {
+describe('Runtime Config Restore ENV and Crisp quiet state against real local D1', () => {
   const persistDir = mkdtempSync(join(tmpdir(), 'cz2128-runtime-restore-'));
   let child: ChildProcess;
   let baseUrl: string;
@@ -38,12 +38,7 @@ describe('Runtime Config Restore ENV against real local D1', () => {
     return JSON.parse(text);
   }
 
-  beforeAll(async () => {
-    execFileSync('npx', [
-      'wrangler', 'd1', 'migrations', 'apply', 'DB', '--local', '--persist-to', persistDir,
-      '--config', configPath
-    ], { stdio: 'pipe', env: { ...process.env, CI: '1' } });
-
+  async function startWorker() {
     const port = await freePort();
     const inspectorPort = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
@@ -65,6 +60,22 @@ describe('Runtime Config Restore ENV against real local D1', () => {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     throw new Error(`Wrangler harness did not become ready:\n${output}`);
+  }
+
+  async function stopWorker() {
+    if (child && child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  }
+
+  beforeAll(async () => {
+    execFileSync('npx', [
+      'wrangler', 'd1', 'migrations', 'apply', 'DB', '--local', '--persist-to', persistDir,
+      '--config', configPath
+    ], { stdio: 'pipe', env: { ...process.env, CI: '1' } });
+    await startWorker();
   }, 60_000);
 
   beforeEach(async () => {
@@ -72,13 +83,53 @@ describe('Runtime Config Restore ENV against real local D1', () => {
   });
 
   afterAll(async () => {
-    if (child && child.exitCode === null) {
-      child.kill('SIGTERM');
-      await new Promise(resolve => setTimeout(resolve, 500));
-      if (child.exitCode === null) child.kill('SIGKILL');
-    }
+    await stopWorker();
     rmSync(persistDir, { recursive: true, force: true });
   });
+
+  it('converges concurrent replies and freezes missing and duplicate timestamps through real D1 batch', async () => {
+    const now = Date.now();
+    await request('/quiet-record', { ref: 'missing' });
+    await Promise.all([
+      request('/quiet-record', { ref: 'newer', timestamp: now - 2000 }),
+      request('/quiet-record', { ref: 'older', timestamp: now - 100000 })
+    ]);
+    await request('/quiet-record', { ref: 'older', timestamp: now });
+    await request('/quiet-record', { ref: 'missing', timestamp: now });
+    const snapshot = await request('/quiet-snapshot');
+    expect(snapshot.clock).toEqual({ last_crisp_human_reply_at: Math.floor((now - 2000) / 1000) });
+    expect(snapshot.receipts).toHaveLength(3);
+    expect(snapshot.receipts.find((value: any) => value.provider_message_ref === 'missing').reply_at).toBeNull();
+  });
+
+  it('allows only one concurrent config CAS and rejects an old absent-row ABA after restore', async () => {
+    const results = await Promise.all(['30', '60'].map(async (value, i) => {
+      const response = await fetch(`${baseUrl}/quiet-set`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value,
+          expectedVersion: 0, historyVersion: 0, actor: String(i), update: `race-${i}` }) });
+      return response.status;
+    }));
+    expect(results.sort()).toEqual([200, 409]);
+    await request('/quiet-restore', { expectedVersion: 1, update: 'restore' });
+    expect(await request('/quiet-set', { value: '5', expectedVersion: 0,
+      historyVersion: 0, update: 'stale' }, 409)).toEqual({ error: 'RUNTIME_CONFIG_VERSION_CONFLICT' });
+    const snapshot = await request('/quiet-snapshot');
+    expect(snapshot.minutes).toBe(15);
+    expect(snapshot.history).toEqual([{ version: 1, action: 'SET' }, { version: 2, action: 'RESTORE_ENV' }]);
+  });
+
+  it('keeps both minute setting and per-conversation clock after a real Worker process restart', async () => {
+    const timestamp = Date.now() - 1000;
+    await request('/quiet-record', { ref: 'restart', timestamp });
+    await request('/quiet-set', { value: '10', expectedVersion: 0, historyVersion: 0, update: 'restart-set' });
+    await stopWorker();
+    await startWorker();
+    const snapshot = await request('/quiet-snapshot');
+    expect(snapshot.minutes).toBe(10);
+    expect(snapshot.clock).toEqual({ last_crisp_human_reply_at: Math.floor(timestamp / 1000) });
+    expect(snapshot.receipts).toHaveLength(1);
+    expect(snapshot.history).toEqual([{ version: 1, action: 'SET' }]);
+  }, 60_000);
 
   it('restores an empty D1 keyword override to the original non-empty ENV rules with RESTORE_ENV history', async () => {
     const initial = await request('/snapshot');

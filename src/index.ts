@@ -182,6 +182,9 @@ export function normalizeCrispEvent(
       ...(customerName ? { customerName } : {}),
       messageRef,
       actorRole: isOperator ? 'OPERATOR' : 'CUSTOMER',
+      ...(typeof data.timestamp === 'number' && Number.isSafeInteger(data.timestamp)
+        ? { providerTimestamp: data.timestamp }
+        : {}),
       ...(content ? { content } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(data.automated === true ? { automated: true } : {}),

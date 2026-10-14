@@ -194,8 +194,13 @@ export async function rollbackRuntimeConfig(
   history: RuntimeConfigHistoryRow,
   expectedVersion: number,
   actorUserId: string,
-  sourceUpdateId: string
+  sourceUpdateId: string,
+  options: { expectedHistoryVersion?: number } = {}
 ): Promise<number> {
+  if (options.expectedHistoryVersion !== undefined &&
+      await latestRuntimeHistoryVersion(env, history.key) !== options.expectedHistoryVersion) {
+    throw new RuntimeConfigConflictError();
+  }
   if (history.is_deleted) {
     const current = await getRuntimeConfig(env, history.key);
     if (!current) throw new RuntimeConfigConflictError();
@@ -208,6 +213,7 @@ export async function rollbackRuntimeConfig(
     ciphertext: history.ciphertext || undefined,
     nonce: history.nonce || undefined,
     expectedVersion,
+    expectedHistoryVersion: options.expectedHistoryVersion,
     actorUserId,
     sourceUpdateId,
     action: 'ROLLBACK'

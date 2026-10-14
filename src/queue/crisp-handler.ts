@@ -9,6 +9,7 @@ import { createTelegramTopic, sendTelegramMessage } from '../adapters/telegram/a
 import { getAIConfig } from '../config/ai';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
+import { recordCrispHumanReply } from '../core/crisp-quiet';
 import {
   parseTelegramCustomerRequestOptions,
   telegramCrispOperatorRequestOptions,
@@ -868,10 +869,14 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
     });
     return;
   }
+  if (isHumanOperator) {
+    await recordCrispHumanReply(env, conv.id, payload.messageRef, payload.providerTimestamp);
+  }
   const wasNewConversation = !conv.operator_thread_ref;
-  if (!isOperator && await checkAutoResume(env, conv)) {
-    const resumed = await loadCrispConversation(env, payload.websiteRef, payload.sessionRef);
-    if (resumed) conv = resumed;
+  if (!isOperator) {
+    await checkAutoResume(env, conv);
+    const current = await loadCrispConversation(env, payload.websiteRef, payload.sessionRef);
+    if (current) conv = current;
   }
   const telegramUx = isOperator
     ? telegramCrispOperatorRequestOptions(payload.automated === true)
