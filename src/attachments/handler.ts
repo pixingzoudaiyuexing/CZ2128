@@ -192,7 +192,11 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
             )
           : uploadNotification
             ? deliverUploadNotificationToTelegram(
-                env, conversation.operator_thread_ref, telegramUploadContent!, lifecycle
+                env, conversation.operator_thread_ref, telegramUploadContent!, lifecycle,
+                (() => {
+                  const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
+                  return frozen ? { disableNotification: frozen.disableNotification } : undefined;
+                })()
               )
             : deliverAttachmentToTelegram(
                 env, config, row, conversation.operator_thread_ref, bytes!, lifecycle,

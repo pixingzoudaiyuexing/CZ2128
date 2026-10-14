@@ -1,6 +1,8 @@
 import { fetchCrispConversationState } from '../adapters/crisp/api';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
+import { Conversation } from '../core/domain';
+import { telegramCustomerRequestOptions } from '../config/telegram-customer-ux';
 import { getUploadConfig } from '../config/uploads';
 import {
   claimAttachment,
@@ -49,7 +51,7 @@ const BLOCKED_MIME_TYPES = new Set([
   'application/x-sh'
 ]);
 
-interface BoundConversation {
+interface BoundConversation extends Pick<Conversation, 'ai_mode' | 'ai_pause_source' | 'last_crisp_human_reply_at'> {
   id: string;
   helpdesk_provider: string;
   helpdesk_account_ref: string | null;
@@ -315,7 +317,8 @@ export async function handleUploadCapabilityRequest(
     descriptor,
     'telegram',
     publicOrigin,
-    accessToken
+    accessToken,
+    JSON.stringify(telegramCustomerRequestOptions(env, conversation, false))
   );
   if (discovered.row.status === 'DELIVERED') {
     return json(200, { ok: true, upload_id: uploadId, state: 'delivered' });

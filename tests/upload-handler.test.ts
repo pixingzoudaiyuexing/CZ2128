@@ -114,7 +114,32 @@ describe('Crisp temporary upload capability', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     db.close();
+  });
+
+  it.each([true, false])('freezes ordinary upload quiet=%s before Queue delivery after expiry', async quiet => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.useFakeTimers(); vi.setSystemTime(now * 1000);
+    await db.prepare("UPDATE conversations SET ai_mode='PAUSED_OPERATOR',ai_pause_source='CRISP_OPERATOR',last_crisp_human_reply_at=? WHERE id='conv'")
+      .bind(now - (quiet ? 890 : 900)).run();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => String(url).endsWith('/state')
+      ? Response.json({ data: { state: 'unresolved' } })
+      : Response.json({ ok: true, result: { message_id: 502 } }));
+    expect((await handleUploadCapabilityRequest(uploadRequest(), env, inviteToken)).status).toBe(202);
+    const row = await db.prepare('SELECT id,request_options_json FROM attachments').first<any>();
+    expect(JSON.parse(row.request_options_json)).toEqual({ version: 1, disableNotification: quiet });
+    vi.setSystemTime((now + 20) * 1000);
+    await processAttachmentTransfer(queue[0], env);
+    await processAttachmentTransfer(queue[0], env);
+    const sends = fetchMock.mock.calls.filter(call => String(call[0]).endsWith('/sendMessage'));
+    expect(sends).toHaveLength(1);
+    const body = JSON.parse(String(sends[0][1]?.body));
+    expect(body.disable_notification === true).toBe(quiet);
+    expect(body.message_thread_id).toBe('77');
+    expect(body.reply_markup).toBeUndefined();
+    const operation = await db.prepare('SELECT request_options_json FROM outbound_operations WHERE subject_ref=?').bind(row.id).first<any>();
+    expect(JSON.parse(operation.request_options_json).disableNotification).toBe(quiet);
   });
 
   function uploadRequest(

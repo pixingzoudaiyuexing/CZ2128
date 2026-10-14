@@ -337,7 +337,7 @@ async function beginRestore(env: Env, bootstrap: AdminBootstrap, ctx: AdminConte
   return `RESTORE_${definition.key}`;
 }
 
-async function beginRollback(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, rawId: string): Promise<string> {
+async function beginRollback(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, rawId: string, rawEnv = env): Promise<string> {
   if (!/^\d{1,12}$/.test(rawId)) throw new Error('INVALID_HISTORY_ID');
   const history = await getRuntimeHistory(env, Number(rawId));
   if (!history) throw new Error('HISTORY_NOT_FOUND');
@@ -348,7 +348,7 @@ async function beginRollback(env: Env, bootstrap: AdminBootstrap, ctx: AdminCont
   }
   const definition = getRuntimeConfigDefinition(history.key);
   if (definition.rollback === 'DEDICATED') throw new Error('DEDICATED_WORKFLOW_REQUIRED');
-  if (history.key === CRISP_QUIET_KEY) return confirmCrispQuietRollback(env, bootstrap, ctx, history.id);
+  if (history.key === CRISP_QUIET_KEY) return confirmCrispQuietRollback(rawEnv, bootstrap, ctx, history.id);
   const expectedVersion = await currentRuntimeVersion(env, history.key);
   if (definition.highImpact) {
     await saveAdminSession(env, {
@@ -645,7 +645,7 @@ async function processCallback(
   if (data.startsWith('am:')) return processAIModelSelectorCallback(rawEnv, env, bootstrap, ctx, data);
   if (data.startsWith('e:')) return beginEdit(env, bootstrap, ctx, data.slice(2), rawEnv);
   if (data.startsWith('x:')) return beginRestore(env, bootstrap, ctx, data.slice(2), rawEnv);
-  if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3));
+  if (data.startsWith('rb:')) return beginRollback(env, bootstrap, ctx, data.slice(3), rawEnv);
   if (data === 't:tgw') {
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_SECRET_PATH || !env.TELEGRAM_WEBHOOK_SECRET) {
       throw new Error('SUPPORT_BOT_UNAVAILABLE');

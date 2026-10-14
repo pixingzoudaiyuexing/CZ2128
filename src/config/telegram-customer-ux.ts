@@ -21,7 +21,9 @@ function configuredNotifyMode(env: Env, key: 'TELEGRAM_NOTIFY_CRISP_OPERATOR' | 
   return fallback;
 }
 
-export function customerNotificationMode(env: Env, conversation: Conversation): TelegramNotifyMode {
+type NotificationConversation = Pick<Conversation, 'ai_mode' | 'ai_pause_source' | 'last_crisp_human_reply_at'>;
+
+export function customerNotificationMode(env: Env, conversation: NotificationConversation): TelegramNotifyMode {
   const now = Math.floor(Date.now() / 1000);
   const lastHumanReply = conversation.last_crisp_human_reply_at;
   if (typeof lastHumanReply === 'number' && Number.isSafeInteger(lastHumanReply) &&
@@ -41,7 +43,7 @@ export function customerNotificationMode(env: Env, conversation: Conversation): 
 
 export function telegramCustomerRequestOptions(
   env: Env,
-  conversation: Conversation,
+  conversation: NotificationConversation,
   controls = true
 ): TelegramCustomerUxOptions {
   return {

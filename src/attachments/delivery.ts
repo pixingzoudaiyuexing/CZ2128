@@ -145,9 +145,10 @@ export async function deliverUploadNotificationToTelegram(
   env: Env,
   threadRef: string,
   content: string,
-  lifecycle?: OutboundAttemptLifecycle
+  lifecycle?: OutboundAttemptLifecycle,
+  options?: { disableNotification: boolean }
 ): Promise<{ providerMessageRef: string }> {
-  const response = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle);
+  const response = await sendTelegramMessage(env, env.BOT_GROUP_ID, threadRef, content, lifecycle, options);
   return { providerMessageRef: response.messageId };
 }
 
