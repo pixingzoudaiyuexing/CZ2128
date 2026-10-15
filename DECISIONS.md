@@ -1,6 +1,8 @@
 # CZ2128 Decisions
 
-Status: **APPROVED V1 DECISIONS**
+Status: **APPROVED V1 DECISIONS / OWNER-DEFINED ATTACHMENT V2 CONTRACT IN IMPLEMENTATION**
+
+D-043 is the current attachment contract. Earlier attachment decisions retain their historical rationale and evidence; later explicit decisions govern current behavior. Implementation does not imply exact-head review, deployment or full Staging acceptance.
 
 ## D-022 - Crisp is the sole active helpdesk target
 
@@ -147,7 +149,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Reason:** A generic URL fetcher or automatic credential-bearing redirect would create SSRF and credential disclosure paths.
 
-## D-020 — Bound attachment memory and retention
+## D-020 — Historical attachment memory and retention baseline (superseded by D-043)
 
 **Decision:** Source downloads stream to R2 through bounded 5 MiB multipart chunks. Destination multipart uploads buffer one file at a time with a hard 20 MiB maximum. Business retention is 24 hours; hourly cleanup removes the object before its D1 row, and a seven-day R2 lifecycle rule handles orphans.
 
@@ -289,7 +291,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Reason:** Staging Provider acceptance must not expose every historical `ENABLED` conversation to AI calls, while production behavior must not silently change when the test-only deployment switch is absent.
 
-## D-032 — Extend the private temporary attachment pipeline to Crisp
+## D-032 — Historical Crisp attachment extension (file scope and retention superseded by D-043)
 
 **Decision:** Crisp customer raster images, Telegram operator raster images, and Telegram operator ordinary files use the existing private R2 attachment subsystem, D1 attachment rows, Queue reference jobs and durable outbound-operation ledger. Migration `0006` extends only the attachment provider domain to include `crisp`; it does not add a second store or rewrite historical Chatwoot/Telegram rows. Crisp visitor file webhooks are accepted as image sources only for safe raster MIME types and an exact verified `https://storage.crisp.chat` locator. Direct Crisp ordinary-file upload is not treated as the canonical customer file path.
 
@@ -299,7 +301,7 @@ AI generation-in-progress is represented by separate lease fields such as `ai_ge
 
 **Scope:** This decision covers Crisp-05 Stage A only. Customer ordinary-file upload invitations remain a separate Stage B schema/security gate and must not be implemented as unrestricted public upload or by trusting client-supplied conversation/topic identity.
 
-## D-033 — Bind Crisp ordinary-file upload to an operator-created temporary capability
+## D-033 — Bind upload to an operator-created capability (v1 quotas/protocol superseded by D-043)
 
 **Decision:** Crisp ordinary customer files use a temporary upload invitation created from the already mapped Telegram conversation Topic, not a generic public upload API and not the direct Crisp ordinary-file webhook URL. `/upload` and `/upload_revoke` are accepted only from Telegram users already present in the bootstrap-only `ADMIN_TELEGRAM_USER_IDS` allowlist. The command is bound to the current Support Bot generation and Telegram update ordering before any capability is created or revoked. Migration `0007` adds `upload_invites` and `upload_invite_items` and extends `attachments.source_provider` with `upload`; the destination-provider domain remains unchanged.
 
@@ -399,3 +401,23 @@ For a genuinely new customer conversation, the profile metadata read starts conc
 **Low-latency processing:** A valid RTM customer-text event is first written to the existing Cloudflare Queue so durability is established before any fast-path work begins. The Durable Object then immediately invokes the same runtime-config resolution and `handleQueueEvent()` processor used by the Queue consumer. Both executions compete through the same D1 `event_receipts` claim and all visible sends still pass through the existing outbound ledger. If the direct attempt fails or loses the receipt claim, it is deliberately swallowed after recording bounded diagnostics because the Queue copy is already durable and retains the normal retry/fallback semantics.
 
 **Scope boundary:** This is a narrow exception to D-004 for a single integration-level connection owner, not a move to per-conversation Durable Objects. The binding and `new_sqlite_classes` migration are Staging-only until real latency, reconnect, duplicate and failure evidence justify any broader rollout. Production configuration remains unchanged.
+
+## D-043 — Remove product file quotas and separate durable transfer, retention and authorization
+
+**Owner contract:** This Work Unit uses only the existing CZ2128 Staging. CZ2128 imposes no product single-file size limit or lifetime file-count quota. Ordinary attachments default to 72 hours and server-verified images to seven days from successful persistence. Upload invitations, upload sessions, access grants and retention have independent validity. Existing reliability, permission, privacy and human-notification contracts remain in force. No Production/Docker/new environment/release is included.
+
+**Chosen implementation:** Reuse private R2, canonical D1 attachment/source identity, Queue reference events and deterministic outbound operations. Additive `0012_attachment_transfer_v2.sql` adds v2 byte-count/admission/classification/hash/cleanup/grant fields and session/part/access-grant/request-budget tables. It does not rebuild the old CHECK-constrained tables or rewrite delivery history. New objects use `attachments-v2/<id>`. Above 20 MiB, the old `size_bytes` stays null and new declaration/stored fields carry actual counts; it is not a zero-byte file. Legacy transfer/token/invite records remain readable.
+
+**Transfer and integrity:** A 15-minute bound invite initializes independent 24-hour sessions. Sessions persist R2 upload IDs, ordered part manifests, ETags, leases and completion state. Each part streams through exact-length SHA-256 verification. Completion reconstructs only server-confirmed parts and rereads the full R2 object with incremental SHA-256 before a CAS admits `STORED`. No complete large file is loaded into a Worker ArrayBuffer/Blob. A client file fingerprint is required for reload/resume. Three concurrent sessions and a per-minute request budget are transient anti-abuse controls, not total count/file policies.
+
+**Classification and clocks:** Byte/container inspection selects IMAGE or FILE; caller MIME/extension does not. Unsupported, malformed and active content uses forced download. This is bounded format validation, not malware scanning. Successful complete-file verification/admission writes `stored_at`, hash, class and expiry once; retry, reauthorization or grant renewal never extends that expiry. The class-specific defaults are `259200` and `604800` seconds. Short class-specific Staging samples may test expiry with restoration afterward. The old unified TTL/size/count overrides are retired as product inputs and retained only as historical data/compatibility fields.
+
+**Authorization and origin:** Reuse current Admin allowlisting, Support Bot generation, conversation/Topic/group and authoritative Crisp-state checks. Deployment-only `PUBLIC_ORIGIN` supplies canonical `https://cz2128.482658.xyz`; no request Host or queued-origin fallback. Hash-only, versioned grants can be renewed by the authorized `/files` Topic workflow during remaining retention. Invitation expiry/revocation cannot delete or shorten accepted-file retention. Revocation denies new and incomplete upload work; existing retained files still require valid download authorization.
+
+**Physical deletion:** Logical expiry denies download immediately. Scheduled cleanup deletes R2 first and only then sets a D1 tombstone, preserving row/FK audit identity. Failed R2 delete/abort retains durable retry metadata and upload IDs. The v2 prefix avoids historical `attachments/` lifecycle rules. Lifecycle backstops require explicit existing-bucket configuration evidence and margin for multipart age; they cannot be assumed to implement exact admission-based expiry.
+
+**Upstream alternatives:** Hosted Telegram `getFile` has a 20 MB download boundary. Larger Telegram operator files receive an authenticated operator upload portal; no inaccessible bytes or successful file delivery is invented. Native Telegram sends stream within Provider photo/file limits, while files beyond the 50 MB native-file boundary use authenticated links under the same ledger. Manual retry cannot switch a frozen historical native method to a link. Crisp direct client limits remain upstream constraints; its signed visitor/operator file events and the gateway portal provide complementary paths. [Telegram official constraints](https://core.telegram.org/bots/api#sending-files), [Crisp client limits](https://help.crisp.chat/en/article/file-extensions-and-sizes-supported-with-crisp-ubuxcu/).
+
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+**Migration/rollback and acceptance:** Additivity preserves old SQL data shape, not full executable compatibility with v2 sessions/grants/large-byte rows. The previous Worker is not an automatic rollback target for active v2 work. Prefer a reviewed forward repair; any code rollback needs exact schema/state/Queue compatibility evidence, and D1 Time Travel restore is a separate destructive recovery decision. Local tests, exact final-head CI, agy Formal Independent Review and real existing-Staging browser/Provider outcomes are recorded separately in [FULL-STAGING-ACCEPTANCE.md](FULL-STAGING-ACCEPTANCE.md). The current implementation has not completed those engineering/acceptance gates and creates no release authority.

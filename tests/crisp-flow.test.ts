@@ -126,6 +126,7 @@ describe('Crisp basic bridge orchestration', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     env = {
+      PUBLIC_ORIGIN: 'https://worker.example',
       BOT_GROUP_ID: '-100',
       QUEUE: { send: vi.fn() },
       DB: echoDb(),

@@ -7,6 +7,7 @@ import {
 } from '../knowledge/repository';
 import { getLearningCandidate } from './repository';
 import { LearningCandidateRow } from './types';
+import { mergeLearningRisk, sanitizeLearningText } from './privacy';
 
 async function learningKnowledgeId(candidateId: string): Promise<string> {
   const bytes = new TextEncoder().encode(candidateId);
@@ -27,6 +28,12 @@ export async function publishApprovedLearningCandidate(
   if (!candidate.extracted_title || !candidate.extracted_answer) {
     throw new Error('LEARNING_PUBLICATION_CONTENT_MISSING');
   }
+  const publicationRisk = mergeLearningRisk(
+    sanitizeLearningText(candidate.extracted_title),
+    sanitizeLearningText(candidate.extracted_question || ''),
+    sanitizeLearningText(candidate.extracted_answer)
+  );
+  if (publicationRisk.riskLevel === 'HIGH') throw new Error('LEARNING_PUBLICATION_HIGH_RISK');
 
   const knowledgeId = await learningKnowledgeId(candidate.id);
   const actor = `learning:${candidate.id}`;

@@ -2,88 +2,53 @@ import { Env } from '../config/env';
 import { logger } from '../observability/logger';
 
 export const ATTACHMENT_CLEANUP_BATCH = 100;
-const ATTACHMENT_STORAGE_PREFIX = 'attachments/';
 
 function isManagedAttachmentStorageKey(value: string): boolean {
-  return value.startsWith(ATTACHMENT_STORAGE_PREFIX) && value.length > ATTACHMENT_STORAGE_PREFIX.length;
+  return /^(attachments|attachments-v2)\/[^/]+$/.test(value);
 }
 
-async function deleteExpiredAttachmentMetadata(
-  env: Env,
-  row: { id: string; storage_key: string },
-  now: number
-): Promise<boolean> {
-  const results = await env.DB.batch([
-    env.DB.prepare(
-      `DELETE FROM upload_invite_items
-       WHERE attachment_id = ?
-         AND EXISTS (
-           SELECT 1
-           FROM upload_invites
-           WHERE upload_invites.id = upload_invite_items.invite_id
-             AND (upload_invites.status != 'ACTIVE' OR upload_invites.expires_at <= ?)
-         )`
-    ).bind(row.id, now),
-    env.DB.prepare(
-      `DELETE FROM attachments
-       WHERE id = ?
-         AND expires_at IS NOT NULL
-         AND expires_at <= ?
-         AND NOT EXISTS (
-           SELECT 1
-           FROM upload_invite_items
-           WHERE attachment_id = ?
-         )`
-    ).bind(row.id, now, row.id)
-  ]);
-
-  return results[1]?.meta.changes === 1;
-}
-
+/** Physical deletion must succeed before retiring durable cleanup/foreign-key evidence. */
 export async function cleanupExpiredAttachments(env: Env): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const expired = await env.DB.prepare(
-    `SELECT id, storage_key FROM attachments
-     WHERE expires_at IS NOT NULL AND expires_at <= ?
-     ORDER BY expires_at ASC, id ASC
-     LIMIT ?`
-  ).bind(now, ATTACHMENT_CLEANUP_BATCH).all<{ id: string; storage_key: string }>();
+    `SELECT id, storage_key, cleanup_attempts FROM attachments
+     WHERE COALESCE(retention_expires_at, expires_at) IS NOT NULL
+       AND COALESCE(retention_expires_at, expires_at) <= ? AND deleted_at IS NULL
+       AND COALESCE(cleanup_next_retry_at, 0) <= ?
+     ORDER BY COALESCE(retention_expires_at, expires_at) ASC, id ASC LIMIT ?`
+  ).bind(now, now, ATTACHMENT_CLEANUP_BATCH).all<{ id: string; storage_key: string; cleanup_attempts: number }>();
 
   for (const row of expired.results) {
     if (!isManagedAttachmentStorageKey(row.storage_key)) {
       logger.warn('Attachment cleanup skipped unsafe storage key', {
-        attachment_id: row.id,
-        error_category: 'ATTACHMENT_STORAGE_KEY_UNSAFE',
-        provider: 'R2',
-        stage: 'CLEANUP'
+        attachment_id: row.id, error_category: 'ATTACHMENT_STORAGE_KEY_UNSAFE', provider: 'R2', stage: 'CLEANUP'
       });
       continue;
     }
-
-    let metadataDeleted = false;
-    try {
-      metadataDeleted = await deleteExpiredAttachmentMetadata(env, row, now);
-    } catch {
-      logger.warn('Attachment cleanup metadata delete failed', {
-        attachment_id: row.id,
-        error_category: 'D1_CLEANUP_FAILED',
-        provider: 'D1',
-        stage: 'CLEANUP'
-      });
-      continue;
-    }
-
-    if (!metadataDeleted) continue;
-
     try {
       await env.ATTACHMENTS_BUCKET.delete(row.storage_key);
     } catch {
-      logger.warn('Attachment cleanup R2 delete failed after metadata expiry', {
-        attachment_id: row.id,
-        error_category: 'R2_DELETE_FAILED',
-        error_code: 'R2_DELETE_TRANSIENT',
-        provider: 'R2',
-        stage: 'CLEANUP'
+      const attempts = Math.max(Number(row.cleanup_attempts) || 0, 0) + 1;
+      try {
+        await env.DB.prepare(
+          `UPDATE attachments SET cleanup_attempts = cleanup_attempts + 1, cleanup_next_retry_at = ?
+           WHERE id = ? AND deleted_at IS NULL`
+        ).bind(now + Math.min(3600, 30 * 2 ** Math.min(attempts - 1, 7)), row.id).run();
+      } catch { /* The preserved row is retried by the next scheduled pass. */ }
+      logger.warn('Attachment cleanup R2 delete failed; durable metadata retained', {
+        attachment_id: row.id, error_category: 'R2_DELETE_FAILED', error_code: 'R2_DELETE_TRANSIENT', provider: 'R2', stage: 'CLEANUP'
+      });
+      continue;
+    }
+    try {
+      await env.DB.prepare(
+        `UPDATE attachments SET deleted_at = ?, cleanup_next_retry_at = NULL, grant_revoked_at = COALESCE(grant_revoked_at, ?)
+         WHERE id = ? AND deleted_at IS NULL AND COALESCE(retention_expires_at, expires_at) <= ?`
+      ).bind(now, now, row.id, now).run();
+    } catch {
+      // R2 deletion is idempotent: a later pass can safely retire the same row.
+      logger.warn('Attachment cleanup metadata retirement failed', {
+        attachment_id: row.id, error_category: 'D1_CLEANUP_FAILED', provider: 'D1', stage: 'CLEANUP'
       });
     }
   }

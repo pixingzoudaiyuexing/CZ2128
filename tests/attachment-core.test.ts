@@ -52,7 +52,7 @@ describe('attachment core security primitives', () => {
     expect(normalizeMime('IMAGE/JPEG')).toBe('image/jpeg');
   });
 
-  it('strictly bounds attachment configuration', () => {
+  it('retires product limits while retaining transport timeout and source-host bounds', () => {
     const config = getAttachmentConfig({
       CHATWOOT_API_URL: 'https://chatwoot.example/api',
       CHATWOOT_ATTACHMENT_ALLOWED_HOSTS: 'cdn.example, *.invalid.example, 127.0.0.1',
@@ -60,9 +60,9 @@ describe('attachment core security primitives', () => {
       ATTACHMENT_MAX_COUNT_PER_MESSAGE: '100junk',
       ATTACHMENT_TTL_SECONDS: '999999'
     } as any);
-    expect(config.maxBytes).toBe(ATTACHMENT_HARD_MAX_BYTES);
-    expect(config.maxCountPerMessage).toBe(10);
-    expect(config.ttlSeconds).toBe(86400);
+    expect(config.maxBytes).toBe(Number.MAX_SAFE_INTEGER);
+    expect(config.maxCountPerMessage).toBe(Number.MAX_SAFE_INTEGER);
+    expect(config.ttlSeconds).toBe(259200);
     expect(config.eventLeaseSeconds).toBe(90);
     expect(config.allowedChatwootAttachmentHosts.has('cdn.example')).toBe(true);
     expect(config.allowedChatwootAttachmentHosts.has('*.invalid.example')).toBe(false);

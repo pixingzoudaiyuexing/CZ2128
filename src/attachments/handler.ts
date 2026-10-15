@@ -8,7 +8,7 @@ import {
   markAttachmentStored,
   recordStoredAttachmentError
 } from '../core/attachment-repository';
-import { hashAttachmentToken } from '../core/attachments';
+import { attachmentByteSize, effectiveExpiry, hashAttachmentToken } from '../core/attachments';
 import { RetryableProcessingError, SafeError, safeErrorCode } from '../core/errors';
 import { AttachmentTransferEvent } from '../core/events';
 import { executeOutboundOperation } from '../core/outbound-operations';
@@ -17,6 +17,7 @@ import {
   deliverAttachmentToCrisp,
   deliverAttachmentToTelegram,
   loadAttachmentBuffer,
+  loadAttachmentStream,
   prepareCrispAttachmentContent,
   prepareTelegramUploadNotification,
   deliverUploadNotificationToTelegram,
@@ -36,11 +37,12 @@ import {
   telegramMirrorAttachmentCaption
 } from '../config/telegram-customer-ux';
 import { crispIdentityRequestOptions, parseCrispIdentityRequestOptions } from '../config/crisp-identities';
+import { ensureAttachmentGrant } from './grants';
 
 export async function processAttachmentTransfer(event: AttachmentTransferEvent, env: Env): Promise<void> {
   const config = getAttachmentConfig(env);
   const existing = await getAttachment(env, event.payload.attachmentId);
-  if (!existing || existing.status === 'DELIVERED' || existing.status === 'FAILED_FINAL') return;
+  if (!existing || existing.deleted_at || existing.status === 'DELIVERED' || existing.status === 'FAILED_FINAL') return;
   const tokenHash = await hashAttachmentToken(event.payload.accessToken);
   if (tokenHash !== existing.access_token_hash) {
     throw new RetryableProcessingError('CONCURRENCY_CAS_CONFLICT', 1);
@@ -68,7 +70,8 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       row = claim.row;
     }
   }
-  if (row.expires_at !== null && row.expires_at <= Math.floor(Date.now() / 1000)) {
+  const expiry = effectiveExpiry(row);
+  if (expiry !== null && expiry <= Math.floor(Date.now() / 1000)) {
     await markAttachmentFailure(env, row.id, false, 'ATTACHMENT_EXPIRED', config);
     return;
   }
@@ -85,7 +88,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
         const telegramSource = await downloadTelegramAttachment(
           env,
           event.payload.locator.fileId,
-          row.size_bytes,
+          attachmentByteSize(row),
           config,
           sourceTelemetry
         );
@@ -114,7 +117,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       }
       const stored = await markAttachmentStored(env, row.id, size, config);
       if (!stored) throw new RetryableProcessingError('D1_RESULT_PERSIST_FAILED', 2);
-      row = { ...row, status: 'STORED', size_bytes: size };
+      row = await getAttachment(env, row.id) ?? { ...row, status: 'STORED', size_bytes: size };
     }
 
     const conversation = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?')
@@ -130,18 +133,21 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
     ) {
       throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
     }
-    const uploadNotification = row.source_provider === 'upload' && row.destination_provider === 'telegram';
-    const bytes = row.destination_provider === 'crisp' || uploadNotification
-      ? undefined
-      : await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
+    const uploadNotification = row.destination_provider === 'telegram' &&
+      (row.source_provider === 'upload' || telegramAttachmentMethod(row).method === 'sendMessage');
+    const bytes = undefined;
+    const nativeSource = row.destination_provider !== 'crisp' && !uploadNotification
+      ? await loadAttachmentStream(env.ATTACHMENTS_BUCKET, row) : undefined;
+    const grant = row.transfer_version === 2 && (row.destination_provider === 'crisp' || uploadNotification)
+      ? await ensureAttachmentGrant(env, row) : null;
     const crispContent = row.destination_provider === 'crisp'
       ? await prepareCrispAttachmentContent(
-          env, row, event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
+          env, row, grant?.token ?? event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
         )
       : undefined;
     const telegramUploadContent = uploadNotification
       ? await prepareTelegramUploadNotification(
-          env, row, event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
+          env, row, grant?.token ?? event.payload.accessToken, event.payload.publicOrigin, config.maxBytes
         )
       : undefined;
     const operationId = `attachment_${row.destination_provider}:${row.id}`;
@@ -182,7 +188,7 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       async (opId, lifecycle) => row.destination_provider === 'chatwoot'
         ? deliverAttachmentToChatwoot(
             env, config, row, conversation.helpdesk_account_ref,
-            conversation.helpdesk_conversation_ref, opId, bytes!, lifecycle
+            conversation.helpdesk_conversation_ref, opId, bytes, lifecycle, undefined, nativeSource
           )
         : row.destination_provider === 'crisp'
           ? deliverAttachmentToCrisp(
@@ -199,14 +205,14 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
                 })()
               )
             : deliverAttachmentToTelegram(
-                env, config, row, conversation.operator_thread_ref, bytes!, lifecycle,
+                env, config, row, conversation.operator_thread_ref, bytes, lifecycle,
                 (() => {
                   const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
                   return frozen ? {
                     disableNotification: frozen.disableNotification,
                     caption: telegramMirrorAttachmentCaption(frozen)
                   } : undefined;
-                })()
+                })(), nativeSource
               ),
       operationId,
       {
@@ -243,8 +249,13 @@ export async function processAttachmentTransfer(event: AttachmentTransferEvent, 
       return;
     }
     const code = safeErrorCode(error);
-    if (error instanceof SafeError && code === 'R2_READ_TRANSIENT' && row.status === 'STORED') {
-      await recordStoredAttachmentError(env, row.id, code);
+    if (error instanceof SafeError && code === 'R2_READ_TRANSIENT') {
+      if (row.status === 'STORED') {
+        await recordStoredAttachmentError(env, row.id, code);
+      } else {
+        const state = await markAttachmentFailure(env, row.id, true, code, config);
+        if (state !== 'FAILED_RETRYABLE') return;
+      }
       throw new RetryableProcessingError(code, 2);
     }
     await markAttachmentFailure(env, row.id, false, code, config);

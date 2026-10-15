@@ -280,7 +280,7 @@ describe('Worker Integration', () => {
     });
   });
 
-  it('ignores a signed Crisp ordinary file because Stage B owns the ordinary customer-file entry point', async () => {
+  it('accepts a signed Crisp ordinary file for the private attachment bridge', async () => {
     const payload = {
       event: 'message:send',
       data: {
@@ -306,7 +306,8 @@ describe('Worker Integration', () => {
 
     const response = await Worker.fetch(request, env, ctx);
     expect(response.status).toBe(200);
-    expect(env.QUEUE.messages).toHaveLength(0);
+    expect(env.QUEUE.messages).toHaveLength(1);
+    expect(env.QUEUE.messages[0].payload.attachments[0].attachmentType).toBe('document');
   });
 
   it('uses Crisp session:set_state provider identity without hashing lifecycle payloads', async () => {
@@ -878,7 +879,7 @@ describe('Worker Integration', () => {
   it('scheduled() registers bounded attachment cleanup and learning maintenance with waitUntil', async () => {
     const waitUntil = vi.fn();
     const scheduledEnv = {
-      DB: { prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }) }) }) },
+      DB: new MockD1(),
       ATTACHMENTS_BUCKET: {}
     };
     if (Worker.scheduled) {
@@ -887,8 +888,8 @@ describe('Worker Integration', () => {
         scheduledTime: Date.UTC(2026, 8, 30, 2, 0, 0)
       } as any, scheduledEnv as any, { waitUntil } as any);
     }
-    expect(waitUntil).toHaveBeenCalledTimes(2);
-    await expect(Promise.all(waitUntil.mock.calls.map(call => call[0]))).resolves.toEqual([undefined, undefined]);
+    expect(waitUntil).toHaveBeenCalledTimes(3);
+    await expect(Promise.all(waitUntil.mock.calls.map(call => call[0]))).resolves.toEqual([undefined, undefined, undefined]);
   });
 
   it('scheduled() keeps Crisp RTM warm every five minutes without running hourly maintenance', async () => {

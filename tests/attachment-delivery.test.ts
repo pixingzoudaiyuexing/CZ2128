@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TestFixedLengthStream } from './fixtures/fixed-length-stream';
 import {
   deliverAttachmentToChatwoot,
   deliverAttachmentToCrisp,
@@ -30,6 +31,31 @@ function attachment(overrides: Partial<AttachmentRow> = {}): AttachmentRow {
 }
 
 describe('attachment multipart delivery', () => {
+  beforeEach(() => vi.stubGlobal('FixedLengthStream', TestFixedLengthStream));
+  afterEach(() => vi.unstubAllGlobals());
+  it('streams a 30 MiB native file from R2 without an ArrayBuffer or Blob copy', async () => {
+    const size = 30 * 1024 * 1024;
+    const data = new Uint8Array(1024 * 1024).fill(97);
+    let chunks = 0;
+    const arrayBuffer = vi.fn(() => { throw new Error('whole-file buffering forbidden'); });
+    const largeEnv = { ...env, ATTACHMENTS_BUCKET: { get: async () => ({ size, arrayBuffer,
+      body: new ReadableStream<Uint8Array>({ pull(controller) {
+        if (chunks++ < 30) controller.enqueue(data); else controller.close();
+      } }) }) } };
+    let streamedBytes = 0;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      expect(init?.body).toBeInstanceOf(ReadableStream);
+      const reader = (init?.body as ReadableStream<Uint8Array>).getReader();
+      while (true) { const chunk = await reader.read(); if (chunk.done) break; streamedBytes += chunk.value.length; }
+      expect(Number(new Headers(init?.headers).get('Content-Length'))).toBe(streamedBytes);
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 88 } }), { status: 200 });
+    });
+    await deliverAttachmentToTelegram(largeEnv, config, attachment({ size_bytes: null, stored_size_bytes: size }), '7', undefined);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(streamedBytes).toBeGreaterThan(size);
+    expect(streamedBytes).toBeLessThan(size + 2048);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
 
   it('calls OutboundAttemptLifecycle correctly for attachment delivery', async () => {
 

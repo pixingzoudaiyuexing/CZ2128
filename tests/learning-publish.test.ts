@@ -69,6 +69,19 @@ describe('learning publication', () => {
     expect(db.database.prepare('SELECT COUNT(*) AS n FROM knowledge_entries').get()).toEqual({ n: 0 });
   });
 
+  it('rechecks legacy Approved content and blocks private capabilities without rewriting review history', async () => {
+    const { db, env } = setup(); dbs.push(db);
+    const token = 'c'.repeat(43);
+    await db.prepare('UPDATE learning_candidates SET extracted_answer=? WHERE id=?')
+      .bind(`Resume https://cz2128.482658.xyz/upload-sessions/${token}/page`, 'lrn_publish_001').run();
+    await expect(publishApprovedLearningCandidate(env, 'lrn_publish_001'))
+      .rejects.toThrow('LEARNING_PUBLICATION_HIGH_RISK');
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM knowledge_entries').first()).toEqual({ n: 0 });
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM knowledge_entry_history').first()).toEqual({ n: 0 });
+    expect(await db.prepare('SELECT review_status,version,published_knowledge_id FROM learning_candidates WHERE id=?')
+      .bind('lrn_publish_001').first()).toEqual({ review_status: 'APPROVED', version: 3, published_knowledge_id: null });
+  });
+
   it('fails closed on a deterministic knowledge-id collision with unrelated ownership', async () => {
     const { db, env } = setup(); dbs.push(db);
     const cryptoModule = await import('node:crypto');

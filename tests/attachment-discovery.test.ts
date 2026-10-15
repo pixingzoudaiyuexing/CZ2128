@@ -66,11 +66,11 @@ describe('attachment discovery', () => {
     expect(descriptors[0].locator).toEqual({ provider: 'telegram', fileId: 'fit' });
   });
 
-  it('marks a Telegram photo final when no variant is within the limit', () => {
+  it('does not reject provider metadata through a former product size override', () => {
     const descriptors = discoverTelegramAttachments({ photo: [
-      { file_id: 'large', file_unique_id: 'large-u', file_size: config.maxBytes + 1 }
+      { file_id: 'large', file_unique_id: 'large-u', file_size: 40 * 1024 * 1024 }
     ] }, config);
-    expect(descriptors[0].rejectionCode).toBe('ATTACHMENT_SOURCE_TOO_LARGE');
+    expect(descriptors[0].rejectionCode).toBeUndefined();
   });
 
   it.each(['document', 'video', 'audio', 'voice'] as const)('discovers Telegram %s metadata', type => {
@@ -86,7 +86,7 @@ describe('attachment discovery', () => {
     })]);
   });
 
-  it('keeps visitor discovery image-only while accepting operator image and file attachments', () => {
+  it('discovers both visitor and operator files without trusting MIME for final classification', () => {
     const image = discoverCrispAttachments({
       event: 'message:send',
       data: {
@@ -103,11 +103,11 @@ describe('attachment discovery', () => {
     expect(discoverCrispAttachments({
       event: 'message:send',
       data: { fingerprint: 56, type: 'file', from: 'user', content: { name: 'a.pdf', url: 'https://storage.crisp.chat/a.pdf', type: 'application/pdf' } }
-    }, config)).toEqual([]);
+    }, config)).toHaveLength(1);
     expect(discoverCrispAttachments({
       event: 'message:send',
       data: { fingerprint: 58, type: 'file', from: 'user', content: { name: 'x.svg', url: 'https://storage.crisp.chat/x.svg', type: 'image/svg+xml' } }
-    }, config)).toEqual([]);
+    }, config)).toHaveLength(1);
     expect(discoverCrispAttachments({
       event: 'message:received',
       data: { fingerprint: 57, type: 'file', from: 'operator', content: { name: 'x.png', url: 'https://storage.crisp.chat/x.png', type: 'image/png' } }
@@ -160,7 +160,7 @@ describe('attachment discovery', () => {
     expect(second.job?.eventId).toBe(`attachment:${second.row.id}`);
   });
 
-  it('processes only ten attachments and logs a redacted count warning', async () => {
+  it('processes every attachment without the previous ten-item product limit', async () => {
     const db = new DiscoveryDb();
     const sent: any[] = [];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -179,10 +179,9 @@ describe('attachment discovery', () => {
       'message',
       descriptors
     );
-    expect(db.attachments).toHaveLength(10);
-    expect(sent).toHaveLength(10);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).not.toContain('private-');
+    expect(db.attachments).toHaveLength(12);
+    expect(sent).toHaveLength(12);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('persists oversized metadata as FAILED_FINAL without a Queue job', async () => {

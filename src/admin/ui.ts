@@ -259,12 +259,13 @@ export async function showPage(
     await reply(bootstrap, ctx, [
       '附件设置',
       '',
-      valueLine(env, 'ATTACHMENT_MAX_BYTES'), '系统上限：20971520 bytes',
-      valueLine(env, 'ATTACHMENT_MAX_COUNT_PER_MESSAGE'), '系统上限：10',
-      valueLine(env, 'ATTACHMENT_TTL_SECONDS'), valueLine(env, 'ATTACHMENT_SOURCE_TIMEOUT_MS'),
+      '文件大小与数量：不设产品上限。平台接口不能原生发送时提供安全文件入口。',
+      '普通文件默认保存 72 小时；图片默认保存 7 天。从成功存储开始计算。',
+      valueLine(env, 'ATTACHMENT_FILE_TTL_SECONDS'), valueLine(env, 'ATTACHMENT_IMAGE_TTL_SECONDS'),
+      valueLine(env, 'ATTACHMENT_SOURCE_TIMEOUT_MS'),
       valueLine(env, 'ATTACHMENT_DESTINATION_TIMEOUT_MS')
     ].join('\n\n'), [
-      [edit('最大文件大小', 'fb'), edit('单消息附件数', 'fc')], [edit('TTL', 'ft'), edit('源超时', 'fs')],
+      [edit('普通文件保存时间', 'f72'), edit('图片保存时间', 'fi7')], [edit('源超时', 'fs')],
       [edit('目标超时', 'fd')],
       [{ text: '恢复 ENV 默认值', callback_data: 'p:attr' }, { text: '历史 / 回滚', callback_data: 'p:hist' }],
       [{ text: '返回', callback_data: 'm' }]
@@ -273,8 +274,8 @@ export async function showPage(
   }
   if (page === 'attr') {
     await reply(bootstrap, ctx, '选择要移除的附件 D1 覆盖配置：', [
-      [{ text: '最大文件大小', callback_data: 'x:fb' }, { text: '单消息附件数', callback_data: 'x:fc' }],
-      [{ text: 'TTL', callback_data: 'x:ft' }, { text: '源超时', callback_data: 'x:fs' }],
+      [{ text: '普通文件恢复 72 小时', callback_data: 'x:f72' }, { text: '图片恢复 7 天', callback_data: 'x:fi7' }],
+      [{ text: '源超时', callback_data: 'x:fs' }],
       [{ text: '目标超时', callback_data: 'x:fd' }], [{ text: '返回附件设置', callback_data: 'p:att' }]
     ]);
     return;

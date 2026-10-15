@@ -1,6 +1,10 @@
 import { AttachmentConfig } from '../config/attachments';
 import { AttachmentDescriptor, AttachmentType, isSafeInlineImageMime, normalizeMime } from '../core/attachments';
 
+export function telegramFileRequiresUpload(descriptor: Pick<AttachmentDescriptor, 'sizeBytes'>): boolean {
+  return Number.isSafeInteger(descriptor.sizeBytes) && Number(descriptor.sizeBytes) > 20 * 1024 * 1024;
+}
+
 function finiteSize(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
@@ -24,9 +28,7 @@ export function discoverTelegramAttachments(message: any, config: AttachmentConf
   if (Array.isArray(message?.photo) && message.photo.length > 0) {
     const variants = message.photo.filter((value: any) =>
       value && typeof value.file_id === 'string' && typeof value.file_unique_id === 'string');
-    const eligible = variants.filter((value: any) => finiteSize(value.file_size) === undefined || value.file_size <= config.maxBytes);
-    const candidates = eligible.length > 0 ? eligible : variants;
-    const selected = candidates.sort((left: any, right: any) =>
+    const selected = variants.sort((left: any, right: any) =>
       (finiteSize(right.file_size) || (right.width || 0) * (right.height || 0)) -
       (finiteSize(left.file_size) || (left.width || 0) * (left.height || 0))
     )[0];
@@ -34,7 +36,6 @@ export function discoverTelegramAttachments(message: any, config: AttachmentConf
     if (descriptor) {
       descriptor.originalFilename = 'photo.jpg';
       descriptor.mimeType = descriptor.mimeType || 'image/jpeg';
-      if (eligible.length === 0) descriptor.rejectionCode = 'ATTACHMENT_SOURCE_TOO_LARGE';
       descriptors.push(descriptor);
     }
   }
@@ -42,9 +43,6 @@ export function discoverTelegramAttachments(message: any, config: AttachmentConf
   for (const type of ['document', 'video', 'audio', 'voice'] as const) {
     const descriptor = telegramDescriptor(message?.[type], type);
     if (!descriptor) continue;
-    if (descriptor.sizeBytes !== undefined && descriptor.sizeBytes > config.maxBytes) {
-      descriptor.rejectionCode = 'ATTACHMENT_SOURCE_TOO_LARGE';
-    }
     descriptors.push(descriptor);
   }
   return descriptors;
@@ -69,9 +67,7 @@ export function discoverChatwootAttachments(payload: any, config: AttachmentConf
       locator: { provider: 'chatwoot', dataUrl: value.data_url.slice(0, 2048) },
       rejectionCode: value.data_url.length > 2048
         ? 'ATTACHMENT_SOURCE_INVALID'
-        : sizeBytes !== undefined && sizeBytes > config.maxBytes
-          ? 'ATTACHMENT_SOURCE_TOO_LARGE'
-          : undefined
+        : undefined
     }];
   });
 }
@@ -85,7 +81,6 @@ export function discoverCrispAttachments(payload: any, config: AttachmentConfig)
   const content = data.content;
   if (!content || typeof content !== 'object' || typeof content.type !== 'string') return [];
   const mimeType = normalizeMime(content.type);
-  if (isVisitor && !isSafeInlineImageMime(mimeType)) return [];
   if (typeof content.url !== 'string' || content.url.length === 0 || content.url.length > 2048) return [];
   const messageRef = data.fingerprint === undefined ? '' : String(data.fingerprint);
   if (!messageRef || messageRef.length > 256) return [];
@@ -106,7 +101,6 @@ export function discoverCrispAttachments(payload: any, config: AttachmentConfig)
   const declaredSize = finiteSize(content.size);
   if (declaredSize !== undefined) {
     descriptor.sizeBytes = declaredSize;
-    if (declaredSize > config.maxBytes) descriptor.rejectionCode = 'ATTACHMENT_SOURCE_TOO_LARGE';
   }
   return [descriptor];
 }

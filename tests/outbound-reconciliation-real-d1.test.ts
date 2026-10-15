@@ -62,7 +62,7 @@ describe('real D1 outbound reconciliation persistence', () => {
 
   afterAll(() => rmSync(persistDir, { recursive: true, force: true }));
 
-  it('uses the current fresh migration set through 0011', () => {
+  it('uses the current fresh migration set through 0012', () => {
     expect(readdirSync('migrations').filter(name => name.endsWith('.sql')).sort()).toEqual([
       '0001_initial_schema.sql',
       '0002_ai_handoff.sql',
@@ -74,7 +74,8 @@ describe('real D1 outbound reconciliation persistence', () => {
       '0008_crisp_legacy_ux.sql',
       '0009_knowledge_base.sql',
       '0010_human_learning.sql',
-      '0011_crisp_human_quiet.sql'
+      '0011_crisp_human_quiet.sql',
+      '0012_attachment_transfer_v2.sql'
     ]);
   });
 

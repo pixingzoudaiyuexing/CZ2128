@@ -1,5 +1,6 @@
 import { generateChatCompletion } from '../adapters/ai/openai-compatible';
 import { getAIConfig } from '../config/ai';
+import { getAiTestScope, isAiConversationAllowed } from '../config/ai-test-scope';
 import { Env } from '../config/env';
 import { mergeLearningRisk, sanitizeLearningText } from './privacy';
 import { getLearningCandidate } from './repository';
@@ -54,8 +55,8 @@ function parseExtractionPayload(raw: string): ExtractionPayload | null {
 
 function extractionPrompt(candidate: LearningCandidateRow): string {
   return JSON.stringify({
-    question: candidate.sanitized_question || '',
-    human_answer: candidate.sanitized_answer
+    question: sanitizeLearningText(candidate.sanitized_question || '').text,
+    human_answer: sanitizeLearningText(candidate.sanitized_answer).text
   });
 }
 
@@ -101,6 +102,7 @@ export async function extractLearningCandidate(env: Env, candidateId: string): P
   if (candidate.review_status === 'PUBLISHED' || candidate.review_status === 'REJECTED') return candidate;
   if (candidate.extraction_status === 'SUCCEEDED' || candidate.extraction_status === 'REJECTED') return candidate;
   if (candidate.extraction_attempt_count >= MAX_EXTRACTION_ATTEMPTS) return candidate;
+  if (!isAiConversationAllowed(env, candidate.source_conversation_id)) return candidate;
 
   const attempt = candidate.extraction_attempt_count + 1;
   const claim = await env.DB.prepare(
@@ -156,6 +158,10 @@ export async function extractLearningCandidate(env: Env, candidateId: string): P
   const answer = sanitizeLearningText(payload.proposed_answer);
   const reason = sanitizeLearningText(payload.reason.slice(0, 2000));
   const deterministicRisk = mergeLearningRisk(title, question, answer, reason);
+  const inputRisk = mergeLearningRisk(
+    sanitizeLearningText(candidate.sanitized_question || ''),
+    sanitizeLearningText(candidate.sanitized_answer)
+  );
   let storedRiskFlags: string[] = [];
   try {
     const parsed = JSON.parse(candidate.risk_flags_json || '[]');
@@ -167,13 +173,14 @@ export async function extractLearningCandidate(env: Env, candidateId: string): P
   }
   const riskFlags = Array.from(new Set([
     ...storedRiskFlags,
+    ...inputRisk.flags,
     ...deterministicRisk.flags,
     ...payload.risk_flags.map(flag => `MODEL_${flag}`)
   ])).slice(0, 50);
   const riskLevel = outputRiskLevel(
-    candidate.risk_level === 'HIGH' || deterministicRisk.riskLevel === 'HIGH'
+    candidate.risk_level === 'HIGH' || inputRisk.riskLevel === 'HIGH' || deterministicRisk.riskLevel === 'HIGH'
       ? 'HIGH'
-      : candidate.risk_level === 'MEDIUM' || deterministicRisk.riskLevel === 'MEDIUM'
+      : candidate.risk_level === 'MEDIUM' || inputRisk.riskLevel === 'MEDIUM' || deterministicRisk.riskLevel === 'MEDIUM'
         ? 'MEDIUM'
         : 'LOW',
     payload.risk_flags
@@ -228,6 +235,9 @@ export async function extractLearningCandidate(env: Env, candidateId: string): P
 }
 
 export async function extractPendingLearningCandidates(env: Env, limit = 10): Promise<number> {
+  const scope = getAiTestScope(env);
+  if (scope.mode === 'INVALID') return 0;
+  const allowedConversationIds = scope.mode === 'ALLOWLIST' ? JSON.stringify([...scope.conversationIds]) : null;
   const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 10);
   const rows = await env.DB.prepare(
     `SELECT id
@@ -235,9 +245,10 @@ export async function extractPendingLearningCandidates(env: Env, limit = 10): Pr
       WHERE extraction_status IN ('PENDING', 'FAILED')
         AND extraction_attempt_count < ?
         AND review_status NOT IN ('REJECTED', 'PUBLISHED')
+        AND (? IS NULL OR source_conversation_id IN (SELECT value FROM json_each(?)))
       ORDER BY updated_at ASC, id ASC
       LIMIT ?`
-  ).bind(MAX_EXTRACTION_ATTEMPTS, safeLimit).all<{ id: string }>();
+  ).bind(MAX_EXTRACTION_ATTEMPTS, allowedConversationIds, allowedConversationIds, safeLimit).all<{ id: string }>();
   let processed = 0;
   for (const row of rows.results) {
     await extractLearningCandidate(env, row.id);

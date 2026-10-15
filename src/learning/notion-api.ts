@@ -1,5 +1,6 @@
 import { Env } from '../config/env';
 import { LearningCandidateRow } from './types';
+import { mergeLearningRisk, sanitizeLearningText } from './privacy';
 
 export const NOTION_API_VERSION = '2026-03-11';
 const NOTION_API_BASE = 'https://api.notion.com/v1';
@@ -224,24 +225,30 @@ function candidateTitle(candidate: LearningCandidateRow): string {
 }
 
 export function candidateNotionProperties(candidate: LearningCandidateRow, schema: any): Record<string, unknown> {
+  const title = sanitizeLearningText(candidate.extracted_title || candidate.extracted_question || candidate.sanitized_question || 'Learning candidate');
+  const answer = sanitizeLearningText(candidate.extracted_answer || candidate.sanitized_answer);
+  const question = sanitizeLearningText(candidate.extracted_question || candidate.sanitized_question || '');
+  const notes = sanitizeLearningText(candidate.review_notes || '');
+  const reason = sanitizeLearningText(candidate.extraction_reason || '');
+  const risk = mergeLearningRisk({ riskLevel: candidate.risk_level, flags: [] }, title, answer, question, notes, reason);
   const status = candidate.review_status === 'NEEDS_REVIEW'
     ? 'Needs Review'
     : candidate.review_status.charAt(0) + candidate.review_status.slice(1).toLowerCase();
   return {
-    'Candidate': { title: textFragments(candidateTitle(candidate)) },
+    'Candidate': { title: textFragments(candidateTitle({ ...candidate, extracted_title: title.text })) },
     'Candidate ID': { rich_text: textFragments(candidate.id) },
     'Captured At': { date: isoDate(candidate.created_at) },
     'D1 Knowledge ID': { rich_text: textFragments(candidate.published_knowledge_id) },
     'D1 Knowledge Version': { number: candidate.published_knowledge_version },
-    'Proposed Answer': { rich_text: textFragments(candidate.extracted_answer || candidate.sanitized_answer) },
-    'Question': { rich_text: textFragments(candidate.extracted_question || candidate.sanitized_question) },
-    'Review Notes': { rich_text: textFragments(candidate.review_notes) },
+    'Proposed Answer': { rich_text: textFragments(answer.text) },
+    'Question': { rich_text: textFragments(question.text) },
+    'Review Notes': { rich_text: textFragments(notes.text) },
     'Reviewed At': { date: isoDate(candidate.reviewed_at) },
-    'Risk': statusProperty(schema, 'Risk', candidate.risk_level === 'LOW' ? 'Low' : candidate.risk_level === 'MEDIUM' ? 'Medium' : 'High'),
+    'Risk': statusProperty(schema, 'Risk', risk.riskLevel === 'LOW' ? 'Low' : risk.riskLevel === 'MEDIUM' ? 'Medium' : 'High'),
     'Source Conversation Ref': { rich_text: textFragments(candidate.source_conversation_id) },
     'Source Message Ref': { rich_text: textFragments(candidate.source_human_message_id) },
     'Status': statusProperty(schema, 'Status', status),
-    'Why Candidate': { rich_text: textFragments(candidate.extraction_reason) }
+    'Why Candidate': { rich_text: textFragments(reason.text) }
   };
 }
 

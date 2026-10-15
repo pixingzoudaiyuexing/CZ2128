@@ -172,6 +172,8 @@ const definitions: RuntimeConfigDefinition[] = [
   { key: 'ATTACHMENT_MAX_BYTES', kind: 'PLAIN', label: '附件大小', shortCode: 'fb', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1, ATTACHMENT_HARD_MAX_BYTES, 'INVALID_ATTACHMENT_SIZE') },
   { key: 'ATTACHMENT_MAX_COUNT_PER_MESSAGE', kind: 'PLAIN', label: '单消息附件数', shortCode: 'fc', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1, ATTACHMENT_HARD_MAX_COUNT, 'INVALID_ATTACHMENT_COUNT') },
   { key: 'ATTACHMENT_TTL_SECONDS', kind: 'PLAIN', label: '附件 TTL', shortCode: 'ft', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 60, 86400, 'INVALID_ATTACHMENT_TTL') },
+  { key: 'ATTACHMENT_FILE_TTL_SECONDS', kind: 'PLAIN', label: '普通文件保存秒数（默认 72 小时）', shortCode: 'f72', rollback: 'GENERIC', highImpact: true, validate: value => boundedInteger(value, 60, 259200, 'INVALID_ATTACHMENT_TTL') },
+  { key: 'ATTACHMENT_IMAGE_TTL_SECONDS', kind: 'PLAIN', label: '图片保存秒数（默认 7 天）', shortCode: 'fi7', rollback: 'GENERIC', highImpact: true, validate: value => boundedInteger(value, 60, 604800, 'INVALID_ATTACHMENT_TTL') },
   { key: 'ATTACHMENT_SOURCE_TIMEOUT_MS', kind: 'PLAIN', label: '附件源超时', shortCode: 'fs', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1000, 120000, 'INVALID_ATTACHMENT_TIMEOUT') },
   { key: 'ATTACHMENT_DESTINATION_TIMEOUT_MS', kind: 'PLAIN', label: '附件目标超时', shortCode: 'fd', rollback: 'GENERIC', highImpact: false, validate: value => boundedInteger(value, 1000, 120000, 'INVALID_ATTACHMENT_TIMEOUT') }
 ];

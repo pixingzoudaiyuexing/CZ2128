@@ -1,6 +1,8 @@
 # CZ2128 Architecture
 
-Status: **APPROVED V1 BASELINE — independent review resolved by Primary**
+Status: **V1 BASELINE RETAINED / ATTACHMENT V2 IMPLEMENTATION AND FULL STAGING ACCEPTANCE IN PROGRESS**
+
+The current task is limited to the existing Staging resources. Section 25 and D-043 supersede historical attachment byte/count quotas, uniform TTL, invitation quotas and cleanup ordering. Historical phase sections below are provenance, not claims that the current Work Unit is deployed or accepted.
 
 ## 1. Architectural Goal
 
@@ -46,7 +48,7 @@ Approved V1 stack:
 - Cloudflare Queues for reliable asynchronous processing and retries
 - R2 for temporary images/files
 - No KV dependency for V1 correctness
-- Durable Objects deferred; they are available on Workers Free, but V1 does not yet justify the extra coordination layer
+- Per-conversation Durable Objects remain deferred; the single Staging Crisp RTM connection owner is the explicit D-041 exception
 
 The HTTP Worker stays thin: authenticate, validate, normalize, enqueue, acknowledge.
 
@@ -440,46 +442,11 @@ Recommended policy:
 - `outbound_operations` for provider side-effect identity
 - never place file bodies in Queue messages; pass provider/R2 references and metadata only
 
-## 10. Temporary Attachments
+## 10. Temporary attachments
 
-### Canonical provider flow
+The current attachment contract is [Attachment transfer v2](#25-attachment-transfer-v2). It reuses private R2, D1 source identity, Queue reference jobs and the outbound-operation ledger while adding independently authorized resumable sessions and access grants. Ordinary files default to 72 hours and server-verified images to seven days from successful storage admission. Logical expiry remains an application authorization decision; bucket lifecycle is only a physical-cleanup backstop.
 
-```text
-Telegram source
-  -> trusted getFile downloader
-  -> private R2
-  -> direct Chatwoot multipart attachments[]
-
-Chatwoot source
-  -> verified-webhook, exact-allowlist downloader
-  -> private R2
-  -> direct Telegram multipart Bot API
-```
-
-The hosted Telegram Bot API currently limits `getFile` downloads to 20 MB. V1 enforces that limit. Both provider paths use direct multipart delivery; neither sends a proxy URL to Telegram or Chatwoot.
-
-### Secure proxy
-
-Implemented routes:
-
-```text
-GET  /attachments/:token
-HEAD /attachments/:token
-```
-
-Gateway behavior:
-
-- store only SHA-256 of the 256-bit opaque token
-- look up attachment metadata
-- verify `expires_at`
-- serve only the bound R2 object; never proxy an arbitrary database/user URL
-- preserve safe filename/content headers
-- support one byte range through the R2 native range read
-- return a uniform 404 for malformed, unknown, expired and missing-object access
-
-R2 lifecycle rules physically remove expired objects later; they are cleanup, not authorization.
-
-The secure proxy is implemented infrastructure for explicit temporary-download consumers rather than the default provider transport. Direct Telegram/Chatwoot binary bridging remains multipart. Crisp-05 Stage A uses proxy capabilities only where Crisp needs a customer-visible inline/download URL, and Stage B uses a forced-download capability only for an accepted customer upload surfaced to the original Telegram Topic.
+Historical Phase 3/Crisp-05 transport details in Section 17 describe the original 20 MiB/ten-item/unified-24-hour implementation and its original evidence scope. They are not current v2 product rules or acceptance evidence.
 
 ## 11. Telegram Topic Lifecycle
 
@@ -635,9 +602,9 @@ Resolved:
 
 With these decisions frozen, Phase 1 implementation may begin.
 
-## 17. Phase 3 Temporary Attachment Transport
+## 17. Historical Phase 3 / Crisp-05 Temporary Attachment Transport (superseded by Section 25)
 
-Phase 3 introduced one reusable attachment core for Telegram and Chatwoot. Crisp-05 Stage A extends the same core to Crisp without a second storage or reliability subsystem:
+**Historical contract and evidence.** D-043 supersedes the size/count/retention, source-file scope, upload quota and cleanup details below. Phase 3 introduced one reusable attachment core for Telegram and Chatwoot. Crisp-05 Stage A extends the same core to Crisp without a second storage or reliability subsystem:
 
 - one source message maps to zero-to-ten durable attachment rows and one stable Queue job per row;
 - source identity is `(source_provider, source_message_ref, source_attachment_ref)`;
@@ -736,3 +703,51 @@ New-conversation profile metadata is prepared concurrently with Topic creation, 
 The previous Docker RTM listener is not reproduced as a per-request Worker WebSocket. Staging instead uses one SQLite-backed `CrispRtmBridge` Durable Object as a lifecycle-owned outbound WebSocket client. It dynamically resolves Crisp's plugin RTM endpoint, authenticates only for `message:send` in the configured website room and forwards only visitor text into the existing main Queue. The RTM event identity is deliberately identical to webhook identity (`crisp:<website>:<session>:message:send:<fingerprint>`), so whichever path arrives first owns the existing event receipt and the later path converges as a duplicate rather than producing a second Telegram effect.
 
 RTM is a latency fast path, not a new source of truth. Webhook verification, file ingress, Picker updates, lifecycle events and the existing Queue/D1/outbound reliability model remain authoritative fallbacks. RTM connection setup/authentication errors therefore degrade back to webhook timing instead of dropping customer messages. The Durable Object binding and migration are Staging-only in this work unit; Production has no RTM binding or migration.
+
+## 25. Attachment transfer v2
+
+### Domain and authority
+
+This Work Unit changes the existing Staging application; it adds no environment, bucket, Queue, Provider account, Production deployment or release. The retained D1/Queue/outbound contracts continue to own event identity and visible effects. An HTTP upload success is not a Provider delivery acknowledgement.
+
+All generated upload/download links come from deployment-owned `PUBLIC_ORIGIN` through `src/config/public-origin.ts`. It must be a canonical HTTPS origin; Staging uses `https://cz2128.482658.xyz`. Worker request Host, forwarded headers and Queue payload origin are not fallback authority. Existing bootstrap Admin allowlisting, Support Bot generation, exact group/Topic/conversation binding and authoritative Crisp open-state checks remain in force.
+
+### Persistent model and compatibility
+
+`0012_attachment_transfer_v2.sql` is additive. It retains historical attachment rows, source uniqueness, foreign keys and old SQLite CHECKs. New fields include declaration/stored byte counts, `stored_at`, retention class/expiry, full SHA-256, grant expiry/revocation, deletion tombstone and cleanup attempt/deadline. New discoveries have `transfer_version=2` and opaque `attachments-v2/<id>` keys. `stored_size_bytes` is authoritative after admission; `declared_size_bytes` is an untrusted transport declaration before it. Values above 20 MiB leave the legacy constrained `size_bytes` null. Shared accessors avoid treating that null as a zero-byte file.
+
+New D1 tables hold upload sessions, immutable part manifests and ETags, independently versioned access grants, and a time-window request budget. Existing `upload_invites`/items and their constrained counters remain readable for historical jobs; v2 uses session/part state instead of the old three-file lifetime quota trigger. The old Worker cannot safely interpret all v2 sizes, sessions, grants and cleanup semantics. An additive migration does not authorize automatic executable rollback or database restore.
+
+### Resumable client and R2 protocol
+
+The browser initializes one UUID session per file through a valid bound invitation. The invitation authorizes new sessions for 15 minutes; an existing session has its own 24-hour expiry and capability. Invitation expiry alone does not terminate that established session. Revocation prevents additional uncompleted upload work while already admitted files keep their separate retention/access policy. Request throttling and three simultaneous sessions bound transient abuse; neither is a lifetime file/count product quota.
+
+Each part has a server-selected number/length and a client SHA-256. A D1 lease fixes its manifest before accepting bytes. `verifiedPartStream()` uses the real Worker `FixedLengthStream`, incremental hashing and backpressure; actual length or SHA mismatch cannot confirm a stored part. R2 ETags and immutable server manifests, not client-supplied completion ETags, assemble the object. Repeating an identical part converges; a different manifest at the same number fails closed. R2 completion, D1 admission and Queue dispatch are distinct boundaries with durable recovery state.
+
+After multipart completion, `inspectStoredAttachment()` rereads the complete private object as a stream, counts all bytes, calculates full SHA-256 and inspects bounded content structure. Only a matching complete file may acquire immutable `stored_at` and `STORED`; expired pending state cannot revive during cleanup. Browser incremental hashing uses fixed blocks. The page reports part/network progress, pause/resume, original-file mismatch, explicit errors and stored/queued/delivered/ambiguous outcomes. Reload recovery requires reselecting the original file and matching its checksum. Browser localStorage holds session metadata/capabilities but no file contents; it is a trusted-device convenience, not server authorization.
+
+### Type, retention, grants and physical cleanup
+
+MIME and extension are untrusted display hints. Server signatures/container checks choose `IMAGE` or `FILE` and safe download MIME. PNG framing/chunk CRC and JPEG marker/frame/scan structure are checked across the stream; bounded container checks cover the other recognized raster formats. Unknown, malformed and active content is forced to download as an ordinary file. This does not claim antivirus scanning or complete decoder validation.
+
+Ordinary files default to `stored_at + 259200`; verified images default to `stored_at + 604800`. Classification and admission time are written once. Explicit class-specific short Staging sample TTLs may exercise expiry, then must be restored. Historical unified `ATTACHMENT_TTL_SECONDS`, `ATTACHMENT_MAX_BYTES` and count settings do not select v2 policy. Invitation expiry, upload session expiry, grant expiry and retention expiry are separate checks. None of delivery retry, `/files` grant renewal or reauthorization extends retention.
+
+D1 access grants store only capability hashes and generations; tokens are deterministically derived with the existing bootstrap secret and domain separation. GET/HEAD `/attachments/:token[/inline|/download]` checks grant state, file expiry/tombstone and private R2 identity before serving. A single Range streams only the requested bytes. Legacy 43-character hash-backed tokens remain compatible within their original row validity. Authorized `/files` in the existing mapped Topic can issue another grant for retained files without reopening an expired upload invitation.
+
+At logical expiry access stops immediately. The bounded cleanup pass deletes the managed R2 object first, then marks D1 `deleted_at` and revokes access; attachment/item foreign-key audit identity remains. R2 deletion failure retains the storage key and backoff fields. A later D1 tombstone failure is retryable because object deletion is idempotent. Incomplete/revoked sessions retain R2 upload IDs and abort/retry state; multipart lifecycle abort is a backstop, not confirmation that application cleanup succeeded.
+
+The v2 prefix avoids the old seven-day `attachments/` rule. New lifecycle rules require actual remote evidence and enough margin for session initiation versus completed-object age so they cannot erase a valid image before seven days from admission. Historical rules are not automatically rewritten by code deployment.
+
+### Provider transport and measured limits
+
+Crisp visitor and real-operator `file` events use verified website/session identity and exact official storage-host/redirect checks; ordinary visitor files now enter the same pipeline. Crisp limits what its own clients can upload, so the v2 portal supplies the larger-file path. Telegram's hosted `getFile` cannot download files above 20 MB. Such operator messages create a clear authenticated re-upload portal rather than a false delivered file. The original oversize Provider attempt is not automatically replayed.
+
+Telegram native delivery streams multipart from R2, including a known content length, within the upstream photo/file constraints (photo 10 MB; other multipart files 50 MB). Larger stored files use an authenticated download link through the same deterministic `SEND_ATTACHMENT` ledger. Link text preserves operator provenance and notification options; HTTP 429 uses the existing bounded same-operation retry, and uncertain Provider outcomes remain `AMBIGUOUS`. Manual retry must match the parent's frozen method/target: a historical native send cannot silently become a link send. Capability paths that cannot be faithfully reconstructed remain ineligible.
+
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+### Acceptance boundary
+
+The local Wrangler harness uses real local D1, R2 and FixedLengthStream for 32 MiB multipart, full SHA-256, Range/HEAD, restart/resume and authorization failures. Crisp authoritative-state reads and Queue dispatch are replaced by isolated test adapters; no real Crisp/Telegram send occurs. Exact final-head CI, Formal Independent Review, migration/deployment and all real acceptance remain separately gated in [FULL-STAGING-ACCEPTANCE.md](FULL-STAGING-ACCEPTANCE.md).

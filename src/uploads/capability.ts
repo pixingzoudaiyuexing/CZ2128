@@ -60,6 +60,14 @@ export async function deriveUploadDownloadToken(
   return hmac(secret, `upload-download:v1:${inviteId}:${uploadId}`);
 }
 
+export async function deriveUploadSessionToken(secret: string, sessionId: string): Promise<string> {
+  return hmac(secret, `upload-session:v2:${sessionId}`);
+}
+
+export async function deriveAttachmentGrantToken(secret: string, attachmentId: string, generation: number): Promise<string> {
+  return hmac(secret, `attachment-grant:v2:${attachmentId}:${generation}`);
+}
+
 export async function hashUploadCapability(token: string): Promise<string> {
   if (!isValidAttachmentToken(token)) throw new Error('UPLOAD_CAPABILITY_TOKEN_INVALID');
   return hashAttachmentToken(token);

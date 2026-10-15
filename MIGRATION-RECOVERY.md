@@ -1,10 +1,10 @@
 # CZ2128 Migration, Backup and Recovery
 
-Status: **PHASE 4B-5 ACCEPTED / COMPLETE / FROZEN / MERGED**
+Status: **HISTORICAL PHASE 4B-5 BASELINE RETAINED / ATTACHMENT V2 RECOVERY CONTRACT IN PROGRESS**
 
 This document defines recovery boundaries for the current repository. It is not a production change plan and grants no authority to restore D1, pause/purge Queue messages, change R2, roll back a deployment or edit canonical data.
 
-Production remains **NOT DEPLOYED**. Production `DLQ_QUARANTINE` remains **NOT PROVISIONED / NOT VALIDATED**.
+The current work is limited to existing Staging. Production status statements in the frozen Phase 4B material below are historical; no Production inspection or mutation is authorized by the current task.
 
 Frozen Phase 4B-4B runtime baseline: `8499a5d4eaa40d4461d1882aaf6f4e2ac93efa08`
 
@@ -35,9 +35,9 @@ See [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md) for state handling 
 
 ## 2. Schema History
 
-The historical Phase 4B recovery baseline was `0001` through `0005`. The current canonical forward migration inventory is `0001` through `0011`; use the actual reviewed Git inventory for any new rollout. Migrations `0006`–`0010` add Crisp attachment/upload/UX and knowledge/learning state. `0011_crisp_human_quiet.sql` adds only a nullable conversation notification clock and immutable human-message-time receipts. It does not backfill or modify existing conversations, Topic mappings, messages, attachments, runtime config or AI state. Apply 0011 before running the new Worker.
+The historical Phase 4B recovery baseline was `0001` through `0005`. The current candidate forward migration inventory is `0001` through `0012`; use the actual reviewed Git inventory for any new rollout. Migrations `0006`–`0010` add Crisp attachment/upload/UX and knowledge/learning state. `0011_crisp_human_quiet.sql` adds only a nullable conversation notification clock and immutable human-message-time receipts. It does not backfill or modify existing conversations, Topic mappings, messages, attachments, runtime config or AI state. Apply 0011 before running the new Worker.
 
-For the quiet-window Staging rollout, capture the existing Worker version, bindings, secret-name set, queues/cron, complete migration list and immediate pre-migration D1 Time Travel bookmark. Time Travel is the full-database recovery point, including FTS state; D1 portable export currently cannot export a database containing virtual tables. Do not drop FTS to manufacture an export. Any optional table-scoped export must be encrypted and its limited coverage stated. Worker-only rollback to the prior version is compatible with additive 0011 and must leave the database/receipts intact; it restores the older notification behavior. Database restore is a separate destructive recovery action, not part of automatic code rollback.
+For the quiet-window Staging rollout, capture the existing Worker version, bindings, secret-name set, queues/cron, complete migration list and immediate pre-migration D1 Time Travel bookmark. Time Travel is the full-database recovery point, including FTS state; D1 portable export currently cannot export a database containing virtual tables. Do not drop FTS to manufacture an export. Any optional table-scoped export must be encrypted and its limited coverage stated. For the earlier 0011-only change, Worker-only rollback could ignore its extra clock/receipt fields and must leave the database/receipts intact; this narrow claim does not cover attachment v2. That earlier rollback restores the older notification behavior. Database restore is a separate destructive recovery action, not part of automatic code rollback.
 
 | Migration | Durable contract introduced | Recovery concern |
 | --- | --- | --- |
@@ -49,13 +49,36 @@ For the quiet-window Staging rollout, capture the existing Worker version, bindi
 
 Migration `0005` is covered by real local SQLite migration tests for row/identity preservation, legacy `FAILED`, new status compatibility, integrity and foreign keys. This is not production migration or restore evidence.
 
+## 2A. Attachment transfer v2 migration 0012
+
+`0012_attachment_transfer_v2.sql` adds columns and tables without rebuilding the old attachment/invite/item tables or dropping their CHECKs. Existing source identities, delivery ledger, row IDs and foreign-key audit relationships remain. Schema additivity is not a complete old-runtime compatibility guarantee.
+
+| State | v2 representation | Recovery/compatibility rule |
+| --- | --- | --- |
+| Declared versus actual bytes | `declared_size_bytes` before storage; `stored_size_bytes` after verified admission | Old `size_bytes` stays null above 20 MiB because its historical CHECK remains. Never coerce that null to zero or use it as the only large-file size. |
+| Storage and policy | Immutable `stored_at`, `retention_class`, `retention_expires_at`, full SHA-256 | 72-hour FILE/seven-day IMAGE defaults begin after completion/verification, not invite creation. A retry or grant renewal must not refresh retention. Existing historical rows retain their recorded expiry unless a separately defined safe migration changes them. |
+| New versus historical transfer | `transfer_version=2`, `attachments-v2/<id>`; old rows remain v1 | Old Queue envelope version 1 alone does not make an old Worker understand v2 jobs, grants or byte fields. |
+| Multipart progress | `attachment_upload_sessions`, `attachment_upload_parts` | Preserve upload IDs, immutable number/size/hash/ETag manifests, lease ownership and completion phase. Do not erase state to retry a part/completion. |
+| Authorization | Independent session and `attachment_access_grants` validity/generation/revocation | Expired invite is not expired retained file. Revoked pending sessions cannot admit bytes; completed-file access still checks its grant and retention. |
+| Cleanup | Tombstone and cleanup attempts/deadline; multipart abort state | Keep R2 key/upload ID until delete/abort succeeds; retain minimal D1/FK audit after physical deletion. Never mark cleanup successful from a failed R2 request. |
+
+Before applying 0012, capture the exact old/new SHAs, active 100% Worker version, all migrations/hashes, live D1 UUID, bindings/secret-name set, custom domain, cron, Queue/DLQ backlog and D1 OPEN receipts separately, active upload/ambiguous work, and a fresh Time Travel bookmark. Validate the migration against both a clean local database and preserved synthetic legacy rows, including foreign keys and values within the old CHECK. Apply only the reviewed forward migration to the independently verified existing Staging D1.
+
+The prior Worker may ignore new SQL columns yet still mishandle v2 sizes, grant access, pending multipart recovery or cleanup. Do not call rollback fully compatible based only on an additive SQL diff. The preferred recovery after v2 work begins is a reviewed forward fix. A Worker-only rollback requires exact compatibility fixtures for the durable v2 states and backlog it will encounter, plus a plan that prevents unrecognized work without purging it. No automatic down-migration, table rebuild, queue purge or database restore is supplied.
+
+D1 Time Travel is the native full-D1 recovery point, including FTS state. It is not a verified restore test, and it does not rewind R2, Queue or Provider sends. A SQL export restricted to ordinary tables is supplementary and its table coverage, encryption and integrity must be recorded; it is not a full atomic backup. Current D1 export documentation excludes databases containing virtual tables. Do not drop `knowledge_entries_fts` to bypass that limit. Export content can contain customer data, ciphertext and capability hashes: use an encrypted access-controlled destination and never print it in logs/review prompts. [Official Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/), [D1 export limitations](https://developers.cloudflare.com/d1/best-practices/import-export-data/#known-limitations).
+
+A database restore can remove v2 grants/session receipts while post-bookmark objects and externally delivered links still exist, or make a previous `SENT`/`AMBIGUOUS` operation appear unsent. It is a separate destructive decision with delivery isolation and forward reconciliation, never the automatic rollback for this Staging deployment. Preserve the existing original target evidence and accepted duplicate-risk boundaries.
+
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+
 ## 3. Required Evidence Before Any Change
 
 Collect and protect the following before proposing a migration, code rollback or restore:
 
 - Environment/account name and exact resource identifiers.
 - Current deployed Worker version/SHA and intended target SHA.
-- Repository migration file hashes and the exact `0001`-`0005` inventory.
+- Repository migration file hashes and the exact candidate/applied inventory; `0001`–`0012` is the current candidate set, while older phase sections retain their original `0001`–`0005` scope.
 - D1 information, migration status and Time Travel information/bookmark where available.
 - Queue names, consumer configuration, backlog/retry state and incident window.
 - R2 bucket identities and attachment lifecycle configuration.
@@ -138,7 +161,7 @@ No destructive command is provided here. D1 Time Travel restore, Queue pause/res
 ### D1 versus R2/provider state
 
 - D1 Time Travel affects D1 only. It does not undo provider messages, restore/delete R2 objects or rewind Queue state.
-- Attachment cleanup intentionally deletes R2 before D1 metadata. A restore can reintroduce D1 rows whose R2 objects no longer exist.
+- Current v2 cleanup deletes R2 before setting a retained D1 tombstone; failed R2 deletion leaves retry metadata intact. Historical implementations used different ordering. A restore can still reintroduce an accessible-looking D1 row whose object no longer exists.
 - A restore can rewind `SENT`, `AMBIGUOUS`, child links, audit or Admin receipts while provider side effects remain real.
 - DLQ quarantine may contain terminal evidence not present at the restored D1 point. It must not be imported or replayed.
 

@@ -26,6 +26,7 @@ describe('upload invite durable control plane', () => {
     db.migrate();
     env = {
       DB: db,
+      PUBLIC_ORIGIN: 'https://worker.example',
       BOT_GROUP_ID: '-100',
       TELEGRAM_BOT_TOKEN: 'bot-secret-token',
       CRISP_API_IDENTIFIER: 'crisp-id',

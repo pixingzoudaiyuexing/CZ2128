@@ -89,5 +89,23 @@ describe('learning candidate capture', () => {
     expect(await getLearningCandidateBySourceMessage(env, 'crisp-ok')).not.toBeNull();
     expect(await getLearningCandidateBySourceMessage(env, 'tg-pending')).toBeNull();
   });
+
+  it('excludes legacy Crisp automation only when frozen outbound provenance proves it', async () => {
+    const { db, env } = setup(); dbs.push(db);
+    db.exec(`
+      INSERT INTO messages
+      (id,conversation_id,provider,provider_message_ref,direction,actor_role,message_type,text_content,created_at)
+      VALUES ('auto','conv-1','crisp','auto-ref','OUTBOUND','OPERATOR','TEXT','Automated update',1),
+             ('human','conv-1','crisp','human-ref','OUTBOUND','OPERATOR','TEXT','Human reply without a mirror',2);
+      INSERT INTO outbound_operations
+      (id,conversation_id,destination_provider,operation_type,status,request_options_json,created_at,updated_at)
+      VALUES ('send_tg_crisp_auto-ref','conv-1','telegram','SEND_MESSAGE','SENT',
+              '{"version":1,"disableNotification":true,"origin":"CRISP_AUTOMATED_OPERATOR"}',1,1);
+    `);
+    expect((await listRecoverableHumanReplies(env)).map(row => row.id)).toEqual(['human']);
+    expect(await recoverMissingLearningCandidates(env)).toBe(1);
+    expect(await getLearningCandidateBySourceMessage(env, 'auto')).toBeNull();
+    expect(await getLearningCandidateBySourceMessage(env, 'human')).not.toBeNull();
+  });
 });
 

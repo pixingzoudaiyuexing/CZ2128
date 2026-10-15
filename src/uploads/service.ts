@@ -2,6 +2,9 @@ import { createCrispMessage, fetchCrispConversationState } from '../adapters/cri
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
+import { trustedPublicOrigin } from '../config/public-origin';
+import { ensureAttachmentGrant } from '../attachments/grants';
+import { AttachmentRow } from '../core/attachments';
 import { getUploadConfig } from '../config/uploads';
 import { executeOutboundOperation } from '../core/outbound-operations';
 import { ProviderDeliveryError } from '../core/errors';
@@ -33,6 +36,8 @@ export interface UploadInviteCommand {
   operatorRef: string;
   publicOrigin: string;
   threadRef: string;
+  uploadRole?: 'CUSTOMER' | 'OPERATOR';
+  offset?: number;
 }
 
 export function canonicalUploadOrigin(value: string): string {
@@ -56,13 +61,13 @@ function requireCapabilitySecret(env: Env): string {
 }
 
 function inviteMessage(url: string, maxFiles: number, maxTotalBytes: number): string {
-  const mib = Math.max(1, Math.floor(maxTotalBytes / (1024 * 1024)));
   return [
     'Temporary file upload / 临时文件上传',
     '',
     '客服已为当前会话开启临时文件上传入口。',
     '链接仅用于当前会话，15 分钟内有效。',
-    '最多上传 ' + maxFiles + ' 个普通文件，总计不超过 ' + mib + ' MiB。',
+    '支持图片和普通文件，可连续上传。大文件支持分片和断点续传。',
+    '普通文件保存 72 小时，图片保存 7 天，从成功存储开始计算。',
     '',
     url
   ].join('\n');
@@ -125,7 +130,7 @@ export async function createAndSendUploadInvite(
   }
 
   const secret = requireCapabilitySecret(env);
-  const origin = canonicalUploadOrigin(command.publicOrigin);
+  const origin = trustedPublicOrigin(env);
   const attachments = getAttachmentConfig(env);
   const config = getUploadConfig(attachments);
   const inviteId = await stableUploadInviteId(
@@ -149,12 +154,19 @@ export async function createAndSendUploadInvite(
     updateRef: command.updateRef,
     expiresAt: now + config.inviteTtlSeconds,
     maxFiles: config.maxFiles,
-    maxTotalBytes: config.maxTotalBytes
+    maxTotalBytes: Math.min(config.maxTotalBytes, 20 * 1024 * 1024),
+    uploadRole: command.uploadRole
   });
 
   if (created.outcome === 'STALE') return 'STALE';
   const invite: UploadInviteRow = created.row;
   const uploadUrl = origin + '/uploads/' + token;
+  if (invite.upload_role === 'OPERATOR') {
+    await sendTelegramAck(env, conversation.id, command.threadRef,
+      'operator_upload_portal:' + invite.id, 'operator-upload:' + invite.id,
+      'Telegram 云端 Bot 接口无法下载超过 20 MB 的文件。请在此安全入口上传原文件，成功后再转发给当前 Crisp 客户：\n' + uploadUrl);
+    return 'SENT';
+  }
   const operationId = 'upload_invite_crisp:' + invite.id;
   const result = await executeOutboundOperation(
     env,
@@ -239,4 +251,22 @@ export async function revokeUploadInviteFromTelegram(
     'upload-revoke:' + command.supportProfileVersion + ':' + command.updateRef,
     revoked > 0 ? '当前临时上传入口已撤销。' : '当前没有可撤销的临时上传入口。'
   );
+}
+
+export async function sendConversationFiles(env: Env, conversation: UploadInviteConversation, command: UploadInviteCommand): Promise<void> {
+  const offset=Number(command.offset || 0);
+  const files = await env.DB.prepare(`SELECT * FROM attachments WHERE conversation_id=? AND stored_at IS NOT NULL
+    AND deleted_at IS NULL AND retention_expires_at>? ORDER BY stored_at DESC,id LIMIT 31 OFFSET ?`)
+    .bind(conversation.id,Math.floor(Date.now()/1000),offset).all<AttachmentRow>();
+  const more=files.results.length>30;files.results=files.results.slice(0,30);
+  const lines = await Promise.all(files.results.map(async file => {
+    const grant = await ensureAttachmentGrant(env,file,true);
+    return `${file.safe_filename}\n${grant.url}\n保存至 ${new Date(grant.expiresAt*1000).toISOString()}`;
+  }));
+  if(more)lines.push(`查看更多文件：在本 Topic 发送 /files ${offset+30}`);
+  const batches:string[]=[];let current='';
+  for(const line of lines){if(current.length+line.length+2>3500){batches.push(current);current='';}current+=(current?'\n\n':'')+line;}
+  if(current)batches.push(current);if(!batches.length)batches.push('当前会话没有仍在保存期限内的文件。');
+  for(let index=0;index<batches.length;index++)await sendTelegramAck(env,conversation.id,command.threadRef,
+    `files_ack:${command.supportProfileVersion}:${command.updateRef}:${index}`,`files:${command.updateRef}:${index}`,batches[index]);
 }

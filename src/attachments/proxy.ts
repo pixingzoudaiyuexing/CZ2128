@@ -17,6 +17,7 @@ function proxyHeaders(row: AttachmentRow, contentLength: number, mode: Attachmen
     'Referrer-Policy': 'no-referrer',
     'Cross-Origin-Resource-Policy': 'cross-origin',
     'Accept-Ranges': 'bytes'
+    ,'Content-Security-Policy': "default-src 'none'; sandbox"
   });
 }
 
@@ -33,16 +34,26 @@ export async function handleAttachmentProxy(
     `SELECT * FROM attachments
      WHERE access_token_hash = ? AND expires_at > ?
        AND (
-         status IN ('STORED', 'DELIVERED') OR
+         (transfer_version=2 AND stored_at IS NOT NULL) OR status IN ('STORED', 'DELIVERED') OR
          (status = 'FAILED_FINAL' AND last_error = 'ATTACHMENT_DELIVERY_AMBIGUOUS')
        )`
   ).bind(tokenHash, now).first<AttachmentRow>();
-  if (!row) return notFound();
-  if (mode === 'inline' && !isSafeInlineImageMime(row.mime_type)) return notFound();
+  const granted = row || await env.DB.prepare(
+    `SELECT a.* FROM attachment_access_grants g JOIN attachments a ON a.id=g.attachment_id
+     WHERE g.token_hash=? AND g.expires_at>? AND g.revoked_at IS NULL
+       AND COALESCE(a.retention_expires_at,a.expires_at)>? AND a.deleted_at IS NULL
+       AND ((a.transfer_version=2 AND a.stored_at IS NOT NULL) OR a.status IN ('STORED','DELIVERED') OR
+         (a.status='FAILED_FINAL' AND a.last_error='ATTACHMENT_DELIVERY_AMBIGUOUS'))`
+  ).bind(tokenHash, now, now).first<AttachmentRow>();
+  if (!granted || granted.deleted_at || granted.grant_revoked_at ||
+      (granted.retention_expires_at ?? granted.expires_at ?? 0) <= now ||
+      (granted.grant_expires_at != null && granted.grant_expires_at <= now)) return notFound();
+  if (mode === 'inline' && (!isSafeInlineImageMime(granted.mime_type) ||
+      granted.transfer_version === 2 && granted.retention_class !== 'IMAGE')) return notFound();
 
   let metadata: R2Object | null;
   try {
-    metadata = await env.ATTACHMENTS_BUCKET.head(row.storage_key);
+    metadata = await env.ATTACHMENTS_BUCKET.head(granted.storage_key);
   } catch {
     return notFound();
   }
@@ -62,7 +73,7 @@ export async function handleAttachmentProxy(
   }
 
   const contentLength = range?.length ?? metadata.size;
-  const headers = proxyHeaders(row, contentLength, mode);
+  const headers = proxyHeaders(granted, contentLength, mode);
   if (range) headers.set('Content-Range', range.contentRange);
   const status = range ? 206 : 200;
   if (request.method === 'HEAD') return new Response(null, { status, headers });
@@ -70,7 +81,7 @@ export async function handleAttachmentProxy(
   let object: R2ObjectBody | null;
   try {
     object = await env.ATTACHMENTS_BUCKET.get(
-      row.storage_key,
+      granted.storage_key,
       range ? { range: { offset: range.offset, length: range.length } } : undefined
     );
   } catch {

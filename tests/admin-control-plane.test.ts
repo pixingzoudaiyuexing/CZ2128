@@ -101,9 +101,6 @@ const localOnlyAdminEditCases = [
   ['caa', 'CRISP_AI_AVATAR_URL', 'https://example.com/runtime-ai.png'],
   ['tnt', 'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR', 'silent'],
   ['tnm', 'TELEGRAM_NOTIFY_MANUAL_OFF', 'normal'],
-  ['fb', 'ATTACHMENT_MAX_BYTES', '1048576'],
-  ['fc', 'ATTACHMENT_MAX_COUNT_PER_MESSAGE', '5'],
-  ['ft', 'ATTACHMENT_TTL_SECONDS', '3600'],
   ['fs', 'ATTACHMENT_SOURCE_TIMEOUT_MS', '15000'],
   ['fd', 'ATTACHMENT_DESTINATION_TIMEOUT_MS', '15000']
 ] as const;

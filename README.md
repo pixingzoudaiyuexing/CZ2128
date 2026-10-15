@@ -1,6 +1,14 @@
 # CZ2128
 
-## One-Click Production Operations
+## Current scope: existing Staging only
+
+The current Work Unit repairs attachment transfer and completes full acceptance against the existing `cz2128-4c-staging` Worker at `https://cz2128.482658.xyz`. It does not create another environment or authorize Production, Docker, a new tag/Release, or GHCR publication. The recorded engineering base is `6af87f6ef60f5c868c62489b1b908c3a70ac1d7f`; implementation, CI/review, deployment and real acceptance remain separate evidence levels.
+
+Attachment transfer v2 removes CZ2128 product size/count quotas, uses resumable private R2 multipart sessions with SHA-256 verification, and defaults to **72 hours for ordinary files / seven days for server-verified images from successful storage admission**. Provider/platform limits still apply. Network chunks remain at most 8 MiB while durable assembly supports R2 logical parts up to 5 GiB and the provider’s 5 TiB / 10,000-part boundary. See [attachment architecture](ARCHITECTURE.md#25-attachment-transfer-v2) and [full Staging acceptance](FULL-STAGING-ACCEPTANCE.md).
+
+The full v2 Work Unit is **IN IMPLEMENTATION / NOT STAGING ACCEPTED**. Local workerd 32/80 MiB tests are not real Crisp/Telegram/browser acceptance. Historical phase/release instructions below retain their original scope and cannot override this Staging-only task.
+
+## Historical Production workflow reference (outside current scope)
 
 [Deploy CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/deploy-production.yml) · [Update CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/update-production.yml) · [Rollback CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/rollback-production.yml)
 
@@ -54,12 +62,12 @@ Phases 1-3.5 are complete and merged. Phase 4A, Phase 4B-2B and Phase 4B-2C are 
 - The existing private Telegram Admin Bot and authorization/session/idempotency boundaries are reused; there is no Web Admin, public reliability API or new authentication system.
 - Reliability summary, uncertain operations, operation details, audit and AI Reliability are bounded administrative reads. AI Reliability is read-only.
 - Manual reconciliation, mark-delivered, cancel and duplicate-risk manual retry are active. Operation identity and CREATE_TOPIC provider references remain in expiring Admin session state rather than callback payloads.
-- `CONFIRMED_NOT_SENT` is inactive. Generic DLQ replay, Durable Objects and migration `0006` are absent.
+- `CONFIRMED_NOT_SENT` and generic DLQ replay remain inactive. The frozen Phase 4B-3 introduced no Durable Object or `0006`; later D-041 and attachment migrations are separate explicit extensions.
 
 ## DLQ Capture and Inspection
 - `cz2128-queue` and `cz2128-dlq` are consumed by the same Worker and separated only through `batch.queue`; normal queue handling remains unchanged.
 - The DLQ capture path uses D1, trusted Queue metadata and the dedicated private `DLQ_QUARANTINE` R2 fallback. Capture never invokes normal event processing, provider adapters, R2 downloads or Queue sends.
-- Raw bodies, message/AI content, private URLs, attachment credentials, provider bodies and free-form exceptions are never persisted or displayed.
+- The DLQ capture/inspection path never persists or displays raw bodies, message/AI content, private URLs, attachment credentials, provider bodies or free-form exceptions.
 - One deterministic sanitized receipt is atomically upserted through the existing `0005` schema. If D1 fails, one deterministic allowlisted quarantine object is written to `DLQ_QUARANTINE`. The raw Cloudflare message is ACKed only after either durable path succeeds; both failing requests Queue retry.
 - Canonical PROCESSED completion and matching DLQ RESOLVED metadata converge in either commit order. The authenticated private Telegram Admin Bot provides bounded D1 and quarantine metadata views. Quarantine remains inspection-only with no import/redrive/replay/resend action.
 - Simultaneous persistent D1 and R2 failure plus Queue retry exhaustion remains a residual loss risk. Local Wrangler/workerd tests cover service-level concurrency but do not establish production load or multi-region behavior.
@@ -95,7 +103,7 @@ These documents preserve the Phase 4B-5 boundaries and the historical 4C-0A/4C-0
 - `npm run lint`
 - `npm run test`
 
-For Production, do not use `wrangler.toml`. The reviewed path is `wrangler.production.template.jsonc` plus the manual [Deploy CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/deploy-production.yml) workflow. Only that explicitly started workflow may create or adopt the frozen unsuffixed Production resources. Normal CI, pushes and pull requests never create or mutate Production resources.
+Historical Production reference, outside the current Work Unit: do not use `wrangler.toml` for that environment. The previously reviewed path is `wrangler.production.template.jsonc` plus the manual [Deploy CZ2128](https://github.com/pixingzoudaiyuexing/CZ2128/actions/workflows/deploy-production.yml) workflow. Only that explicitly started workflow may create or adopt the frozen unsuffixed Production resources. Normal CI, pushes and pull requests never create or mutate Production resources.
 
 ## Environment Variables
 Core:
@@ -119,12 +127,14 @@ never interpreted as a Picker selection. Example option:
 {"pickerId":"main","value":"human","label":"Contact human","handoff":true}
 ```
 
-Optional attachment limits:
-- `ATTACHMENT_MAX_BYTES`: maximum bytes per attachment, capped at 20 MiB
-- `ATTACHMENT_MAX_COUNT_PER_MESSAGE`: maximum attachments processed per provider message, capped at 10
-- `ATTACHMENT_TTL_SECONDS`: business retention, capped at 86400 seconds
-- `ATTACHMENT_SOURCE_TIMEOUT_MS`: source download timeout, default 30000
-- `ATTACHMENT_DESTINATION_TIMEOUT_MS`: destination upload timeout, default 30000
+Attachment configuration:
+
+- `PUBLIC_ORIGIN`: deployment-owned exact HTTPS origin; Staging uses `https://cz2128.482658.xyz`. Request Host, forwarded headers and queued `publicOrigin` do not authorize generated links; workers.dev origins are rejected.
+- `ATTACHMENT_FILE_TTL_SECONDS`: ordinary-file retention, default `259200` (72 hours).
+- `ATTACHMENT_IMAGE_TTL_SECONDS`: server-verified image retention, default `604800` (seven days).
+- The two class-specific TTL overrides support separately controlled short Staging samples (60 seconds up to each default); restore 72 hours / seven days after those tests.
+- `ATTACHMENT_MAX_BYTES`, `ATTACHMENT_MAX_COUNT_PER_MESSAGE` and unified `ATTACHMENT_TTL_SECONDS` are retired policy inputs. Their historical values remain audit/compatibility data and do not impose v2 product limits or shorten class-specific retention.
+- `ATTACHMENT_SOURCE_TIMEOUT_MS` and `ATTACHMENT_DESTINATION_TIMEOUT_MS`: transport timeouts, default `30000`, not file size/count policies.
 
 Optional AI configuration:
 - `AI_BASE_URL`: OpenAI-compatible API base URL, for example `https://api.openai.com/v1`
@@ -148,7 +158,7 @@ These two values are intentionally excluded from the Admin runtime control plane
 
 Bootstrap-only runtime control plane:
 - `RUNTIME_CONFIG_MASTER_KEY`: exactly 32 random bytes encoded as unpadded base64url
-- `ADMIN_TELEGRAM_BOT_TOKEN`: dedicated Admin Bot token; never reuse the Support Bot
+- `ADMIN_TELEGRAM_BOT_TOKEN`: optional legacy break-glass Admin identity; current operation uses the single Support Bot for authenticated private Admin and the designated forum
 - `ADMIN_TELEGRAM_WEBHOOK_SECRET`: Admin Bot webhook secret token
 - `ADMIN_TELEGRAM_SECRET_PATH`: independent opaque Admin webhook path
 - `ADMIN_TELEGRAM_USER_IDS`: comma-separated exact positive Telegram user IDs
@@ -164,9 +174,9 @@ npx wrangler secret put ADMIN_TELEGRAM_SECRET_PATH
 npx wrangler secret put ADMIN_TELEGRAM_USER_IDS
 ```
 
-The Admin Bot webhook is `/webhooks/admin-telegram/<ADMIN_TELEGRAM_SECRET_PATH>`. It also requires `X-Telegram-Bot-Api-Secret-Token`, a private chat and an allowlisted numeric user ID. Bootstrap fields, Chatwoot webhook signing and Cloudflare bindings cannot be modified through the bot.
+The primary `/webhooks/telegram/<path>` routes authorized private chats to Admin and only the exact configured supergroup to Support. The optional legacy Admin Bot webhook is `/webhooks/admin-telegram/<ADMIN_TELEGRAM_SECRET_PATH>`. It also requires `X-Telegram-Bot-Api-Secret-Token`, a private chat and an allowlisted numeric user ID. Bootstrap fields, Chatwoot webhook signing and Cloudflare bindings cannot be modified through the bot.
 
-Runtime overrides cover AI provider/settings, the atomic Support Telegram profile, support-group migration, Chatwoot API settings and attachment limits. Missing keys fall back to env. Existing encrypted overrides fail closed if they cannot authenticate or decrypt. Support Bot rotation and group migration are confirmed workflows; generic rollback is intentionally unavailable for those side-effectful keys.
+Runtime overrides cover AI provider/settings, the atomic Support Telegram profile, support-group migration, Chatwoot API settings and supported attachment retention/transport settings. Missing keys fall back to env only after a successful coherent D1 read. Existing encrypted overrides fail closed if they cannot authenticate or decrypt. Support Bot rotation and group migration are confirmed workflows; generic rollback is intentionally unavailable for those side-effectful keys.
 
 ## Webhook Identity
 - Configure the Chatwoot webhook secret so Chatwoot sends delivery, timestamp and HMAC signature headers.
@@ -183,24 +193,24 @@ Runtime overrides cover AI provider/settings, the atomic Support Telegram profil
 - Staging AI test scope is checked before trigger enqueue, generation/retry, DLQ redrive and visible sends. If scope is removed after Chatwoot delivery is durably `SENT`, the same deterministic operation may finish only its Telegram mirror and provider-free state convergence.
 - AI context represents customer text as `user`, generated answers as `assistant`, and human operator replies as labeled `system` messages.
 
-## Temporary Attachments
-- `ATTACHMENTS_BUCKET` is a private R2 binding for `cz2128-attachments`.
-- Source downloads are limited to 20 MiB and stream into bounded R2 multipart chunks.
-- Telegram and Chatwoot destinations receive multipart uploads, one attachment at a time.
-- `GET` and `HEAD /attachments/:token` use a 256-bit opaque bearer token; D1 stores only its SHA-256 hash.
-- The proxy supports one `Range` request and returns `Cache-Control: private, no-store` plus `X-Content-Type-Options: nosniff`.
-- Hourly scheduled cleanup removes expired R2 objects and then deletes their D1 rows in batches of 100.
+## Temporary attachments: current v2 behavior
 
-Deployment prerequisites:
+One private subsystem serves Crisp visitors/operators, Telegram operators and authenticated customer/operator upload portals. Verified webhooks still establish conversation identity; provider file bodies never enter Queue messages. `attachments-v2/<id>` separates new objects from the historical `attachments/` lifecycle prefix. The existing Staging attachment bucket is reused.
 
-```bash
-npx wrangler r2 bucket create cz2128-attachments
-npx wrangler r2 bucket lifecycle add cz2128-attachments attachment-retention attachments/ --expire-days 7 --abort-multipart-days 7
-```
+- `/upload` creates a 15-minute customer invitation; a Telegram file beyond hosted `getFile` capability receives an explicit operator re-upload portal. New v2 files have no CZ2128 lifetime file/count quota. At most three simultaneous active sessions and a per-invite request rate budget are temporary anti-abuse controls, not a total-file quota.
+- The page accepts images and ordinary files continuously, reports real XHR part progress, supports pause/resume and original-file re-selection, and distinguishes stored, queued, delivered and ambiguous delivery. Browser storage holds resumable session metadata/capabilities, never file bodies; use a trusted browser profile and clear its records on a shared device.
+- A server-bound session lasts 24 hours independently from invitation expiry. Confirmed parts are durable D1 rows plus R2 multipart ETags; identical retries converge and a conflicting part checksum is rejected. Completion validates ordered parts, exact lengths and the full stored object's SHA-256 by a separate streaming read before admission.
+- Server byte signatures/container checks select image retention and safe inline MIME. PNG framing/CRC and JPEG structure are checked while streaming; other supported image containers use bounded structural checks. Unknown, malformed or active content remains an ordinary forced download. This is not an antivirus or complete image-decoder guarantee.
+- `stored_at` and classification/retention are written once on successful verification/admission. Delivery retry, invitation/session expiry and renewed download grants do not restart the 72-hour/seven-day clock. Pending objects have a separate 24-hour cleanup deadline.
+- Download grants are independently versioned, hash-only D1 capabilities. GET/HEAD and one byte Range use private R2 reads. Invalid, revoked, expired or missing access returns a private rejection. Authorized Topic `/files` can issue a fresh grant for retained files without an active upload invitation.
+- Telegram hosted downloads have an upstream 20 MB limit. CZ2128 cannot retrieve a larger Telegram `file_id` through that endpoint; it offers the authenticated operator portal instead of pretending delivery succeeded. Telegram native sends use streaming multipart within its photo/file constraints; files beyond the 50 MB native-file boundary use secure download-link delivery. These are Provider limits, not CZ2128 upload policy. [Telegram file API](https://core.telegram.org/bots/api#sending-files)
+- Cleanup denies expired access immediately, then deletes R2 before setting a durable D1 tombstone. An R2 deletion failure retains the key and retry metadata. Multipart abort failure likewise retains session recovery state. Lifecycle is only a backstop; v2 rules must not delete an image before seven days from admission.
 
-Review the bucket and lifecycle configuration before running these commands. Phase 3 development does not create or modify production Cloudflare resources. Real R2, Telegram and Chatwoot attachment flows require staging validation before production use.
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
 
-Pre-production attachment validation must cover real R2 write/multipart/read/Range/delete; Telegram `getFile` and every configured multipart send method; Chatwoot download redirects and `attachments[]`; proxy GET/HEAD/Range/headers; hourly cleanup; Queue/D1 concurrency; and peak memory under a 20 MiB `ArrayBuffer` -> `Blob` -> `FormData` upload. The seven-day R2 lifecycle must be applied and verified. DNS rebinding through an explicitly trusted allowlisted hostname and extreme R2 I/O stalls beyond the event lease remain residual risks to validate operationally.
+Additive migration `0012_attachment_transfer_v2.sql` retains historical constrained columns/tables and introduces v2 fields/session/grant tables. Values over the old 20 MiB SQLite CHECK use `stored_size_bytes`/`declared_size_bytes` with legacy `size_bytes=NULL`. See [compatibility boundaries](MIGRATION-RECOVERY.md#2a-attachment-transfer-v2-migration-0012). The previous Worker is not automatically v2-compatible merely because this migration is additive.
+
+All real Provider, expiry, lifecycle and browser outcomes must be recorded individually in [FULL-STAGING-ACCEPTANCE.md](FULL-STAGING-ACCEPTANCE.md). Do not replay historical bucket-creation or broad lifecycle commands against the existing environment.
 
 ## Crisp-12 - Legacy support UX parity
 

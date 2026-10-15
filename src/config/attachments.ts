@@ -3,11 +3,15 @@ import { Env } from './env';
 export const ATTACHMENT_HARD_MAX_BYTES = 20 * 1024 * 1024;
 export const ATTACHMENT_HARD_MAX_COUNT = 10;
 export const ATTACHMENT_TOKEN_BYTES = 32;
+export const FILE_RETENTION_SECONDS = 72 * 60 * 60;
+export const IMAGE_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 
 export interface AttachmentConfig {
   maxBytes: number;
   maxCountPerMessage: number;
   ttlSeconds: number;
+  fileTtlSeconds: number;
+  imageTtlSeconds: number;
   sourceTimeoutMs: number;
   destinationTimeoutMs: number;
   eventLeaseSeconds: number;
@@ -35,9 +39,10 @@ function configuredChatwootOrigin(value: string): string | null {
 }
 
 export function getAttachmentConfig(env: Env): AttachmentConfig {
-  const maxBytes = boundedInt(env.ATTACHMENT_MAX_BYTES, ATTACHMENT_HARD_MAX_BYTES, 1, ATTACHMENT_HARD_MAX_BYTES);
-  const maxCountPerMessage = boundedInt(env.ATTACHMENT_MAX_COUNT_PER_MESSAGE, ATTACHMENT_HARD_MAX_COUNT, 1, ATTACHMENT_HARD_MAX_COUNT);
-  const ttlSeconds = boundedInt(env.ATTACHMENT_TTL_SECONDS, 86400, 60, 86400);
+  // Historical Admin overrides remain readable audit data, not product limits.
+  const maxBytes = Number.MAX_SAFE_INTEGER;
+  const maxCountPerMessage = Number.MAX_SAFE_INTEGER;
+  const ttlSeconds = FILE_RETENTION_SECONDS;
   const sourceTimeoutMs = boundedInt(env.ATTACHMENT_SOURCE_TIMEOUT_MS, 30000, 1000, 120000);
   const destinationTimeoutMs = boundedInt(env.ATTACHMENT_DESTINATION_TIMEOUT_MS, 30000, 1000, 120000);
   const chatwootOrigin = configuredChatwootOrigin(env.CHATWOOT_API_URL);
@@ -52,6 +57,8 @@ export function getAttachmentConfig(env: Env): AttachmentConfig {
     maxBytes,
     maxCountPerMessage,
     ttlSeconds,
+    fileTtlSeconds: boundedInt(env.ATTACHMENT_FILE_TTL_SECONDS,FILE_RETENTION_SECONDS,60,FILE_RETENTION_SECONDS),
+    imageTtlSeconds: boundedInt(env.ATTACHMENT_IMAGE_TTL_SECONDS,IMAGE_RETENTION_SECONDS,60,IMAGE_RETENTION_SECONDS),
     sourceTimeoutMs,
     destinationTimeoutMs,
     eventLeaseSeconds: Math.ceil(sourceTimeoutMs / 1000) + Math.ceil(destinationTimeoutMs / 1000) + 30,

@@ -29,6 +29,14 @@ export function sanitizeLearningText(input: string): SanitizedLearningText {
   let value = input.normalize('NFKC').replace(/\u0000/g, '').trim();
   const flags: string[] = [];
 
+  // Capabilities live in URL paths on both custom domains and historical Worker aliases.
+  value = redact(
+    value,
+    /https?:\/\/[^\s<>()]+\/(?:uploads|upload-sessions|attachments)\/[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])[^\s<>()]*/gi,
+    '[REDACTED_TEMP_URL]',
+    flags,
+    'TEMPORARY_URL'
+  );
   value = redact(value, /\b\d{5,12}:[A-Za-z0-9_-]{20,}\b/g, '[REDACTED_TELEGRAM_TOKEN]', flags, 'TELEGRAM_TOKEN');
   value = redact(
     value,

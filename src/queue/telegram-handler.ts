@@ -12,7 +12,8 @@ import { TelegramEvent } from '../core/events';
 import { executeOutboundOperation, markOutboundOperationFinal } from '../core/outbound-operations';
 import { enqueueAttachmentJobs } from '../core/attachment-repository';
 import { buildChatwootTargetEvidence, buildCrispTargetEvidence, buildTelegramTargetEvidence, targetEvidenceMatches } from '../core/outbound-evidence';
-import { createAndSendUploadInvite, revokeUploadInviteFromTelegram } from '../uploads/service';
+import { createAndSendUploadInvite, revokeUploadInviteFromTelegram, sendConversationFiles } from '../uploads/service';
+import { trustedPublicOrigin } from '../config/public-origin';
 import { captureLearningCandidateByProviderRef } from '../learning/repository';
 import { logger } from '../observability/logger';
 
@@ -135,11 +136,15 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
     return;
   }
 
-  if (attachments.length === 0 && (command === '/upload' || command === '/upload_revoke')) {
+  const filesCommand=/^\/files(?:\s+(\d{1,9}))?$/.exec((content || '').trim());
+  if (attachments.length === 0 && filesCommand && isAuthorizedUploadOperator(env,payload.operatorRef)) {
+    await sendConversationFiles(env,conv,{supportProfileVersion,updateRef:payload.updateRef,operatorRef:payload.operatorRef,
+      publicOrigin:trustedPublicOrigin(env),threadRef:payload.threadRef,offset:Number(filesCommand[1]||0)});return;
+  }
+  if (attachments.length === 0 && (command === '/upload' || command === '/upload_operator' || command === '/upload_revoke')) {
     if (
       conv.helpdesk_provider !== 'crisp' ||
-      !isAuthorizedUploadOperator(env, payload.operatorRef) ||
-      !payload.publicOrigin
+      !isAuthorizedUploadOperator(env, payload.operatorRef)
     ) return;
     const commandState = await applyTelegramOperatorAction(
       env, conv.id, supportProfileVersion, payload.updateRef, 'HUMAN_REPLY'
@@ -149,10 +154,11 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
       supportProfileVersion,
       updateRef: payload.updateRef,
       operatorRef: payload.operatorRef,
-      publicOrigin: payload.publicOrigin,
+      publicOrigin: trustedPublicOrigin(env),
+      uploadRole: command === '/upload_operator' ? 'OPERATOR' as const : 'CUSTOMER' as const,
       threadRef: payload.threadRef
     };
-    if (command === '/upload') {
+    if (command === '/upload' || command === '/upload_operator') {
       await createAndSendUploadInvite(env, conv, uploadCommand);
     } else {
       await revokeUploadInviteFromTelegram(env, conv, uploadCommand);
@@ -230,15 +236,27 @@ export async function processTelegramEvent(event: TelegramEvent, env: Env): Prom
     }
   }
 
+  const telegramCloudBlocked = attachments.filter(item => item.sizeBytes !== undefined && item.sizeBytes > 20 * 1024 * 1024);
+  if (telegramCloudBlocked.length && destinationProvider === 'crisp' && isAuthorizedUploadOperator(env, payload.operatorRef)) {
+    await createAndSendUploadInvite(env, conv, { supportProfileVersion, updateRef: payload.updateRef,
+      operatorRef: payload.operatorRef, publicOrigin: trustedPublicOrigin(env), threadRef: payload.threadRef, uploadRole:'OPERATOR' });
+  } else if (telegramCloudBlocked.length) {
+    await executeOutboundOperation(env,conv.id,'telegram','SEND_MESSAGE',async (_id,lifecycle)=>{
+      const response=await sendTelegramMessage(env,env.BOT_GROUP_ID,payload.threadRef,
+        'Telegram 云端 Bot 下载接口最多支持 20 MB，当前文件尚未转发。请联系已授权管理员在本 Topic 使用 /upload_operator 开启安全上传入口。',lifecycle);
+      return {providerMessageRef:response.messageId};
+    },`telegram_file_limit:${scopedMessageRef}`,{subject:{type:'CONTROL_ACK',ref:`telegram-file-limit:${scopedMessageRef}`},
+      targetEvidence:buildTelegramTargetEvidence(env,env.BOT_GROUP_ID,payload.threadRef,'sendMessage')});
+  }
   await enqueueAttachmentJobs(
     env,
     getAttachmentConfig(env),
     conv.id,
     'telegram',
     scopedMessageRef,
-    attachments,
+    attachments.filter(item => !telegramCloudBlocked.includes(item)),
     destinationProvider,
-    destinationProvider === 'crisp' ? payload.publicOrigin : undefined,
+    destinationProvider === 'crisp' && attachments.length>0 ? trustedPublicOrigin(env) : undefined,
     operatorRequestOptions ? JSON.stringify(operatorRequestOptions) : undefined
   );
 }

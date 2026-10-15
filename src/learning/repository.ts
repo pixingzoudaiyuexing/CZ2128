@@ -179,6 +179,16 @@ export async function listRecoverableHumanReplies(
         AND m.text_content IS NOT NULL
         AND length(trim(m.text_content)) > 0
         AND m.provider IN ('crisp', 'telegram')
+        AND NOT (
+          m.provider = 'crisp' AND EXISTS (
+            SELECT 1 FROM outbound_operations mirror
+            WHERE mirror.id = 'send_tg_crisp_' || m.provider_message_ref
+              AND mirror.conversation_id = m.conversation_id
+              AND mirror.destination_provider = 'telegram' AND mirror.operation_type = 'SEND_MESSAGE'
+              AND CASE WHEN json_valid(mirror.request_options_json)
+                  THEN json_extract(mirror.request_options_json, '$.origin') ELSE NULL END = 'CRISP_AUTOMATED_OPERATOR'
+          )
+        )
         AND NOT EXISTS (
               SELECT 1 FROM learning_candidates c WHERE c.source_human_message_id = m.id
             )

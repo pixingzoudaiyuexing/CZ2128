@@ -25,6 +25,8 @@ export interface UploadInviteRow {
   updated_at: number;
   revoked_at: number | null;
   exhausted_at: number | null;
+  transfer_version?: number;
+  upload_role?: 'CUSTOMER' | 'OPERATOR';
 }
 
 export interface UploadInviteItemRow {
@@ -53,6 +55,7 @@ export interface CreateUploadInviteInput {
   expiresAt: number;
   maxFiles: number;
   maxTotalBytes: number;
+  uploadRole?: 'CUSTOMER' | 'OPERATOR';
 }
 
 export type CreateUploadInviteResult =
@@ -81,12 +84,12 @@ export async function createOrGetUploadInvite(env: Env, input: CreateUploadInvit
 
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
-    "INSERT INTO upload_invites (id, token_hash, conversation_id, crisp_website_ref, crisp_session_ref, telegram_group_ref, telegram_thread_ref, support_profile_version, created_by_operator_ref, created_from_update_ref, status, expires_at, max_files, max_total_bytes, consumed_files, consumed_bytes, version, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 0, 0, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM upload_invites WHERE conversation_id = ? AND (support_profile_version > ? OR (support_profile_version = ? AND CAST(created_from_update_ref AS INTEGER) > ?))) ON CONFLICT(support_profile_version, created_from_update_ref) DO NOTHING"
+    "INSERT INTO upload_invites (id, token_hash, conversation_id, crisp_website_ref, crisp_session_ref, telegram_group_ref, telegram_thread_ref, support_profile_version, created_by_operator_ref, created_from_update_ref, status, expires_at, max_files, max_total_bytes, consumed_files, consumed_bytes, version, created_at, updated_at,transfer_version,upload_role) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 0, 0, 1, ?, ?,2,? WHERE NOT EXISTS (SELECT 1 FROM upload_invites WHERE conversation_id = ? AND (support_profile_version > ? OR (support_profile_version = ? AND CAST(created_from_update_ref AS INTEGER) > ?))) ON CONFLICT(support_profile_version, created_from_update_ref) DO NOTHING"
   ).bind(
     input.id, input.tokenHash, input.conversationId, input.crispWebsiteRef, input.crispSessionRef,
     input.telegramGroupRef, input.telegramThreadRef, input.supportProfileVersion,
     input.operatorRef, input.updateRef, input.expiresAt, input.maxFiles, input.maxTotalBytes,
-    now, now,
+    now, now, input.uploadRole || 'CUSTOMER',
     input.conversationId, input.supportProfileVersion, input.supportProfileVersion, inputUpdate
   ).run();
 
@@ -98,7 +101,7 @@ export async function createOrGetUploadInvite(env: Env, input: CreateUploadInvit
   }
 
   await env.DB.prepare(
-    "UPDATE upload_invites SET status = 'REVOKED', revoked_at = ?, updated_at = ?, version = version + 1 WHERE conversation_id = ? AND status = 'ACTIVE' AND id != ? AND (support_profile_version < ? OR (support_profile_version = ? AND CAST(created_from_update_ref AS INTEGER) < ?))"
+    "UPDATE upload_invites SET status = 'REVOKED', revoked_at = ?, updated_at = ?, version = version + 1 WHERE conversation_id = ? AND status IN ('ACTIVE','EXPIRED') AND id != ? AND (support_profile_version < ? OR (support_profile_version = ? AND CAST(created_from_update_ref AS INTEGER) < ?))"
   ).bind(
     now, now, input.conversationId, input.id,
     input.supportProfileVersion, input.supportProfileVersion, inputUpdate
@@ -130,7 +133,7 @@ export async function expireUploadInvite(env: Env, inviteId: string, now: number
 export async function revokeActiveUploadInvite(env: Env, conversationId: string): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   const result = await env.DB.prepare(
-    "UPDATE upload_invites SET status = 'REVOKED', revoked_at = ?, updated_at = ?, version = version + 1 WHERE conversation_id = ? AND status = 'ACTIVE'"
+    "UPDATE upload_invites SET status = 'REVOKED', revoked_at = ?, updated_at = ?, version = version + 1 WHERE conversation_id = ? AND status IN ('ACTIVE','EXPIRED')"
   ).bind(now, now, conversationId).run();
   return result.meta.changes;
 }
@@ -138,7 +141,7 @@ export async function revokeActiveUploadInvite(env: Env, conversationId: string)
 export async function revokeUploadInviteById(env: Env, inviteId: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);
   const result = await env.DB.prepare(
-    "UPDATE upload_invites SET status = 'REVOKED', revoked_at = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status = 'ACTIVE'"
+    "UPDATE upload_invites SET status = 'REVOKED', revoked_at = ?, updated_at = ?, version = version + 1 WHERE id = ? AND status IN ('ACTIVE','EXPIRED')"
   ).bind(now, now, inviteId).run();
   return result.meta.changes === 1;
 }

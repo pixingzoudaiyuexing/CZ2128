@@ -891,7 +891,9 @@ export async function processCrispEvent(event: CrispEvent, env: Env): Promise<vo
   if (content) {
     await insertMessage(
       env, conv.id, 'crisp', payload.messageRef,
-      isOperator ? 'OUTBOUND' : 'INBOUND', payload.actorRole, 'TEXT', content
+      isOperator ? 'OUTBOUND' : 'INBOUND',
+      isOperator && payload.automated === true ? 'SYSTEM' : payload.actorRole,
+      'TEXT', content
     );
     if (isHumanOperator) {
       try {

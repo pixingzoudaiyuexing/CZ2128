@@ -8,6 +8,7 @@ import { readTelegramRetryAfterMetadata, telegramRetryAfterValue } from '../adap
 import { logger } from '../observability/logger';
 
 const R2_PART_BYTES = 5 * 1024 * 1024;
+export const TELEGRAM_CLOUD_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const MAX_CHATWOOT_REDIRECTS = 3;
 const MAX_CRISP_REDIRECTS = 3;
 const MAX_SOURCE_TELEMETRY_DURATION_MS = 3_600_000;
@@ -350,10 +351,7 @@ export async function downloadCrispAttachment(
       });
     }
     const contentType = (response.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (attachmentType === 'photo' && !isSafeInlineImageMime(contentType)) {
-      fetched.finish();
-      throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'CRISP' });
-    }
+    // Transport metadata is not file identity; verified persisted bytes classify the file.
     if (!response.body) {
       fetched.finish();
       throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TRANSIENT', { provider: 'CRISP' });
@@ -390,7 +388,7 @@ export async function downloadTelegramAttachment(
   ) {
     throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID', { provider: 'TELEGRAM' });
   }
-  if (declaredSize !== null && declaredSize > config.maxBytes) {
+  if (declaredSize !== null && declaredSize > TELEGRAM_CLOUD_DOWNLOAD_MAX_BYTES) {
     throw new AttachmentProcessingError('ATTACHMENT_SOURCE_TOO_LARGE', { provider: 'TELEGRAM' });
   }
   const deadline = Date.now() + config.sourceTimeoutMs;
@@ -568,6 +566,7 @@ export async function storeAttachmentStream(
         offset += length;
         total += length;
         if (used === buffer.byteLength) {
+          if (partNumber > 10000) throw new AttachmentProcessingError('R2_STORE_TRANSIENT', { provider: 'R2' });
           parts.push(await upload.uploadPart(partNumber++, buffer));
           buffer = new Uint8Array(R2_PART_BYTES);
           used = 0;
@@ -575,7 +574,10 @@ export async function storeAttachmentStream(
       }
     }
     if (total === 0) throw new AttachmentProcessingError('ATTACHMENT_SOURCE_INVALID');
-    if (used > 0) parts.push(await upload.uploadPart(partNumber, buffer.slice(0, used)));
+    if (used > 0) {
+      if (partNumber > 10000) throw new AttachmentProcessingError('R2_STORE_TRANSIENT', { provider: 'R2' });
+      parts.push(await upload.uploadPart(partNumber, buffer.slice(0, used)));
+    }
     await upload.complete(parts);
     recordSourceTelemetry(telemetry, 'SOURCE_STREAM', 'SUCCESS', streamStartedAt);
     return total;

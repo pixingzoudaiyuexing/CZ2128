@@ -251,6 +251,6 @@ describe('runtime config resolver', () => {
     await createChatwootMessage(effective, '1', '2', 'test', 'op');
     expect(fetchMock.mock.calls[0][0]).toBe('https://runtime-chatwoot.example/api/v1/accounts/1/conversations/2/messages');
     expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('api_access_token')).toBe('runtime-cw-token');
-    expect(getAttachmentConfig(effective)).toMatchObject({ maxBytes: 1024, maxCountPerMessage: 2 });
+    expect(getAttachmentConfig(effective)).toMatchObject({ maxBytes: Number.MAX_SAFE_INTEGER, maxCountPerMessage: Number.MAX_SAFE_INTEGER });
   });
 });

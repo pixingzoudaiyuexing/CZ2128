@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleAdminTelegramWebhook } from '../src/admin/handler';
 import { SqliteD1 } from './helpers/sqlite-d1';
+import { TestFixedLengthStream } from './fixtures/fixed-length-stream';
 
 const adminPath = 'p'.repeat(43);
 const adminSecret = 's'.repeat(43);
@@ -375,10 +376,11 @@ describe('Admin Reliability Control Plane', () => {
   });
 
   it('successfully retries ATTACHMENT', async () => {
+    vi.stubGlobal('FixedLengthStream', TestFixedLengthStream);
     const db = new SqliteD1();
     db.migrate();
     const testEnv = env(db);
-    testEnv.ATTACHMENTS_BUCKET = { get: vi.fn().mockResolvedValue({ body: 'dummy', arrayBuffer: () => new ArrayBuffer(0) }) } as any;
+    testEnv.ATTACHMENTS_BUCKET = { get: vi.fn().mockImplementation(async () => ({ size:100, body:new Blob([new Uint8Array(100)]).stream() })) } as any;
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
       if (String(url).includes('getFile')) return ok({ file_path: 'path' });
       return ok({ message_id: 1, message_thread_id: 99 });
@@ -401,6 +403,7 @@ describe('Admin Reliability Control Plane', () => {
     expect(children.results.length).toBe(1);
     const providerSends = fetchMock.mock.calls.filter(call => String(call[0]).includes('111111:old-support-abcdefghijklmnopqrstuvwxyz'));
     expect(providerSends.length).toBe(1);
+    vi.unstubAllGlobals();
   });
 
   it('successfully retries CONVERSATION (CREATE_TOPIC)', async () => {

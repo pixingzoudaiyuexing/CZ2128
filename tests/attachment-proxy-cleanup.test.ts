@@ -22,11 +22,22 @@ class ProxyDb {
       },
       all: async () => ({
         results: this.attachments
-          .filter(row => row.expires_at !== null && row.expires_at <= params[0])
+          .filter(row => row.expires_at !== null && row.expires_at <= params[0] && !row.deleted_at && (row.cleanup_next_retry_at || 0) <= params[1])
           .sort((left, right) => left.expires_at - right.expires_at || left.id.localeCompare(right.id))
-          .slice(0, params[1])
+          .slice(0, params[2])
       }),
       run: async () => {
+        if (query.includes('SET cleanup_attempts')) {
+          const row = this.attachments.find(item => item.id === params[1]);
+          if (row) { row.cleanup_attempts = (row.cleanup_attempts || 0) + 1; row.cleanup_next_retry_at = params[0]; }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (query.includes('SET deleted_at')) {
+          if (this.failAttachmentDeleteFor.has(params[2])) throw new Error('d1 cleanup failure');
+          const row = this.attachments.find(item => item.id === params[2] && !item.deleted_at);
+          if (row) { row.deleted_at = params[0]; row.grant_revoked_at = params[1]; }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
         if (query.startsWith('DELETE FROM upload_invite_items')) {
           const attachmentId = params[0];
           const now = params[1];
@@ -269,7 +280,7 @@ describe('secure attachment proxy', () => {
 });
 
 describe('attachment cleanup', () => {
-  it('deletes expired D1 metadata before removing managed R2 objects', async () => {
+  it('removes R2 before tombstoning expired metadata and preserves foreign-key records', async () => {
     const db = new ProxyDb();
     const bucket = new ProxyBucket();
     const now = Math.floor(Date.now() / 1000);
@@ -281,10 +292,11 @@ describe('attachment cleanup', () => {
 
     await cleanupExpiredAttachments({ DB: db, ATTACHMENTS_BUCKET: bucket } as any);
     expect(bucket.deleted).toEqual(['attachments/stored', 'attachments/delivered']);
-    expect(db.attachments.map(row => row.id)).toEqual(['future']);
+    expect(db.attachments.filter(row => !row.deleted_at).map(row => row.id)).toEqual(['future']);
+    expect(db.attachments).toHaveLength(3);
   });
 
-  it('keeps an expired attachment while an active unexpired upload invite still references it', async () => {
+  it('does not extend file retention because an upload invitation remains active', async () => {
     const db = new ProxyDb();
     const bucket = new ProxyBucket();
     const now = Math.floor(Date.now() / 1000);
@@ -295,10 +307,11 @@ describe('attachment cleanup', () => {
     await cleanupExpiredAttachments({ DB: db, ATTACHMENTS_BUCKET: bucket } as any);
     expect(db.attachments.map(row => row.id)).toEqual(['active-ref']);
     expect(db.uploadInviteItems).toHaveLength(1);
-    expect(bucket.deleted).toEqual([]);
+    expect(bucket.deleted).toEqual(['attachments/active-ref']);
+    expect(db.attachments[0].deleted_at).toBeGreaterThan(0);
   });
 
-  it('atomically removes an expired upload-invite reference before deleting attachment metadata and R2', async () => {
+  it('preserves expired upload item foreign-key evidence while deleting the object', async () => {
     const db = new ProxyDb();
     const bucket = new ProxyBucket();
     const now = Math.floor(Date.now() / 1000);
@@ -307,12 +320,12 @@ describe('attachment cleanup', () => {
     db.uploadInviteItems.push({ invite_id: 'inv-expired', upload_id: 'u1', attachment_id: 'expired-ref' });
 
     await cleanupExpiredAttachments({ DB: db, ATTACHMENTS_BUCKET: bucket } as any);
-    expect(db.uploadInviteItems).toEqual([]);
-    expect(db.attachments).toEqual([]);
+    expect(db.uploadInviteItems).toHaveLength(1);
+    expect(db.attachments[0].deleted_at).toBeGreaterThan(0);
     expect(bucket.deleted).toEqual(['attachments/expired-ref']);
   });
 
-  it('does not touch R2 and rolls back upload-item deletion when the D1 batch fails', async () => {
+  it('preserves a retryable row if D1 tombstoning fails after physical deletion', async () => {
     const db = new ProxyDb();
     const bucket = new ProxyBucket();
     const now = Math.floor(Date.now() / 1000);
@@ -325,11 +338,12 @@ describe('attachment cleanup', () => {
     await cleanupExpiredAttachments({ DB: db, ATTACHMENTS_BUCKET: bucket } as any);
     expect(db.attachments).toHaveLength(1);
     expect(db.uploadInviteItems).toHaveLength(1);
-    expect(bucket.deleted).toEqual([]);
+    expect(bucket.deleted).toEqual(['attachments/d1-fail']);
+    expect(db.attachments[0].deleted_at).toBeUndefined();
     expect(warn).toHaveBeenCalled();
   });
 
-  it('keeps logical expiry safe when R2 deletion fails after D1 metadata is removed', async () => {
+  it('preserves metadata and retry deadline when R2 deletion fails', async () => {
     const db = new ProxyDb();
     const bucket = new ProxyBucket();
     const now = Math.floor(Date.now() / 1000);
@@ -338,7 +352,9 @@ describe('attachment cleanup', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await cleanupExpiredAttachments({ DB: db, ATTACHMENTS_BUCKET: bucket } as any);
-    expect(db.attachments).toEqual([]);
+    expect(db.attachments).toHaveLength(1);
+    expect(db.attachments[0].cleanup_attempts).toBe(1);
+    expect(db.attachments[0].cleanup_next_retry_at).toBeGreaterThan(now);
     expect(bucket.deleted).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.not.stringContaining('attachments/r2-fail'));
   });
@@ -366,6 +382,6 @@ describe('attachment cleanup', () => {
 
     await cleanupExpiredAttachments({ DB: db, ATTACHMENTS_BUCKET: bucket } as any);
     expect(bucket.deleted).toHaveLength(100);
-    expect(db.attachments).toHaveLength(1);
+    expect(db.attachments.filter(row => !row.deleted_at)).toHaveLength(1);
   });
 });

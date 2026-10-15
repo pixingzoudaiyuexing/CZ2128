@@ -1,8 +1,20 @@
 # CZ2128 Roadmap
 
-## Current Work Unit: Crisp Human Notification Quiet Window
+## Current Work Unit: attachment v2 and full existing-Staging acceptance
 
-Independent persistent 15-minute notification silence and existing Telegram Admin setting are in implementation/validation. Candidate CI, Formal Independent Review, fast-forward main, exact-main CI and existing-Staging real UI acceptance remain required gates. This work does not authorize Production or Docker/release changes. Historical phase entries below retain their original evidence scope.
+Status: **IN IMPLEMENTATION / LOCAL VALIDATION IN PROGRESS / NOT DEPLOYED OR FULLY ACCEPTED FOR THIS WORK UNIT**.
+
+Owner's current contract supersedes earlier unexecuted full-acceptance plans: reuse only `cz2128-4c-staging` and `https://cz2128.482658.xyz`; no new environment, Production, Docker or release work. The engineering base is `6af87f6ef60f5c868c62489b1b908c3a70ac1d7f`. Preserve the existing independent 15-minute Crisp human notification window and all provider/ledger/Queue identity rules.
+
+The implemented direction is resumable private R2 multipart transfer, server SHA-256/type verification, 72-hour ordinary-file and seven-day image retention from admission, independent invitation/session/grant validity, configured public origin, physical-delete-first retryable cleanup, and explicit native-Provider fallback links/operator upload. Migration 0012 is additive and retains old constrained fields for compatibility; it does not make old Workers fully v2-compatible. Size/count/unified-TTL product policies are retired, not silently replaced with larger quotas.
+
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+Required order remains focused + full regression/security/integration → exact candidate CI → agy Formal Independent Review PASS → fast-forward main → exact main CI → existing-Staging recovery point/migration/deploy → complete real acceptance and temporary-setting restoration. No routine Staging deployment reapproval is needed after those gates. Every Owner-required function and evidence gap is tracked in [FULL-STAGING-ACCEPTANCE.md](FULL-STAGING-ACCEPTANCE.md); only all applicable executable gates passing permits full acceptance. Historical phase entries below preserve their original, narrower results.
+
+## Previous Work Unit: Crisp human notification quiet window
+
+The 0011 implementation is present at the recorded engineering base. Independent quiet-state/admin tests are separate from its real Staging acceptance. The new work preserves its 15-minute default and requires actual Crisp human text/media, Telegram takeover, expiry and restart evidence. No timestamp/AI lease or notification policy is relaxed by attachment v2.
 
 Status: **Phases 1-3.5 complete and merged — Phase 4A frozen — Phase 4B-1 complete / Phase 4B-2B complete and frozen / Phase 4B-2C complete and frozen / Phase 4B-3 complete, frozen and merged / Phase 4B-4A complete, frozen and merged / Phase 4B-4B accepted, complete, frozen and merged / Phase 4B-4 overall complete, frozen and merged / Phase 4B-5 accepted, complete, frozen and merged — Phase 4C reliability closure reconciled with executable evidence plus explicit tooling/human/time-bound gaps / Production not validated**
 

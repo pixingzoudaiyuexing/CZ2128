@@ -35,6 +35,9 @@ import {
   UploadInviteRow
 } from './repository';
 import { canonicalUploadOrigin } from './service';
+import { trustedPublicOrigin } from '../config/public-origin';
+import { initializeUploadSession, listInviteFiles, uploadBoundConversation, uploadJson } from './sessions';
+import { uploadPage as resumableUploadPage } from './page';
 
 const UPLOAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BLOCKED_EXTENSIONS = new Set([
@@ -240,6 +243,15 @@ export async function handleUploadCapabilityRequest(
   const conversation = await boundConversation(env, invite);
   if (!conversation) return notFound();
 
+  if (invite.transfer_version === 2) {
+    const path = new URL(request.url).pathname;
+    const suffix = path.slice(('/uploads/' + token).length);
+    if (request.method === 'GET' && suffix === '') return resumableUploadPage();
+    if (request.method === 'GET' && suffix === '/files') return listInviteFiles(env, invite);
+    if (request.method === 'POST' && suffix === '/sessions') return initializeUploadSession(request, env, invite);
+    return uploadJson({ ok: false, code: 'USE_RESUMABLE_UPLOAD_PAGE' }, 405);
+  }
+
   if (request.method === 'GET') {
     return invite.status === 'ACTIVE' ? uploadPage(invite) : notFound();
   }
@@ -261,7 +273,7 @@ export async function handleUploadCapabilityRequest(
   } catch {
     return json(503, { ok: false, code: 'UPLOAD_UNAVAILABLE' });
   }
-  const publicOrigin = canonicalUploadOrigin(new URL(request.url).origin);
+  const publicOrigin = trustedPublicOrigin(env);
 
   const existingItem = await getUploadItem(env, invite.id, uploadId);
   if (existingItem?.status === 'ACCEPTED') {

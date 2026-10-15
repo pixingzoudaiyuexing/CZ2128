@@ -1,0 +1,23 @@
+name = "cz2128-multipart-local-harness"
+main = "multipart-harness-worker.ts"
+compatibility_date = "2024-03-20"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cz2128-multipart-local-only"
+database_id = "local-dev-only"
+migrations_dir = "../../migrations"
+
+[[r2_buckets]]
+binding = "ATTACHMENTS_BUCKET"
+bucket_name = "cz2128-multipart-local-only"
+remote = false
+
+[vars]
+PUBLIC_ORIGIN = "https://multipart.local.example"
+BOT_GROUP_ID = "-100123"
+UPLOAD_CAPABILITY_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+CRISP_API_IDENTIFIER = "synthetic-local-identifier"
+CRISP_API_KEY = "synthetic-local-key"

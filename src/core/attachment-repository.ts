@@ -14,6 +14,7 @@ import {
 import { AttachmentTransferEvent } from './events';
 import { logger } from '../observability/logger';
 import { SafeErrorCode } from './error-taxonomy';
+import { inspectStoredAttachment, StoredAttachmentInspection } from '../attachments/content';
 
 export interface DiscoveredAttachment {
   row: AttachmentRow;
@@ -47,21 +48,25 @@ export async function discoverAttachment(
   const status: AttachmentStatus = descriptor.rejectionCode ? 'FAILED_FINAL' : 'PENDING';
   const resolvedDestinationProvider: AttachmentProvider = destinationProvider
     ?? (sourceProvider === 'telegram' ? 'chatwoot' : 'telegram');
-  const storageKey = `attachments/${id}`;
+  const storageKey = `attachments-v2/${id}`;
+  const declaredSize = Number.isSafeInteger(descriptor.sizeBytes) && Number(descriptor.sizeBytes) >= 0
+    ? Number(descriptor.sizeBytes) : null;
+  const legacySize = declaredSize !== null && declaredSize <= 20 * 1024 * 1024 ? declaredSize : null;
 
   await env.DB.prepare(
     `INSERT INTO attachments (
        id, conversation_id, source_provider, source_message_ref, source_attachment_ref,
        attachment_type, original_filename, safe_filename, mime_type, size_bytes,
        storage_key, access_token_hash, status, destination_provider, attempt_count,
-       expires_at, last_error, created_at, updated_at, request_options_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+       expires_at, last_error, created_at, updated_at, request_options_json,
+       declared_size_bytes, transfer_version
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 2)
      ON CONFLICT (source_provider, source_message_ref, source_attachment_ref) DO NOTHING`
   ).bind(
     id, conversationId, sourceProvider, sourceMessageRef, descriptor.sourceAttachmentRef,
     descriptor.attachmentType, filename.original, filename.safe, normalizeMime(descriptor.mimeType),
-    descriptor.sizeBytes ?? null, storageKey, tokenHash, status, resolvedDestinationProvider,
-    now + config.ttlSeconds, descriptor.rejectionCode || null, now, now, requestOptionsJson || null
+    legacySize, storageKey, tokenHash, status, resolvedDestinationProvider,
+    now + 86400, descriptor.rejectionCode || null, now, now, requestOptionsJson || null, declaredSize
   ).run();
 
   let row = await env.DB.prepare('SELECT * FROM attachments WHERE id = ?').bind(id).first<AttachmentRow>();
@@ -105,16 +110,7 @@ export async function enqueueAttachmentJobs(
   publicOrigin?: string,
   requestOptionsJson?: string
 ): Promise<void> {
-  if (descriptors.length > config.maxCountPerMessage) {
-    logger.warn('Attachment count exceeds configured limit', {
-      conversation_id: conversationId,
-      source: sourceProvider,
-      error_category: 'ATTACHMENT_COUNT_LIMIT',
-      error_code: 'ATTACHMENT_COUNT_LIMIT',
-      stage: 'SOURCE_METADATA'
-    });
-  }
-  for (const descriptor of descriptors.slice(0, config.maxCountPerMessage)) {
+  for (const descriptor of descriptors) {
     const discovered = await discoverAttachment(
       env, config, conversationId, sourceProvider, sourceMessageRef, descriptor,
       destinationProvider, publicOrigin, undefined, requestOptionsJson
@@ -154,8 +150,26 @@ export async function markAttachmentStored(
   env: Env,
   attachmentId: string,
   sizeBytes: number,
-  config: AttachmentConfig
+  config: AttachmentConfig,
+  verified?: StoredAttachmentInspection
 ): Promise<boolean> {
+  const current = await getAttachment(env, attachmentId);
+  if (!current || current.status !== 'FETCHING' || current.stored_at != null) return false;
+  if (current.transfer_version === 2) {
+    const inspection = verified ?? await inspectStoredAttachment(env.ATTACHMENTS_BUCKET, current.storage_key);
+    if (inspection.sizeBytes !== sizeBytes) throw new Error('Attachment stored size mismatch');
+    const now = Math.floor(Date.now() / 1000);
+    const expiry = now + (inspection.retentionClass === 'IMAGE' ? config.imageTtlSeconds : config.fileTtlSeconds);
+    const result = await env.DB.prepare(
+      `UPDATE attachments SET status = 'STORED', size_bytes = ?, stored_size_bytes = ?, stored_at = ?,
+       retention_class = ?, retention_expires_at = ?, expires_at = ?, sha256 = ?, mime_type = ?,
+       grant_expires_at = ?, last_error = NULL, updated_at = ?
+       WHERE id = ? AND status = 'FETCHING' AND stored_at IS NULL AND deleted_at IS NULL AND expires_at > ?`
+    ).bind(inspection.sizeBytes <= 20 * 1024 * 1024 ? inspection.sizeBytes : null,
+      inspection.sizeBytes, now, inspection.retentionClass, expiry, expiry, inspection.sha256,
+      inspection.mimeType, expiry, now, attachmentId, now).run();
+    return result.meta.changes === 1;
+  }
   const now = Math.floor(Date.now() / 1000);
   const result = await env.DB.prepare(
     `UPDATE attachments

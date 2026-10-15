@@ -1,6 +1,33 @@
-# CZ2128 4C Staging Foundation Deployment Plan
+# CZ2128 Existing-Staging Deployment and Historical Foundation Record
 
-## Current quiet-window rollout (migration 0011)
+## Current Work Unit: attachment v2 and full Staging acceptance
+
+Status: **IMPLEMENTATION / CI / FORMAL REVIEW IN PROGRESS; THIS WORK UNIT NOT YET DEPLOYED OR ACCEPTED**. Owner authorizes routine deployment to this existing Staging after the exact candidate/main gates pass; no extra approval is required for that authorized step. This does not authorize another environment, Production, Docker, tag/Release/GHCR publication or an unplanned destructive restore.
+
+Targets are only Worker `cz2128-4c-staging`, custom domain `https://cz2128.482658.xyz`, D1 `cz2128-4c-staging-db` / `6482f216-5357-4e93-9796-89eaf0c1299c`, main Queue `cz2128-4c-staging-queue`, its existing DLQ, the two existing Staging R2 buckets and the existing `CrispRtmBridge` namespace. `cc-solution-stg.482658.xyz` belongs to another Worker; its embedded Crisp customer Widget may be used only after the public Website ID is matched to this Staging.
+
+### Pre-deployment observation, not the new deployment result
+
+The 2026-10-15 preflight recorded deployment `c7f0f803-7315-44b9-a08b-d1495cd4ef04`, single 100% version `c30c66dd-a12d-4e19-afbb-d6dc9f8d0cea` (version 79). Both version/deployment annotations identify `325c0933461fca08549b96092005de0ee708103f`; this is deployment provenance, not a byte-reproduced Git-to-bundle comparison. Applied migrations were `0001`–`0010`; therefore both 0011 and 0012 must be checked against actual pending state at execution, never blindly assumed applied.
+
+The preflight found 22 existing secret names, the exact original D1/R2/Queue/DO bindings, `*/5 * * * *` cron, main Queue batch 10/wait 0/retries 3→existing DLQ, and DLQ batch 10/wait one second. AI isolation was `true` with the existing synthetic UUID allowlist. The inherited D1 attachment-size value was 1024/v1; v2 code retires it as a product policy rather than rewriting its historical row. The quiet-window restoration target is 15 minutes (recorded version 4); temporary test edits append versions normally rather than forcing the old version number.
+
+Two Queue REST metrics snapshots showed backlog count/bytes zero, while canonical D1 DLQ receipts included three historical OPEN rows. Those are different measures. Repeat both before/after deployment and after test convergence; do not claim zero D1 receipts from an empty Queue. All preflight values must be refreshed immediately before mutation.
+
+### Minimal reviewed rollout sequence
+
+1. Finish all required regression/security/runtime checks, agy Formal Independent Review, exact candidate CI, fast-forward main without force, and exact main CI. Record the executable SHA before any live change.
+2. Refresh the exact Staging identity, full nonsecret settings, secret-name set, Queue/DLQ metrics, migration inventory and Time Travel bookmark. Follow [migration/recovery](MIGRATION-RECOVERY.md#2a-attachment-transfer-v2-migration-0012). Any table-scoped export is encrypted and accurately labeled; FTS is never dropped to manufacture one.
+3. Generate an ignored deployment config from the tracked Staging template plus independently verified D1 UUID and live four vars. Preserve AI `true` and the original allowlist; add deployment-owned `PUBLIC_ORIGIN=https://cz2128.482658.xyz`. Preserve all original resource bindings, DO class/migration history, cron, compatibility settings, workers.dev enabled and preview URLs disabled. Request/queued origins are not trusted link configuration.
+4. Validate that exact effective config, dry-run the exact executable and apply only pending reviewed forward migrations (`0011`/`0012` as actually reported). Check migration/integrity results before promotion. Current old Workers are not fully v2-compatible; use the reviewed rollout boundary and do not infer compatibility from additivity.
+5. Deploy the exact main SHA with pinned Wrangler and `--keep-vars`; do not upload/regenerate secrets or call Bot/webhook mutation tools. `keep_vars` retains plain/json values and secrets, but D1/R2/Queue/DO bindings still require explicit exact configuration. Existing routes remain undeclared to avoid routing reconciliation; verify the current custom-domain mapping after deployment.
+6. The existing attachment bucket's v2 lifecycle policy is a separate reviewed change within the authorized Staging task. New keys use `attachments-v2/`, outside the old seven-day `attachments/` rule. Preserve all unrelated rules. Capture actual lifecycle before/after, multipart-abort policy and the margin that prevents early deletion relative to admission-based 72-hour/seven-day access. Code presence is not lifecycle execution evidence.
+7. Record deployment/version IDs, 100%, exact SHA annotation, actual D1 schema, all bindings/22 secret names, configured origin, AI scope, quiet setting, Queue consumers, domain and lifecycle. Only then run the real Provider/browser matrix in [FULL-STAGING-ACCEPTANCE.md](FULL-STAGING-ACCEPTANCE.md).
+8. Restore every temporary AI allowlist, short TTL and quiet setting; revoke test invitations and preserve their minimal audit without deleting historical chats/resources. Report every matrix row as PASS/FAIL/BLOCKED/NOT TESTED/NOT APPLICABLE at its actual evidence level.
+
+The v2 protocol separates network chunks from R2 multipart parts: requests carry at most 8 MiB, logical R2 parts adapt up to 5 GiB, and only R2’s physical 5 TiB / 10,000-part boundary limits the declared file size. Files above 64 MiB are verified through successive 16 MiB R2 range reads; SHA-256 and content-parser checkpoints persist in D1, so verification can resume after process loss. No whole-file buffer or single multi-terabyte verification invocation is required. Real local workerd evidence includes 32 MiB transport and an 80 MiB verification/restart case; it does not validate the entire provider capacity or replace cloud/browser acceptance. [R2 multipart limits](https://developers.cloudflare.com/r2/objects/upload-objects/), [Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+## Previous quiet-window-only rollout plan (migration 0011; historical scope)
 
 This authorized work unit adds independent Crisp human notification silence. Implementation/CI/review are separate from deployment and actual provider acceptance. Deploy only after candidate CI + Formal Independent Review + fast-forward main + exact-main CI pass. Before migration, record the live Staging deployment/version, D1 Time Travel bookmark and complete bindings/secret-name/Queue/cron/domain metadata. Apply only pending forward migrations, verify 0011 and null historical clocks, then deploy the exact reviewed main.
 
@@ -8,11 +35,11 @@ Generate the local Stage config from the tracked template plus the current live 
 
 Record resulting Worker version/deployment, exact SHA annotation, migration list and unchanged resources. Real acceptance uses only the designated test conversation/Topic, authentic Crisp operator UI, customer text/photo/tiny ordinary-file upload and Telegram Admin. A brief one-minute window may speed expiry verification, but must be restored to 15 minutes and reread before acceptance. Prior attachment limit/domain defects are not changed by this rollout. Previous Worker rollback leaves additive 0011 and durable operations intact; it restores old notification behavior, and is distinct from destructive database recovery.
 
-Status: **LATEST MAIN STAGING DEPLOYED / CRISP PROFILE + HUMAN MIRROR HUMAN ACCEPTANCE PENDING / PHASE 4C HISTORICAL EVIDENCE RETAINED / PRODUCTION UNTOUCHED**
+Historical status: **CRISP PROFILE + HUMAN MIRROR STAGING SNAPSHOT / HUMAN ACCEPTANCE PENDING AT THAT TIME**
 
 Historical engineering baseline: `29e20c0649b73f7aaed8ff7901cd9fc4106a683e`
 
-This document originally prepared a new, provider-disconnected staging foundation. The Gate A–F text is retained as the historical execution contract and must not be replayed merely because this document is being reconciled. The staging foundation has since been created and the Worker has progressed through separately bounded Crisp-02, Crisp-03, Crisp-04 and Crisp-05 validation. This document still does not authorize any new resource creation, migration, deployment, secret/webhook change, Provider call, Queue mutation or cleanup.
+This document originally prepared a new, provider-disconnected staging foundation. The Gate A–F text is retained as the historical execution contract and must not be replayed merely because this document is being reconciled. The staging foundation has since been created and the Worker has progressed through separately bounded Crisp-02, Crisp-03, Crisp-04 and Crisp-05 validation. That foundation record grants no new authority. The current Owner Work Unit and bounded rollout above govern the existing-Staging changes; they do not authorize re-creating the foundation or touching unrelated resources.
 
 Related documents:
 
@@ -21,9 +48,9 @@ Related documents:
 - [Migration, Backup and Recovery](MIGRATION-RECOVERY.md)
 - [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md)
 
-## Current Crisp Profile Card + Human Operator Mirror Staging Deployment — 2026-09-29
+## Historical Crisp Profile Card + Human Operator Mirror Staging Deployment — 2026-09-29
 
-This section is the current runtime snapshot. The prior Crisp visitor-location deployment, v1.1.0 model-selector deployment and older Phase 4C material below remain historical evidence and are not rewritten.
+This section was the runtime snapshot on 2026-09-29 and is historical. The prior Crisp visitor-location deployment, v1.1.0 model-selector deployment and older Phase 4C material below remain historical evidence and are not rewritten.
 
 - Exact deployed executable source: `546533f8d485fd96ba182a77ce3d5b97189822b6` (`v1.1.0`, `feat: add Crisp profile card and human mirror`), tree `01fdb53c8249c0780b920bf35870c5eaeb20a058`. Candidate CI #291 and main CI #292 both passed for this exact SHA before Staging promotion.
 - Active Worker: `cz2128-4c-staging`, deployment `18f4f2d5-d9ad-4656-bc7a-d7b37982d880`, version `fa27e5da-99cb-4a94-b761-d4ff31a4131e` (version 68, 100%). The version was created 2026-09-29T07:16:12.569505Z and the deployment at 2026-09-29T07:16:52.072842Z. Both version-upload and deployment annotations record the exact executable Git SHA above.
@@ -99,7 +126,7 @@ Historical Gate A required re-confirming the exact Cloudflare account and provin
 - The 2026-09-27 closure preserved two historical non-`PROCESSED` event receipts and two historical `OPEN` DLQ receipts, left zero `AMBIGUOUS` outbound operations, zero active Admin sessions and zero attachment rows, and returned both R2 buckets to empty after the bounded synthetic R2 case.
 - The current evidence record contains separately bounded Crisp-02 basic support, Crisp-03 AI/handoff, Crisp-04 lifecycle and Crisp-05 attachment/upload scopes plus the Phase 4C closure reconciliation in [PREPRODUCTION-ACCEPTANCE.md](PREPRODUCTION-ACCEPTANCE.md). Blocked/deferred rows remain non-PASS and Production remains unvalidated.
 
-## 2. Configuration Artifacts
+## 2. Historical Foundation Configuration Artifacts
 
 `wrangler.staging.template.jsonc` is intentionally non-deployable. Its D1 ID is `REPLACE_WITH_CZ2128_4C_STAGING_D1_UUID`, which is not a valid UUID.
 
@@ -339,11 +366,11 @@ The six-resource foundation is created across Gate A and Gate E: Gate A creates 
 
 - Stop. Do not purge Queue, edit D1, replay quarantine, add secrets or send test messages.
 
-## 6. Cost, Retention and Cleanup
+## 6. Historical Foundation Cost, Retention and Cleanup
 
 - Historical Gate A required Owner/Primary approval of a monthly Cloudflare budget. No paid upgrade was implied by existing account access.
 - Historical 4C-1 had a Provider/AI/message mutation budget of exactly zero.
-- Attachment R2 follows the frozen 7-day orphan lifecycle while application authorization remains 24 hours.
+- At the historical foundation stage, attachment R2 used a seven-day orphan lifecycle and 24-hour application authorization. D-043/0012 now supersede that application policy; the current v2 prefix/backstop must be verified separately.
 - Proposed staging quarantine retention: retain sanitized evidence for 30 days, then lifecycle-expire only prefix `terminal-dlq/v1/`. This is a proposal, not authorization. Until Primary accepts a period, configure no quarantine expiry and do not start fault tests that could create quarantine objects.
 - Use synthetic identifiers only. No production customer data may be copied into D1, R2, Queue or evidence storage.
 - Resource deletion, Queue purge, D1 restore/export and old-staging cleanup are separate operations requiring explicit authorization.

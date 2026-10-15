@@ -101,6 +101,7 @@ describe('Crisp temporary upload capability', () => {
 
     env = {
       DB: db,
+      PUBLIC_ORIGIN: 'https://worker.example',
       QUEUE: { send: async (value: any) => { queue.push(value); } },
       ATTACHMENTS_BUCKET: bucket,
       BOT_GROUP_ID: '-100',
@@ -171,9 +172,9 @@ describe('Crisp temporary upload capability', () => {
     expect(response.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
     expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
     const html = await response.text();
-    expect(html).not.toContain('session');
-    expect(html).not.toContain('site');
-    expect(html).not.toContain('77');
+    expect(html).not.toContain('"session"');
+    expect(html).not.toContain('"site"');
+    expect(html).not.toContain('"threadRef":"77"');
     expect(html).not.toContain(inviteId);
   });
 
@@ -289,7 +290,7 @@ describe('Crisp temporary upload capability', () => {
     const telegramBody = JSON.parse(String(telegramCall?.[1]?.body));
     expect(telegramBody).toMatchObject({ chat_id: '-100', message_thread_id: '77' });
     expect(telegramBody.text).toContain('report.txt');
-    expect(telegramBody.text).toContain('/attachments/' + downloadToken + '/download');
+    expect(telegramBody.text).toMatch(/https:\/\/worker\.example\/attachments\/[A-Za-z0-9_-]{43}\/download/);
     expect(telegramBody.text).not.toContain(attachment.storage_key);
     expect(telegramBody.text).not.toContain('bot-secret-token');
     expect(telegramBody.text).not.toContain(SECRET);

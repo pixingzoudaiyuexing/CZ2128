@@ -3,6 +3,7 @@ import { processAttachmentTransfer } from '../src/attachments/handler';
 import { generateAttachmentToken, hashAttachmentToken } from '../src/core/attachments';
 import { RetryableProcessingError } from '../src/core/errors';
 import { AttachmentTransferEvent } from '../src/core/events';
+import { TestFixedLengthStream } from './fixtures/fixed-length-stream';
 
 class HandlerDb {
   attachments: any[] = [];
@@ -186,7 +187,7 @@ function bucket() {
   const bytes = new Uint8Array([1, 2, 3]);
   return {
     head: async () => ({ size: bytes.byteLength }),
-    get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
+    get: async () => ({ size: bytes.byteLength, body: new Blob([bytes]).stream(), arrayBuffer: async () => bytes.buffer })
   };
 }
 
@@ -215,7 +216,7 @@ async function setup(sourceProvider: 'telegram' | 'chatwoot' | 'crisp', status =
   };
   return { db, event, env: {
     DB: db, ATTACHMENTS_BUCKET: bucket(), CHATWOOT_API_URL: 'https://chatwoot.example',
-    CHATWOOT_API_TOKEN: 'token', TELEGRAM_BOT_TOKEN: 'bot', BOT_GROUP_ID: '-100'
+    CHATWOOT_API_TOKEN: 'token', TELEGRAM_BOT_TOKEN: 'bot', BOT_GROUP_ID: '-100', PUBLIC_ORIGIN: 'https://worker.example'
   } as any };
 }
 
@@ -239,7 +240,7 @@ async function setupCrispDestination(
 }
 
 describe('attachment transfer ledger', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => { vi.restoreAllMocks(); vi.stubGlobal('FixedLengthStream', TestFixedLengthStream); });
 
   it.each(['telegram', 'chatwoot'] as const)('delivers a duplicate %s attachment job visibly once', async source => {
     const fixture = await setup(source);
@@ -299,7 +300,7 @@ describe('attachment transfer ledger', () => {
 
   it('fails closed before any Crisp request when the controlled capability origin is not HTTPS', async () => {
     const fixture = await setupCrispDestination('photo');
-    fixture.event.payload.publicOrigin = 'http://worker.example';
+    fixture.env.PUBLIC_ORIGIN = 'http://worker.example';
     const fetchMock = vi.spyOn(globalThis, 'fetch');
 
     await processAttachmentTransfer(fixture.event, fixture.env);
@@ -403,7 +404,7 @@ describe('attachment transfer ledger', () => {
         complete: async () => undefined,
         abort: async () => undefined
       }),
-      get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
+      get: async () => ({ size: bytes.byteLength, body: new Blob([bytes]).stream(), arrayBuffer: async () => bytes.buffer })
     };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: { file_path: 'docs/private.bin' } }), { status: 200 }))
@@ -447,7 +448,7 @@ describe('attachment transfer ledger', () => {
         complete: async () => undefined,
         abort: async () => undefined
       }),
-      get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
+      get: async () => ({ size: bytes.byteLength, body: new Blob([bytes]).stream(), arrayBuffer: async () => bytes.buffer })
     };
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -457,7 +458,7 @@ describe('attachment transfer ledger', () => {
         });
       }
       expect(url).toContain('/sendPhoto');
-      telegramForm = init?.body as FormData;
+      telegramForm = await new Response(init?.body as BodyInit, { headers: init?.headers }).formData();
       return new Response(JSON.stringify({ ok: true, result: { message_id: 91 } }), { status: 200 });
     });
 
@@ -564,7 +565,7 @@ describe('attachment transfer ledger', () => {
         complete: async () => undefined,
         abort: async () => undefined
       }),
-      get: async () => ({ size: bytes.byteLength, arrayBuffer: async () => bytes.buffer })
+      get: async () => ({ size: bytes.byteLength, body: new Blob([bytes]).stream(), arrayBuffer: async () => bytes.buffer })
     };
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any) => {
       if (String(url).includes('/getFile')) {

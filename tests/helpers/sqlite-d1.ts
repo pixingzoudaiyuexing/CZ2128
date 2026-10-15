@@ -71,7 +71,8 @@ export class SqliteD1 {
       '0007_crisp_upload_invites.sql',
       '0008_crisp_legacy_ux.sql',
       // Notification state is independent of the optional knowledge/learning fixtures.
-      '0011_crisp_human_quiet.sql'
+      '0011_crisp_human_quiet.sql',
+      '0012_attachment_transfer_v2.sql'
     ]) {
       this.exec(readFileSync(`migrations/${migration}`, 'utf8'));
     }

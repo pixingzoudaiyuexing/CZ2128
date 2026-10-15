@@ -16,13 +16,69 @@ import { createCrispMessage } from '../adapters/crisp/api';
 import { sendTelegramMessage } from '../adapters/telegram/api';
 import { CrispDisplayIdentity } from '../config/crisp-identities';
 import { isSafeInlineImageMime, isValidAttachmentToken } from '../core/attachments';
+import { attachmentByteSize } from '../core/attachments';
+import { trustedPublicOrigin } from '../config/public-origin';
+import { parseTelegramCustomerRequestOptions, telegramMirrorAttachmentCaption } from '../config/telegram-customer-ux';
 
 const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+export const TELEGRAM_NATIVE_MAX_BYTES = 50 * 1024 * 1024;
+
+async function attachmentMultipart(
+  env: Env, row: AttachmentRow, fields: Record<string, string>, fileField: string,
+  bytes: ArrayBuffer | undefined, source?: R2ObjectBody
+): Promise<{ body: BodyInit; headers?: HeadersInit }> {
+  if (bytes) {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.set(key, value);
+    form.append(fileField, new Blob([bytes], { type: row.mime_type }), row.safe_filename);
+    return { body: form };
+  }
+  const object = source ?? await loadAttachmentStream(env.ATTACHMENTS_BUCKET, row);
+  if (!object?.body) throw new SafeError('R2_OBJECT_MISSING');
+  const expectedSize = attachmentByteSize(row);
+  if (expectedSize !== null && object.size !== expectedSize) throw new SafeError('ATTACHMENT_SOURCE_INVALID');
+  const boundary = 'cz2128-' + crypto.randomUUID();
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode(Object.entries(fields).map(([key, value]) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`
+  ).join('') + `--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${row.safe_filename.replace(/["\\\r\n]/g, '_')}"\r\nContent-Type: ${row.mime_type}\r\n\r\n`);
+  const suffix = encoder.encode(`\r\n--${boundary}--\r\n`);
+  const reader = object.body.getReader();
+  let started = false;
+  let finished = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!started) { started = true; controller.enqueue(prefix); return; }
+      try {
+        const chunk = await reader.read();
+        if (!chunk.done) { controller.enqueue(chunk.value); return; }
+        if (!finished) { finished = true; controller.enqueue(suffix); }
+        controller.close(); reader.releaseLock();
+      } catch (error) { controller.error(error); try { reader.releaseLock(); } catch { /* released */ } }
+    },
+    async cancel(reason) { try { await reader.cancel(reason); } finally { try { reader.releaseLock(); } catch { /* released */ } } }
+  });
+  const length = prefix.length + object.size + suffix.length;
+  const fixed = new FixedLengthStream(length);
+  // The runtime supplies the correct Content-Length only for known-length
+  // streams. Failure propagates to the fetch reader, without an unhandled pump.
+  void body.pipeTo(fixed.writable).catch(() => undefined);
+  return { body: fixed.readable, headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': String(length) } };
+}
+
+export async function loadAttachmentStream(bucket: R2Bucket, row: AttachmentRow): Promise<R2ObjectBody> {
+  let object: R2ObjectBody | null;
+  try { object = await bucket.get(row.storage_key); } catch { throw new SafeError('R2_READ_TRANSIENT'); }
+  if (!object?.body) throw new SafeError('R2_OBJECT_MISSING');
+  const size = attachmentByteSize(row);
+  if (size !== null && object.size !== size) throw new SafeError('ATTACHMENT_SOURCE_INVALID');
+  return object;
+}
 
 async function visibleFetch(
   provider: 'TELEGRAM' | 'CHATWOOT',
   url: string,
-  form: FormData,
+  form: BodyInit,
   timeoutMs: number,
   headers?: HeadersInit,
   lifecycle?: OutboundAttemptLifecycle
@@ -37,12 +93,16 @@ async function visibleFetch(
     response = await fetch(url, { method: 'POST', headers, body: form, signal: controller.signal });
   } catch {
     clearTimeout(timeout);
+    if (form instanceof ReadableStream && !form.locked) void form.cancel().catch(() => undefined);
     throw visibleTransportDeliveryError(provider);
   }
   if (lifecycle) {
     await lifecycle.responseObserved(response.status);
   }
-  return { response, finish: () => clearTimeout(timeout) };
+  return { response, finish: () => {
+    clearTimeout(timeout);
+    if (form instanceof ReadableStream && !form.locked) void form.cancel().catch(() => undefined);
+  } };
 }
 
 export async function loadAttachmentBuffer(
@@ -50,6 +110,9 @@ export async function loadAttachmentBuffer(
   row: AttachmentRow,
   maxBytes: number
 ): Promise<ArrayBuffer> {
+  // Legacy callers may still need a small in-memory part. Large delivery must
+  // use loadAttachmentStream or an authenticated download link instead.
+  const bufferLimit = Math.min(maxBytes, TELEGRAM_PHOTO_MAX_BYTES);
   let object: R2ObjectBody | null;
   try {
     object = await bucket.get(row.storage_key);
@@ -57,14 +120,14 @@ export async function loadAttachmentBuffer(
     throw new SafeError('R2_READ_TRANSIENT');
   }
   if (!object) throw new SafeError('R2_OBJECT_MISSING');
-  if (object.size > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
+  if (object.size > bufferLimit) throw new SafeError('R2_OBJECT_TOO_LARGE');
   let value: ArrayBuffer;
   try {
     value = await object.arrayBuffer();
   } catch {
     throw new SafeError('R2_READ_TRANSIENT');
   }
-  if (value.byteLength > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
+  if (value.byteLength > bufferLimit) throw new SafeError('R2_OBJECT_TOO_LARGE');
   return value;
 }
 
@@ -109,8 +172,9 @@ export async function prepareCrispAttachmentContent(
   }
   if (!metadata) throw new SafeError('R2_OBJECT_MISSING');
   if (metadata.size > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
-  const origin = controlledAttachmentOrigin(publicOrigin);
-  const isImage = row.attachment_type === 'photo' && isSafeInlineImageMime(row.mime_type);
+  let origin: string;
+  try { origin = trustedPublicOrigin(env); } catch { throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'CRISP' }); }
+  const isImage = (row.retention_class === 'IMAGE' || row.attachment_type === 'photo') && isSafeInlineImageMime(row.mime_type);
   const mode = isImage ? 'inline' : 'download';
   const accessUrl = `${origin}/attachments/${accessToken}/${mode}`;
   return isImage
@@ -125,7 +189,7 @@ export async function prepareTelegramUploadNotification(
   publicOrigin: string | undefined,
   maxBytes: number
 ): Promise<string> {
-  if (row.source_provider !== 'upload' || !isValidAttachmentToken(accessToken)) {
+  if (!isValidAttachmentToken(accessToken)) {
     throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM', stage: 'PREPARE' });
   }
   let metadata: R2Object | null;
@@ -136,9 +200,12 @@ export async function prepareTelegramUploadNotification(
   }
   if (!metadata) throw new SafeError('R2_OBJECT_MISSING');
   if (metadata.size > maxBytes) throw new SafeError('R2_OBJECT_TOO_LARGE');
-  const origin = controlledAttachmentOrigin(publicOrigin, 'TELEGRAM');
-  const accessUrl = `${origin}/attachments/${accessToken}/download`;
-  return `Customer uploaded file / 客户上传文件: ${safeDisplayFilename(row.safe_filename)}\n${accessUrl}`;
+  let origin: string;
+  try { origin = trustedPublicOrigin(env); } catch { throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' }); }
+  const mode = row.retention_class === 'IMAGE' && isSafeInlineImageMime(row.mime_type) ? 'inline' : 'download';
+  const accessUrl = `${origin}/attachments/${accessToken}/${mode}`;
+  const provenance = telegramMirrorAttachmentCaption(parseTelegramCustomerRequestOptions(row.request_options_json));
+  return [provenance, `${row.source_provider === 'upload' ? 'Customer uploaded file / 客户上传文件' : 'File download / 文件下载'}: ${safeDisplayFilename(row.safe_filename)}`, accessUrl].filter(Boolean).join('\n');
 }
 
 export async function deliverUploadNotificationToTelegram(
@@ -175,29 +242,28 @@ export async function deliverAttachmentToChatwoot(
   accountRef: string,
   conversationRef: string,
   operationId: string,
-  bytes: ArrayBuffer,
+  bytes: ArrayBuffer | undefined,
   lifecycle?: OutboundAttemptLifecycle,
-  options?: { disableNotification?: boolean }
+  options?: { disableNotification?: boolean },
+  source?: R2ObjectBody
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_URL ||
     env.runtimeConfigSnapshot?.errors.CHATWOOT_API_TOKEN
   ) throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'CHATWOOT' });
-  const form = new FormData();
-  form.set('message_type', 'outgoing');
-  form.set('private', 'false');
-  form.set('source_id', `cz2128:${operationId}`);
-  form.append('attachments[]', new Blob([bytes], { type: row.mime_type }), row.safe_filename);
+  const multipart = await attachmentMultipart(env, row, {
+    message_type: 'outgoing', private: 'false', source_id: `cz2128:${operationId}`
+  }, 'attachments[]', bytes, source);
   const request = await visibleFetch(
     'CHATWOOT',
     buildChatwootApiUrl(
       env.CHATWOOT_API_URL,
       `/api/v1/accounts/${encodeURIComponent(accountRef)}/conversations/${encodeURIComponent(conversationRef)}/messages`
     ),
-    form,
+    multipart.body,
     config.destinationTimeoutMs,
-    { 'api_access_token': env.CHATWOOT_API_TOKEN },
+    { ...multipart.headers, 'api_access_token': env.CHATWOOT_API_TOKEN },
     lifecycle
   );
   const response = request.response;
@@ -219,7 +285,9 @@ export async function deliverAttachmentToChatwoot(
 }
 
 export function telegramAttachmentMethod(row: AttachmentRow): { method: TelegramMethod; field: string } {
-  if (row.attachment_type === 'photo' && Number(row.size_bytes || 0) <= TELEGRAM_PHOTO_MAX_BYTES && row.mime_type.startsWith('image/')) {
+  const size = attachmentByteSize(row);
+  if (size !== null && size > TELEGRAM_NATIVE_MAX_BYTES) return { method: 'sendMessage', field: '' };
+  if ((row.retention_class === 'IMAGE' || row.attachment_type === 'photo') && Number(size || 0) <= TELEGRAM_PHOTO_MAX_BYTES && row.mime_type.startsWith('image/')) {
     return { method: 'sendPhoto', field: 'photo' };
   }
   if (row.attachment_type === 'video') return { method: 'sendVideo', field: 'video' };
@@ -233,9 +301,10 @@ export async function deliverAttachmentToTelegram(
   config: AttachmentConfig,
   row: AttachmentRow,
   threadRef: string,
-  bytes: ArrayBuffer,
+  bytes: ArrayBuffer | undefined,
   lifecycle?: OutboundAttemptLifecycle,
-  options?: { disableNotification?: boolean; caption?: string }
+  options?: { disableNotification?: boolean; caption?: string },
+  source?: R2ObjectBody
 ): Promise<{ providerMessageRef: string }> {
   if (
     env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG ||
@@ -244,18 +313,17 @@ export async function deliverAttachmentToTelegram(
     throw new ProviderDeliveryError('FINAL', 'OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' });
   }
   const target = telegramAttachmentMethod(row);
-  const form = new FormData();
-  form.set('chat_id', env.BOT_GROUP_ID);
-  form.set('message_thread_id', threadRef);
-  if (options?.disableNotification) form.set('disable_notification', 'true');
-  if (options?.caption) form.set('caption', options.caption);
-  form.append(target.field, new Blob([bytes], { type: row.mime_type }), row.safe_filename);
+  if (target.method === 'sendMessage') throw new SafeError('OUTBOUND_PRECONDITION_FAILED', { provider: 'TELEGRAM' });
+  const fields: Record<string, string> = { chat_id: env.BOT_GROUP_ID, message_thread_id: threadRef };
+  if (options?.disableNotification) fields.disable_notification = 'true';
+  if (options?.caption) fields.caption = options.caption;
+  const multipart = await attachmentMultipart(env, row, fields, target.field, bytes, source);
   const request = await visibleFetch(
     'TELEGRAM',
     `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${target.method}`,
-    form,
+    multipart.body,
     config.destinationTimeoutMs,
-    undefined,
+    multipart.headers,
     lifecycle
   );
   const response = request.response;

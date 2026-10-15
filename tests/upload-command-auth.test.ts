@@ -33,6 +33,7 @@ function event(command: '/upload' | '/upload_revoke', operatorRef = '42') {
 function env(allowed: string | undefined) {
   return {
     ADMIN_TELEGRAM_USER_IDS: allowed,
+    PUBLIC_ORIGIN: 'https://worker.example',
     BOT_GROUP_ID: '-100',
     DB: {
       prepare: () => ({

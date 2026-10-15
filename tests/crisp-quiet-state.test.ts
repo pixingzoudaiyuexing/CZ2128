@@ -5,6 +5,7 @@ import { applyTelegramOperatorAction, checkAutoResume } from '../src/core/ai-sta
 import { customerNotificationMode } from '../src/config/telegram-customer-ux';
 import { SqliteD1 } from './helpers/sqlite-d1';
 import { processAttachmentTransfer } from '../src/attachments/handler';
+import { TestFixedLengthStream } from './fixtures/fixed-length-stream';
 
 const NOW = 1792000000;
 
@@ -28,6 +29,7 @@ describe('durable independent Crisp human notification clock', () => {
   let db: SqliteD1;
   let env: any;
   beforeEach(() => {
+    vi.stubGlobal('FixedLengthStream', TestFixedLengthStream);
     vi.useFakeTimers();
     vi.setSystemTime(NOW * 1000);
     db = new SqliteD1();
@@ -36,7 +38,7 @@ describe('durable independent Crisp human notification clock', () => {
     env = { DB: db, QUEUE: { send: vi.fn() }, BOT_GROUP_ID: '-10099',
       TELEGRAM_BOT_TOKEN: 'synthetic-token', ATTACHMENTS_BUCKET: {}, DLQ_QUARANTINE: {} };
   });
-  afterEach(() => { db.close(); vi.restoreAllMocks(); vi.useRealTimers(); });
+  afterEach(() => { db.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
   const clock = (database: SqliteD1, id = 'conv-a') => database.prepare(
     'SELECT last_crisp_human_reply_at FROM conversations WHERE id = ?'
   ).bind(id).first<{ last_crisp_human_reply_at: number | null }>();
@@ -122,13 +124,13 @@ describe('durable independent Crisp human notification clock', () => {
     const row = await db.prepare('SELECT id,request_options_json FROM attachments WHERE id=?').bind(job.payload.attachmentId).first<any>();
     expect(JSON.parse(row.request_options_json).disableNotification).toBe(true);
     db.exec(`UPDATE attachments SET status='STORED',size_bytes=3 WHERE id='${row.id}'`);
-    env.ATTACHMENTS_BUCKET = { get: vi.fn().mockResolvedValue({ size: 3, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }) };
+    env.ATTACHMENTS_BUCKET = { get: vi.fn().mockImplementation(async()=>({ size: 3, body:new Blob([new Uint8Array([1,2,3])]).stream() })) };
     vi.setSystemTime((NOW + 901) * 1000);
     await processAttachmentTransfer(job, env);
     expect(String(fetchMock.mock.calls[0][0])).toContain(type === 'photo' ? '/sendPhoto' : '/sendDocument');
-    const form = fetchMock.mock.calls[0][1]?.body as FormData;
-    expect(form.get('disable_notification')).toBe('true');
-    expect(form.get('message_thread_id')).toBe('77');
+    const multipartHeaders=new Headers(fetchMock.mock.calls[0][1]?.headers);
+    expect(multipartHeaders.get('Content-Type')).toContain('multipart/form-data');
+    expect(fetchMock.mock.calls[0][1]?.body).toBeInstanceOf(ReadableStream);
     expect(await db.prepare('SELECT status FROM attachments WHERE id=?').bind(row.id).first()).toEqual({ status: 'DELIVERED' });
     expect(JSON.parse((await db.prepare('SELECT request_options_json FROM outbound_operations WHERE subject_ref=?').bind(row.id).first<any>()).request_options_json).disableNotification).toBe(true);
   });

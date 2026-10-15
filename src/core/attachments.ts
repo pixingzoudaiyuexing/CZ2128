@@ -41,6 +41,27 @@ export interface AttachmentRow {
   request_options_json?: string | null;
   created_at: number;
   updated_at: number;
+  declared_size_bytes?: number | null;
+  stored_size_bytes?: number | null;
+  stored_at?: number | null;
+  retention_class?: 'IMAGE' | 'FILE' | null;
+  retention_expires_at?: number | null;
+  sha256?: string | null;
+  deleted_at?: number | null;
+  cleanup_attempts?: number;
+  cleanup_next_retry_at?: number | null;
+  grant_expires_at?: number | null;
+  grant_revoked_at?: number | null;
+  transfer_version?: number;
+}
+
+export function attachmentByteSize(row: Pick<AttachmentRow, 'stored_size_bytes' | 'declared_size_bytes' | 'size_bytes'>): number | null {
+  const value = row.stored_size_bytes ?? row.declared_size_bytes ?? row.size_bytes;
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
+}
+
+export function effectiveExpiry(row: Pick<AttachmentRow, 'retention_expires_at' | 'expires_at'>): number | null {
+  return row.retention_expires_at ?? row.expires_at;
 }
 
 export async function stableAttachmentId(

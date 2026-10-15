@@ -559,7 +559,7 @@ describe('Phase 2 AI Handoff', () => {
     env.DB.tables.conversations.push({ id: 'c2', ai_mode: 'ENABLED', ai_handoff_epoch: 0, operator_thread_ref: '1', helpdesk_account_ref: '1', helpdesk_conversation_ref: '2' });
     
     const p1 = handleQueueEvent({ version: 1, source: 'internal', type: 'ai_trigger', eventId: 'ai_duplicate_test', payload: { convId: 'c2', messageId: 'm1' } }, env);
-    await new Promise(r => setTimeout(r, 10)); // wait for lock
+    await vi.waitFor(() => expect(fetchResolver).not.toBeNull());
     
     await expect(handleQueueEvent({
       version: 1,

@@ -15,12 +15,15 @@ import {
 import {
   deliverAttachmentToChatwoot,
   deliverAttachmentToTelegram,
-  loadAttachmentBuffer,
+  loadAttachmentStream,
+  prepareTelegramUploadNotification,
+  deliverUploadNotificationToTelegram,
   telegramAttachmentMethod
 } from '../attachments/delivery';
 import { getAttachmentConfig } from '../config/attachments';
 import { Env } from '../config/env';
-import { AttachmentRow } from './attachments';
+import { AttachmentRow, effectiveExpiry } from './attachments';
+import { ensureAttachmentGrant } from '../attachments/grants';
 import { AiRun, Conversation, Message, OutboundOperation } from './domain';
 import { RetryableProcessingError, SafeError } from './errors';
 import {
@@ -362,11 +365,11 @@ async function prepareAttachmentRetry(
     throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
   }
   const now = Math.floor(Date.now() / 1000);
-  if (row.expires_at === null || row.expires_at <= now) {
+  const expiry = effectiveExpiry(row);
+  if (expiry === null || expiry <= now || row.deleted_at || row.grant_revoked_at) {
     throw new SafeError('ATTACHMENT_EXPIRED');
   }
   const config = getAttachmentConfig(env);
-  const bytes = await loadAttachmentBuffer(env.ATTACHMENTS_BUCKET, row, config.maxBytes);
 
   if (row.destination_provider === 'telegram') {
     if (!conversation.operator_thread_ref) {
@@ -378,6 +381,21 @@ async function prepareAttachmentRetry(
       conversation.operator_thread_ref,
       telegramAttachmentMethod(row).method
     );
+    if (!manualRetryDestinationMatches(parent.target_evidence_json!, targetEvidence)) {
+      throw new SafeError('OUTBOUND_MANUAL_RETRY_TARGET_CHANGED');
+    }
+    if (targetEvidence.method === 'sendMessage') {
+      if (row.transfer_version !== 2) throw new SafeError('OUTBOUND_MANUAL_RETRY_PAYLOAD_UNAVAILABLE');
+      const grant = await ensureAttachmentGrant(env, row);
+      const content = await prepareTelegramUploadNotification(env, row, grant.token, undefined, config.maxBytes);
+      return { subject: { type: 'ATTACHMENT', ref: row.id }, targetEvidence, leaseSeconds: config.outboundLeaseSeconds,
+        action: async (_operationId, lifecycle) => {
+          const frozen = parseTelegramCustomerRequestOptions(lifecycle.requestOptionsJson);
+          return deliverUploadNotificationToTelegram(env, conversation.operator_thread_ref!, content, lifecycle,
+            frozen ? { disableNotification: frozen.disableNotification } : undefined);
+        } };
+    }
+    const source = await loadAttachmentStream(env.ATTACHMENTS_BUCKET, row);
     return {
       subject: { type: 'ATTACHMENT', ref: row.id },
       targetEvidence,
@@ -389,12 +407,13 @@ async function prepareAttachmentRetry(
           config,
           row,
           conversation.operator_thread_ref!,
-          bytes,
+          undefined,
           lifecycle,
           frozen ? {
             disableNotification: frozen.disableNotification,
             caption: telegramMirrorAttachmentCaption(frozen)
-          } : undefined
+          } : undefined,
+          source
         );
       }
     };
@@ -406,6 +425,10 @@ async function prepareAttachmentRetry(
     conversation.helpdesk_conversation_ref,
     childId
   );
+  if (!manualRetryDestinationMatches(parent.target_evidence_json!, targetEvidence)) {
+    throw new SafeError('OUTBOUND_MANUAL_RETRY_TARGET_CHANGED');
+  }
+  const source = await loadAttachmentStream(env.ATTACHMENTS_BUCKET, row);
   return {
     subject: { type: 'ATTACHMENT', ref: row.id },
     targetEvidence,
@@ -417,8 +440,10 @@ async function prepareAttachmentRetry(
       conversation.helpdesk_account_ref,
       conversation.helpdesk_conversation_ref,
       operationId,
-      bytes,
-      lifecycle
+      undefined,
+      lifecycle,
+      undefined,
+      source
     )
   };
 }
@@ -654,7 +679,7 @@ function creationGuard(
          WHERE a.id = outbound_operations.subject_ref
            AND a.conversation_id = outbound_operations.conversation_id
            AND a.destination_provider = outbound_operations.destination_provider
-           AND a.expires_at > ?
+           AND COALESCE(a.retention_expires_at, a.expires_at) > ? AND a.deleted_at IS NULL
            AND (a.status = 'STORED' OR
                 (a.status = 'FAILED_FINAL' AND a.last_error = 'ATTACHMENT_DELIVERY_AMBIGUOUS'))
        )`

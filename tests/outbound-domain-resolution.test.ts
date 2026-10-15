@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TestFixedLengthStream } from './fixtures/fixed-length-stream';
 import { Env } from '../src/config/env';
 import {
   buildChatwootTargetEvidence,
@@ -114,7 +115,8 @@ async function seedAiRun(db: SqliteD1, text = 'Durable AI answer'): Promise<void
 }
 
 function r2Object(bytes = new TextEncoder().encode('data')) {
-  return { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
+  vi.stubGlobal('FixedLengthStream', TestFixedLengthStream);
+  return { size: bytes.byteLength, body: new Blob([bytes]).stream(), arrayBuffer: async () => bytes.buffer };
 }
 
 describe('resolved outbound domain state', () => {

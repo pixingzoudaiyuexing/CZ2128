@@ -169,14 +169,14 @@ describe('attachment source security', () => {
     });
   });
 
-  it('rejects Content-Length over the hard limit before streaming', async () => {
+  it('accepts a verified transport length beyond the former product limit', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream([1]), {
       status: 200,
       headers: { 'Content-Length': String(20 * 1024 * 1024 + 1) }
     }));
-    await expect(downloadChatwootAttachment(env, 'https://chatwoot.example/file', getAttachmentConfig(env))).rejects.toMatchObject({
-      code: 'ATTACHMENT_SOURCE_TOO_LARGE', retryable: false
-    });
+    const result = await downloadChatwootAttachment(env, 'https://chatwoot.example/file', getAttachmentConfig(env));
+    expect(result.contentLength).toBe(20971521);
+    result.finish();
   });
 
   it.each([408, 429, 500, 502, 503, 504])('classifies source HTTP %s as retryable', status => {
@@ -318,23 +318,21 @@ describe('attachment source security', () => {
     )).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_INVALID' });
   });
 
-  it('rejects an active SVG Crisp response even when the webhook claimed an image', async () => {
+  it('defers untrusted Crisp MIME classification to verified stored bytes', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream([1]), {
       status: 200, headers: { 'Content-Type': 'image/svg+xml', 'Content-Length': '1' }
     }));
-    await expect(downloadCrispAttachment(
-      'https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env)
-    )).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_INVALID' });
+    const result = await downloadCrispAttachment('https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env));
+    expect(result.contentLength).toBe(1); result.finish();
   });
 
-  it('rejects an oversized Crisp image from Content-Length before streaming', async () => {
+  it('accepts a Crisp image from Content-Length before streaming', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream([1]), {
       status: 200,
       headers: { 'Content-Type': 'image/png', 'Content-Length': String(20 * 1024 * 1024 + 1) }
     }));
-    await expect(downloadCrispAttachment(
-      'https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env)
-    )).rejects.toMatchObject({ code: 'ATTACHMENT_SOURCE_TOO_LARGE' });
+    const result = await downloadCrispAttachment('https://storage.crisp.chat/users/upload/session/a.png', getAttachmentConfig(env));
+    expect(result.contentLength).toBe(20971521); result.finish();
   });
 
   it('accepts the exact stream boundary using bounded multipart chunks', async () => {

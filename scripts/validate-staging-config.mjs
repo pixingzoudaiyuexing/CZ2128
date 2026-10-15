@@ -124,8 +124,10 @@ export function validateStagingConfig(config, options = {}) {
     'EXPECTED_MAIN_QUEUE_NAME',
     'EXPECTED_DLQ_QUEUE_NAME',
     'AI_TEST_SCOPE_ENABLED',
-    'AI_TEST_ALLOWED_CONVERSATION_IDS'
+    'AI_TEST_ALLOWED_CONVERSATION_IDS',
+    'PUBLIC_ORIGIN'
   ], 'vars');
+  if (Object.hasOwn(vars,'PUBLIC_ORIGIN')) exactly(vars.PUBLIC_ORIGIN,'https://cz2128.482658.xyz','Staging public origin');
   if (!Object.hasOwn(vars, 'EXPECTED_MAIN_QUEUE_NAME') || !Object.hasOwn(vars, 'EXPECTED_DLQ_QUEUE_NAME')) {
     fail('vars must contain both approved Queue identity keys');
   }

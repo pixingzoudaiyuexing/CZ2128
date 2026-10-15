@@ -257,6 +257,13 @@ async function retryBotRetirement(
 }
 
 async function beginEdit(env: Env, bootstrap: AdminBootstrap, ctx: AdminContext, code: string, rawEnv = env): Promise<string> {
+  if (['fb','fc','ft'].includes(code)) {
+    const session=await getAdminSession(rawEnv,ctx.userId);
+    if(session && ['ATTACHMENT_MAX_BYTES','ATTACHMENT_MAX_COUNT_PER_MESSAGE','ATTACHMENT_TTL_SECONDS'].includes(session.target))
+      await clearAdminSession(rawEnv,ctx.userId);
+    await reply(bootstrap,ctx,'旧大小、数量和统一 TTL 设置已停用。请使用分类保存时间。');
+    await showPage(env,bootstrap,ctx,'att');return 'ATTACHMENT_LEGACY_SETTING_RETIRED';
+  }
   if (code === 'cqm' || code === 'tnc') return showCrispQuietSetting(rawEnv, bootstrap, ctx);
   if (code === 'cw') {
     const menu = parseCrispMenu(env.CRISP_MENU_JSON);
@@ -375,6 +382,10 @@ async function processSetInput(
 ): Promise<string> {
   if (!session || !ctx.text) throw new Error('ADMIN_INPUT_INVALID');
   const key = session.target as RuntimeConfigKey;
+  if(['ATTACHMENT_MAX_BYTES','ATTACHMENT_MAX_COUNT_PER_MESSAGE','ATTACHMENT_TTL_SECONDS'].includes(key)) {
+    await clearAdminSession(env,ctx.userId);await reply(bootstrap,ctx,'旧附件限制和统一保存时间已停用，请使用分类保存设置。');
+    return 'ATTACHMENT_LEGACY_SETTING_RETIRED';
+  }
   if (isLegacyChatwootRuntimeKey(key)) {
     if (key === 'CHATWOOT_API_TOKEN' && ctx.messageId !== undefined) {
       try { await deleteAdminInput(bootstrap.token, ctx.chatId, ctx.messageId); } catch { /* fail closed; no config write */ }

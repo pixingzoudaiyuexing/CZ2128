@@ -45,7 +45,7 @@ describe('attachment webhook normalization', () => {
     }
   });
 
-  it('normalizes Chatwoot attachment-only messages and caps descriptors at ten', async () => {
+  it('normalizes every Chatwoot attachment without the former ten-item product cap', async () => {
     const testEnv = env();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const attachments = Array.from({ length: 12 }, (_, id) => ({
@@ -60,10 +60,8 @@ describe('attachment webhook normalization', () => {
     const response = await Worker.fetch(request, testEnv.value, {} as any);
     expect(response.status).toBe(200);
     expect(testEnv.messages[0].payload.content).toBeUndefined();
-    expect(testEnv.messages[0].payload.attachments).toHaveLength(10);
-    const log = JSON.parse(String(warn.mock.calls[0][0]));
-    expect(log).toMatchObject({ msg: expect.stringContaining('Attachment count'), error_category: 'ATTACHMENT_COUNT_LIMIT' });
-    expect(JSON.stringify(log)).not.toContain('private-');
+    expect(testEnv.messages[0].payload.attachments).toHaveLength(12);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('normalizes Telegram attachment-only and chooses one photo variant', async () => {

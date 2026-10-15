@@ -29,6 +29,7 @@ import { captureDlqMessage } from './queue/dlq-consumer';
 import { persistDlqQuarantine } from './queue/dlq-quarantine';
 import { resolveQueueIdentities } from './config/queue-identities';
 import { handleUploadCapabilityRequest } from './uploads/handler';
+import { cleanupUploadSessions, handleUploadSession } from './uploads/sessions';
 import { runLearningMaintenance } from './learning/maintenance';
 import { kickCrispRtm } from './rtm/crisp-rtm';
 
@@ -210,8 +211,13 @@ export default {
     }
     const url = new URL(request.url);
 
+    if (url.pathname.startsWith('/upload-sessions/')) {
+      const match = /^\/upload-sessions\/([A-Za-z0-9_-]{43})(?:\/(.*))?$/.exec(url.pathname);
+      if (!match) return new Response('Not Found', { status: 404 });
+      return handleUploadSession(request, await resolveEffectiveEnv(env), match[1], match[2] || '');
+    }
     if (url.pathname.startsWith('/uploads/')) {
-      const token = url.pathname.slice('/uploads/'.length);
+      const token = url.pathname.slice('/uploads/'.length).split('/')[0];
       if (!token || token.includes('/')) {
         return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
       }
@@ -512,6 +518,7 @@ export default {
       new Date(scheduledTime).getUTCMinutes() === 0;
     if (!isHourlyMaintenance) return;
     ctx.waitUntil(cleanupExpiredAttachments(env));
+    ctx.waitUntil(cleanupUploadSessions(env));
     ctx.waitUntil((async () => {
       try {
         const effectiveEnv = await resolveEffectiveEnv(env);
