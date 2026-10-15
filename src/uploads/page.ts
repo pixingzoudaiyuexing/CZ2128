@@ -111,16 +111,25 @@ function createUploadClient(doc) {
     if(error.status===413) return '当前传输请求超出服务平台限制。请保留原文件并联系人工客服选择其他交付方式。';
     if(error.status===409) return '文件状态发生变化或分片不一致。请刷新状态后使用原文件重试。';
     if(error.status===415) return '服务器无法安全接收这种文件内容。请联系人工客服。';
+    if(isBusy(error)) return '服务器仍在处理此前的上传请求。请稍后使用原文件继续，已确认的分片会保留。';
     if(error.status===429) return '上传请求过于频繁，请稍后重试。';
     if(error.status>=500) return '上传服务暂时不可用，已上传分片可在恢复后继续。';
     return '连接中断或请求未完成。请检查网络后继续上传，已确认的分片不会重复上传。';
+  }
+  function httpError(status,payload) {
+    const error=new Error('HTTP');error.status=status;
+    if(payload&&typeof payload.code==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(payload.code))error.code=payload.code;
+    return error;
+  }
+  function isBusy(error) {
+    return error.status===429&&['UPLOAD_PART_BUSY','UPLOAD_CHUNK_BUSY','UPLOAD_COMPLETION_BUSY'].includes(error.code);
   }
   async function api(url,method='GET',body) {
     let response;
     try { response=await fetch(url,{method,credentials:'omit',redirect:'error',cache:'no-store',
       headers:body===undefined ? {} : {'Content-Type':'application/json'},body:body===undefined ? undefined : JSON.stringify(body)}); }
     catch { throw new Error('NETWORK'); }
-    if(!response.ok) { const error=new Error('HTTP'); error.status=response.status; throw error; }
+    if(!response.ok) {let payload;try{payload=await response.json();}catch{}throw httpError(response.status,payload);}
     if(response.status===204) return {};
     try { return await response.json(); } catch { throw new Error('RESPONSE_INVALID'); }
   }
@@ -169,9 +178,20 @@ function createUploadClient(doc) {
     update(job,'文件已上传，正在校验完整性：'+bytes(progress.verifiedBytes)+' / '+bytes(total),progress.verifiedBytes);
   }
   async function completeFile(job) {
+    const retries={waited:0,started:Date.now(),transient:0};let refresh=false;
     while(true) {
       check(job);
-      const completed=await api(sessionPath(job)+'/complete','POST',{sha256:job.record.sha256});
+      let completed;
+      try {
+        if(refresh) {
+          const remote=await api(sessionPath(job));check(job);validateSession(remote,job);
+          if(remote.attachment) {displayStored(job,remote.attachment);schedulePoll(job,0);await refreshFiles();return;}
+          if(Object.prototype.hasOwnProperty.call(stoppedLabels,remote.state)) {displayStopped(job,remote.state);return;}
+          if(remote.state==='VERIFYING')displayVerification(job,remote);
+          refresh=false;
+        }
+        completed=await api(sessionPath(job)+'/complete','POST',{sha256:job.record.sha256});
+      } catch(error) {await waitForRetry(job,error,retries);refresh=true;continue;}
       if(completed.state==='VERIFYING'&&!completed.attachment) {
         displayVerification(job,completed);
         await new Promise(resolve=>setTimeout(resolve,50));
@@ -207,22 +227,66 @@ function createUploadClient(doc) {
       xhr.onload=()=>{
         job.xhr=null;
         if(xhr.status>=200&&xhr.status<300) resolve();
-        else { const error=new Error('HTTP'); error.status=xhr.status; reject(error); }
+        else {
+          let payload;try{if(xhr.responseText.length<=4096)payload=JSON.parse(xhr.responseText);}catch{}
+          reject(httpError(xhr.status,payload));
+        }
       };
       xhr.onerror=xhr.ontimeout=()=>{job.xhr=null;reject(new Error('NETWORK'));};
       xhr.onabort=()=>{job.xhr=null;const error=new Error('PAUSED');error.paused=job.paused||job.cancelled;reject(error);};
       xhr.send(blob);
     });
   }
+  async function waitForRetry(job,error,retries,confirmed) {
+    check(job);
+    if(error.paused||error.integrity||error.fileMismatch)throw error;
+    let delay,text;
+    if(isBusy(error)) {
+      delay=5000;text='服务器仍在处理此前的上传请求，正在等待恢复；已确认的分片会保留。';
+    } else if(error.status===429) {
+      delay=60000;text='上传请求过于频繁，正在等待一分钟后重试；已确认的分片会保留。';
+    } else {
+      if(error.status&&error.status<500||retries.transient>=2)throw error;
+      delay=1000*2**retries.transient++;text='连接未完成，正在重试当前请求';
+    }
+    if(Math.max(retries.waited,Date.now()-retries.started)+delay>360000)throw error;
+    update(job,text,confirmed);
+    for(let remaining=delay;remaining>0;remaining-=250) {
+      check(job);await new Promise(resolve=>setTimeout(resolve,Math.min(remaining,250)));check(job);
+    }
+    retries.waited+=delay;
+  }
+  async function confirmedPart(job,number,blob,sha256,chunkIndex) {
+    const remote=await api(sessionPath(job)+(chunkIndex?'?part='+number:''));check(job);validateSession(remote,job);
+    const entries=chunkIndex?remote.chunks||[]:remote.parts||[];
+    const matches=entries.filter(part=>chunkIndex?part.number===number&&part.index===chunkIndex:part.number===number);
+    if(!matches.length)return false;
+    if(matches.length!==1||matches[0].sizeBytes!==blob.size||matches[0].sha256!==sha256) {
+      const error=new Error('INTEGRITY');error.integrity=true;throw error;
+    }
+    return true;
+  }
   async function putWithRetry(job,number,blob,sha256,confirmed,chunkIndex) {
-    for(let attempt=0;;attempt++) {
+    const retries={waited:0,started:Date.now(),transient:0};let refresh=false;
+    while(true) {
       check(job);
-      try {await putPart(job,number,blob,sha256,confirmed,chunkIndex);return;}
-      catch(error) {
-        if(error.paused||attempt>=2||error.status&&error.status!==429&&error.status<500)throw error;
-        update(job,'连接未完成，正在重试当前分片',confirmed);
-        await new Promise(resolve=>setTimeout(resolve,Math.min(1000*2**attempt,4000)));
+      try {
+        if(refresh&&await confirmedPart(job,number,blob,sha256,chunkIndex))return;
+        refresh=false;await putPart(job,number,blob,sha256,confirmed,chunkIndex);return;
       }
+      catch(error) {
+        await waitForRetry(job,error,retries,confirmed);refresh=true;
+      }
+    }
+  }
+  async function assembleWithRetry(job,number,blob,sha256,confirmed) {
+    const retries={waited:0,started:Date.now(),transient:0};let refresh=false;
+    while(true) {
+      check(job);
+      try {
+        if(refresh&&await confirmedPart(job,number,blob,sha256))return;
+        refresh=false;await api(sessionPath(job)+'/parts/'+number+'/assemble','POST',{sha256});return;
+      } catch(error) {await waitForRetry(job,error,retries,confirmed);refresh=true;}
     }
   }
   async function upload(job) {
@@ -286,7 +350,7 @@ function createUploadClient(doc) {
           }
           check(job);
           update(job,'正在合并并校验第 '+number+' / '+job.record.partCount+' 个分片',confirmed+blob.size);
-          await api(sessionPath(job)+'/parts/'+number+'/assemble','POST',{sha256:digest});
+          await assembleWithRetry(job,number,blob,digest,confirmed+blob.size);
         } else await putWithRetry(job,number,blob,digest,confirmed);
         confirmed+=blob.size; update(job,'已上传并校验 '+number+' / '+job.record.partCount+' 个分片',confirmed);
       }

@@ -2,6 +2,10 @@
 
 Status: **IN PROGRESS — NOT FULLY ACCEPTED**. Updated 2026-10-15 (Asia/Shanghai).
 
+Owner clarified during browser acceptance that the existing free Crisp plan cannot send operator images or attachments. Native Crisp operator file sending is therefore **NOT APPLICABLE — upstream plan restriction**; the required operator route is Telegram image/file reply to the actual Crisp visitor, with the authenticated custom-domain portal when Telegram's native download API cannot carry the source file. Genuine Crisp operator text handoff remains in scope.
+
+The first deployed repair (`8018335`, Worker version `a427ddc7-6e35-4fa7-95eb-8440f32d0c8a`, 100%) passed candidate/main CI and Formal A/B review. Actual browser uploads delivered 12,288-byte FILE, 1,772,797-byte IMAGE and 3,145,728-byte FILE samples. A subsequent hard-interruption test exposed a UI recovery gap: a retained 120-second part lease was mislabeled as rate limiting and the old three-attempt retry stopped too early. The follow-up preserves server leases, distinguishes BUSY from rate limiting, waits with a bounded pause/cancel-aware retry, and checks the server manifest before resending confirmed bytes. This follow-up requires its own final SHA, review, CI and deployed browser evidence; earlier gates do not pass it automatically.
+
 This is the live acceptance ledger for the Owner's attachment architecture repair, genuine AI-effect test and complete existing-Staging Work Unit. It replaces unexecuted earlier full-acceptance plans. Historical Phase 4C results remain in `PREPRODUCTION-ACCEPTANCE.md`; they do not automatically pass new behavior or the final executable SHA.
 
 ## 1. Scope and exact identity record
@@ -55,8 +59,8 @@ Unless an observation is explicitly entered below, the current Work Unit's real/
 | A02 | Telegram → Crisp image | Actual Telegram compressed representation recorded; one Crisp visible image or authorized-link delivery; original screenshot size not substituted | NOT TESTED |
 | A03 | Crisp visitor → Telegram ordinary file | Actual allowed Crisp client upload or authenticated portal; file bytes/hash and original Topic delivery | NOT TESTED |
 | A04 | Telegram → Crisp ordinary file | Real TXT/PDF/ZIP-type source; native-download Provider constraints or explicit operator portal; one visible safe link/file | NOT TESTED |
-| A05 | Crisp real operator image mirror | Authenticated Mac Crisp client, or authorized web inbox fallback explicitly recorded; one human-labeled silent mirror | NOT TESTED |
-| A06 | Crisp real operator ordinary attachment mirror | Genuine human inbox action; provenance and quiet-clock behavior; one file delivery | NOT TESTED |
+| A05 | Crisp real operator image mirror | Owner confirmed free-plan operator file sending is unavailable; use Telegram operator route | NOT APPLICABLE — upstream plan restriction |
+| A06 | Crisp real operator ordinary attachment mirror | Owner confirmed free-plan operator file sending is unavailable; use Telegram operator route | NOT APPLICABLE — upstream plan restriction |
 | A07 | `/upload` | Authorized existing Topic creates one bound 15-minute invitation; no fabricated provider event | NOT TESTED |
 | A08 | Continuous multi-file selection | More than the former three-file quota accepted over time; each has independent session/outcome, no silent truncation | NOT TESTED |
 | A09 | Images and ordinary files in portal | Server bytes classify correctly despite misleading MIME/name; unsafe/unknown content forced download | NOT TESTED |

@@ -38,8 +38,9 @@ interface HarnessOptions {
   path?: string;
   storage?: Storage;
   handler?: (url: string, method: string, body: any) => Response | Promise<Response>;
-  putFailure?: number | number[];
+  putFailure?: number | Array<number | { status: number; code?: unknown }>;
   pauseFirstPut?: boolean;
+  immediateTimers?: boolean;
   onTimer?: (milliseconds: number, client: any) => void;
 }
 
@@ -51,6 +52,7 @@ function harness(options: HarnessOptions = {}) {
   const puts: Array<{ url: string; bytes: Uint8Array; headers: Record<string, string> }> = [];
   const progressSnapshots: number[] = [];
   const timers: Array<() => unknown> = [];
+  const timerDurations: number[] = [];
   let createdSize = 0;
   let expectedHash = '';
   const handler = options.handler ?? ((_url: string, _method: string, body: any) => {
@@ -68,6 +70,7 @@ function harness(options: HarnessOptions = {}) {
   });
   class Xhr {
     status = 0;
+    responseText = '';
     timeout = 0;
     onload?: () => void;
     onerror?: () => void;
@@ -85,9 +88,11 @@ function harness(options: HarnessOptions = {}) {
       this.progress?.({ loaded: Math.ceil(body.size / 2), lengthComputable: true });
       progressSnapshots.push(client.jobs.find((job: any) => job.xhr === this)?.progress.value ?? -1);
       if (options.pauseFirstPut && puts.length === 1) return;
-      this.status = Array.isArray(options.putFailure)
+      const result = Array.isArray(options.putFailure)
         ? options.putFailure[puts.length - 1] ?? 200
         : options.putFailure ?? 200;
+      this.status = typeof result === 'number' ? result : result.status;
+      this.responseText = typeof result === 'number' ? '' : JSON.stringify({ code: result.code });
       this.onload?.();
     }
     abort() { this.onabort?.(); }
@@ -101,14 +106,15 @@ function harness(options: HarnessOptions = {}) {
       return handler(url, init.method ?? 'GET', body);
     },
     setTimeout: (fn: () => unknown, ms: number) => {
+      timerDurations.push(ms);
       options.onTimer?.(ms, client);
-      if (ms === 2000) timers.push(fn);
+      if (ms === 2000 && !options.immediateTimers) timers.push(fn);
       else queueMicrotask(fn);
     }
   });
   runInContext(UPLOAD_SHA256_SCRIPT + '\n' + UPLOAD_PAGE_CLIENT_SCRIPT, context);
   const client = runInContext('createUploadClient(document)', context);
-  return { client, elements, storage, calls, puts, context, timers, progressSnapshots };
+  return { client, elements, storage, calls, puts, context, timers, progressSnapshots, timerDurations };
 }
 
 describe('bounded incremental browser SHA-256', () => {
@@ -326,6 +332,196 @@ describe('customer multipart upload page', () => {
     expect(h.puts).toHaveLength(2);
     expect(h.puts[0].url).toBe(h.puts[1].url);
     expect(h.puts[0].headers['X-Part-SHA256']).toBe(h.puts[1].headers['X-Part-SHA256']);
+    expect(h.calls.filter(call => call.url.endsWith('/complete'))).toHaveLength(1);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it('waits beyond three busy part responses and resumes the same part without mistaking its lease for a rate limit', async () => {
+    const waiting: string[] = [];
+    const h = harness({ immediateTimers: true, putFailure: [...Array(4).fill({ status: 429, code: 'UPLOAD_PART_BUSY' }), 200],
+      onTimer: (_ms, client) => waiting.push(client.jobs[0].status.textContent) });
+    h.client.addFiles([new File(['abcd'], 'leased.txt')]);
+    await h.client.begin();
+    expect(h.puts).toHaveLength(5);
+    expect(new Set(h.puts.map(put => put.headers['X-Part-SHA256']))).toEqual(new Set([digest('abcd')]));
+    expect(waiting.some(text => text.includes('服务器仍在处理'))).toBe(true);
+    expect(waiting.every(text => !text.includes('过于频繁') && !text.includes('已送达'))).toBe(true);
+    expect(h.timerDurations.filter(ms => ms !== 2000).reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(20000);
+    expect(h.calls.filter(call => call.url.endsWith('/complete'))).toHaveLength(1);
+  });
+
+  it('stops waiting for a busy part promptly when paused and never completes the unfinished file', async () => {
+    let paused = false;
+    const h = harness({ immediateTimers: true, putFailure: [{ status: 429, code: 'UPLOAD_PART_BUSY' }], onTimer: (_ms, client) => {
+      if (!paused) { paused = true; client.jobs[0].pause.click(); }
+    } });
+    h.client.addFiles([new File(['abcd'], 'pause-lease.txt')]);
+    await h.client.begin();
+    expect(paused).toBe(true);
+    expect(h.puts).toHaveLength(1);
+    expect(h.timerDurations[0]).toBeLessThanOrEqual(250);
+    expect(h.calls.some(call => call.url.endsWith('/complete'))).toBe(false);
+    expect(h.client.jobs[0].status.textContent).toContain('已暂停');
+    expect(h.client.jobs[0].record.state).not.toBe('DELIVERED');
+  });
+
+  it('does not PUT a busy part again if the original request is subsequently confirmed stored with the same hash and length', async () => {
+    const h = harness({ immediateTimers: true, putFailure: [{ status: 429, code: 'UPLOAD_PART_BUSY' }], handler: (url, _method, body) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1 });
+      if (url.endsWith('/complete')) return Response.json({ state: 'QUEUED', sha256: body.sha256 });
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: 'UPLOADING',
+        parts: h.puts.length ? [{ number: 1, sizeBytes: 4, sha256: digest('abcd') }] : [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'late-stored.txt')]);
+    await h.client.begin();
+    expect(h.puts).toHaveLength(1);
+    expect(h.calls.filter(call => call.url.endsWith('/complete'))).toHaveLength(1);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it('rejects a conflicting late part manifest instead of trusting its stored state', async () => {
+    const h = harness({ immediateTimers: true, putFailure: [{ status: 429, code: 'UPLOAD_PART_BUSY' }], handler: (url) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1 });
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: 'UPLOADING',
+        parts: h.puts.length ? [{ number: 1, sizeBytes: 3, sha256: digest('abcd') }] : [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'late-conflict.txt')]);
+    await h.client.begin();
+    expect(h.puts).toHaveLength(1);
+    expect(h.calls.some(call => call.url.endsWith('/complete'))).toBe(false);
+    expect(h.client.jobs[0].status.textContent).toContain('完整性校验未通过');
+  });
+
+  it('uses the confirmed chunk manifest after a busy response without PUTting that chunk again', async () => {
+    const h = harness({ immediateTimers: true, putFailure: [{ status: 429, code: 'UPLOAD_CHUNK_BUSY' }], handler: (url, _method, body) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 65 * 1024 * 1024, partCount: 1 });
+      if (url.endsWith('/complete')) return Response.json({ state: 'QUEUED', sha256: body.sha256 });
+      if (url.endsWith('/assemble')) return Response.json({ ok: true });
+      return Response.json({ partSize: 65 * 1024 * 1024, partCount: 1, sizeBytes: 4, state: 'UPLOADING', parts: [],
+        chunks: h.puts.length ? [{ number: 1, index: 1, sizeBytes: 4, sha256: digest('abcd') }] : [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'late-chunk.txt')]);
+    await h.client.begin();
+    expect(h.puts).toHaveLength(1);
+    expect(h.puts[0].url).toContain('/parts/1/chunks/1');
+    expect(h.calls.filter(call => call.url.includes('?part=1'))).toHaveLength(2);
+    expect(h.calls.filter(call => call.url.endsWith('/assemble'))).toHaveLength(1);
+    expect(h.calls.filter(call => call.url.endsWith('/complete'))).toHaveLength(1);
+  });
+
+  it('waits through a busy completion lease without presenting storage or delivery before verified completion', async () => {
+    let completions = 0;
+    const waiting: string[] = [];
+    const h = harness({ immediateTimers: true, onTimer: (_ms, client) => waiting.push(client.jobs[0].status.textContent), handler: (url, _method, body) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1 });
+      if (url.endsWith('/complete')) return ++completions <= 4
+        ? Response.json({ code: 'UPLOAD_COMPLETION_BUSY' }, { status: 429 })
+        : Response.json({ state: 'QUEUED', sha256: body.sha256 });
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: 'UPLOADING', parts: [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'completion-lease.txt')]);
+    await h.client.begin();
+    expect(completions).toBe(5);
+    expect(h.puts).toHaveLength(1);
+    expect(waiting.some(text => text.includes('服务器仍在处理'))).toBe(true);
+    expect(waiting.every(text => !text.includes('过于频繁') && !text.includes('已存储') && !text.includes('已送达'))).toBe(true);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it('waits a minute for an actual rate limit and shows rate-limit copy rather than a storage claim', async () => {
+    const waiting: string[] = [];
+    const h = harness({ immediateTimers: true, putFailure: [{ status: 429, code: 'UPLOAD_RATE_LIMITED' }, 200],
+      onTimer: (_ms, client) => waiting.push(client.jobs[0].status.textContent) });
+    h.client.addFiles([new File(['abcd'], 'rate-window.txt')]);
+    await h.client.begin();
+    expect(h.puts).toHaveLength(2);
+    expect(h.timerDurations.filter(ms => ms !== 2000).reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(60000);
+    expect(waiting.some(text => text.includes('请求过于频繁'))).toBe(true);
+    expect(waiting.every(text => !text.includes('已送达'))).toBe(true);
+    expect(h.calls.filter(call => call.url.endsWith('/complete'))).toHaveLength(1);
+  });
+
+  it('bounds an unresolved busy lease without completing or claiming that the unfinished file was delivered', async () => {
+    const h = harness({ immediateTimers: true, putFailure: Array(90).fill({ status: 429, code: 'UPLOAD_PART_BUSY' }) });
+    h.client.addFiles([new File(['abcd'], 'lease-exhausted.txt')]);
+    await h.client.begin();
+    expect(h.puts.length).toBeGreaterThan(60);
+    expect(h.puts.length).toBeLessThanOrEqual(74);
+    expect(h.timerDurations.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(360000);
+    expect(h.calls.some(call => call.url.endsWith('/complete'))).toBe(false);
+    expect(h.client.jobs[0].status.textContent).toContain('服务器仍在处理');
+    expect(h.client.jobs[0].record.state).not.toBe('DELIVERED');
+  });
+
+  it('cancels during a busy wait without another PUT or completing the file', async () => {
+    let cancellation: any;
+    const h = harness({ immediateTimers: true, putFailure: [{ status: 429, code: 'UPLOAD_PART_BUSY' }],
+      onTimer: (_ms, client) => { if (!cancellation) cancellation = client.jobs[0].cancel.click(); } });
+    h.client.addFiles([new File(['abcd'], 'cancel-lease.txt')]);
+    await h.client.begin();
+    await cancellation;
+    expect(h.puts).toHaveLength(1);
+    expect(h.calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
+    expect(h.calls.some(call => call.url.endsWith('/complete'))).toBe(false);
+    expect(h.client.jobs[0].status.textContent).toBe('已取消上传');
+    expect(h.storage.length).toBe(0);
+  });
+
+  it('uses a verified stored attachment after a completion lease finishes without issuing another completion request', async () => {
+    let completions = 0;
+    const h = harness({ immediateTimers: true, handler: (url) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1 });
+      if (url.endsWith('/complete')) { completions++; return Response.json({ code: 'UPLOAD_COMPLETION_BUSY' }, { status: 429 }); }
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: completions ? 'QUEUED' : 'UPLOADING', parts: [],
+        ...(completions ? { attachment: { state: 'QUEUED', sha256: digest('abcd') } } : {}) });
+    } });
+    h.client.addFiles([new File(['abcd'], 'late-completion.txt')]);
+    await h.client.begin();
+    expect(completions).toBe(1);
+    expect(h.puts).toHaveLength(1);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it.each(['part', 'complete'])('does not render or interpret an unsafe %s HTTP error code as a busy lease', async stage => {
+    let completions = 0;
+    const waiting: string[] = [];
+    const code = 'UPLOAD_PART_BUSY<script>private-value</script>';
+    const h = harness({ immediateTimers: true,
+      putFailure: stage === 'part' ? [{ status: 429, code }, 200] : undefined,
+      onTimer: (_ms, client) => waiting.push(client.jobs[0].status.textContent), handler: (url, _method, body) => {
+        if (url.endsWith('/files')) return Response.json({ files: [] });
+        if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1 });
+        if (url.endsWith('/complete')) return stage === 'complete' && ++completions === 1
+          ? Response.json({ code }, { status: 429 }) : Response.json({ state: 'QUEUED', sha256: body.sha256 });
+        return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: 'UPLOADING', parts: [] });
+      } });
+    h.client.addFiles([new File(['abcd'], 'safe-error.txt')]);
+    await h.client.begin();
+    expect(waiting.some(text => text.includes('请求过于频繁'))).toBe(true);
+    expect(waiting.every(text => !text.includes('private-value') && !text.includes('<script>') && !text.includes('服务器仍在处理'))).toBe(true);
+    expect(h.timerDurations.filter(ms => ms !== 2000).reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(60000);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it('waits for a busy assembly and trusts only its later confirmed part hash and length', async () => {
+    let assemblies = 0;
+    const h = harness({ immediateTimers: true, handler: (url, _method, body) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 65 * 1024 * 1024, partCount: 1 });
+      if (url.endsWith('/complete')) return Response.json({ state: 'QUEUED', sha256: body.sha256 });
+      if (url.endsWith('/assemble')) { assemblies++; return Response.json({ code: 'UPLOAD_PART_BUSY' }, { status: 429 }); }
+      return Response.json({ partSize: 65 * 1024 * 1024, partCount: 1, sizeBytes: 4, state: 'UPLOADING',
+        parts: assemblies ? [{ number: 1, sizeBytes: 4, sha256: digest('abcd') }] : [], chunks: [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'late-assembly.txt')]);
+    await h.client.begin();
+    expect(assemblies).toBe(1);
+    expect(h.puts).toHaveLength(1);
     expect(h.calls.filter(call => call.url.endsWith('/complete'))).toHaveLength(1);
     expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
   });
