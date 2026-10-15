@@ -876,20 +876,38 @@ describe('Worker Integration', () => {
     errorLog.mockRestore();
   });
 
-  it('scheduled() registers bounded attachment cleanup and learning maintenance with waitUntil', async () => {
+  it('scheduled() queues independently retryable hourly maintenance without reading D1 or running cleanup in Cron', async () => {
     const waitUntil = vi.fn();
+    const sendBatch = vi.fn(async (_jobs: any[]) => undefined);
     const scheduledEnv = {
-      DB: new MockD1(),
-      ATTACHMENTS_BUCKET: {}
+      DB: { prepare: vi.fn(() => { throw new Error('Cron must not resolve settings or scan metadata'); }) },
+      ATTACHMENTS_BUCKET: { delete: vi.fn(() => { throw new Error('Cron must not delete objects'); }) },
+      QUEUE: { sendBatch }
     };
+    const scheduledTime = Date.UTC(2026, 8, 30, 2, 0, 0);
     if (Worker.scheduled) {
       await Worker.scheduled({
         cron: '*/5 * * * *',
-        scheduledTime: Date.UTC(2026, 8, 30, 2, 0, 0)
+        scheduledTime
       } as any, scheduledEnv as any, { waitUntil } as any);
     }
-    expect(waitUntil).toHaveBeenCalledTimes(3);
-    await expect(Promise.all(waitUntil.mock.calls.map(call => call[0]))).resolves.toEqual([undefined, undefined, undefined]);
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(sendBatch).toHaveBeenCalledTimes(1);
+    const jobs = sendBatch.mock.calls[0][0] as any;
+    expect(jobs.map((j: any) => j.body.payload.kind)).toEqual(['ATTACHMENTS', 'UPLOADS', 'LEARNING']);
+    expect(jobs.every((j: any) => j.body.payload.scheduledHour === Math.floor(scheduledTime / 3600000))).toBe(true);
+    expect(new Set(jobs.map((j: any) => j.body.eventId)).size).toBe(3);
+    if (Worker.scheduled) await Worker.scheduled({ scheduledTime } as any, scheduledEnv as any, { waitUntil } as any);
+    expect(sendBatch.mock.calls[1][0]).toEqual(jobs);
+    expect(scheduledEnv.DB.prepare).not.toHaveBeenCalled();
+    expect(scheduledEnv.ATTACHMENTS_BUCKET.delete).not.toHaveBeenCalled();
+  });
+
+  it('scheduled() surfaces an enqueue failure and does not report failed maintenance as completed', async () => {
+    const sendBatch = vi.fn().mockRejectedValue(new Error('QUEUE_SEND_FAILED'));
+    await expect(Worker.scheduled!({ scheduledTime: Date.UTC(2026, 8, 30, 2, 0) } as any,
+      { QUEUE: { sendBatch } } as any, { waitUntil: vi.fn() } as any)).rejects.toThrow('QUEUE_SEND_FAILED');
+    expect(sendBatch).toHaveBeenCalledTimes(1);
   });
 
   it('scheduled() keeps Crisp RTM warm every five minutes without running hourly maintenance', async () => {

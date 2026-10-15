@@ -9,12 +9,14 @@ const VALID_TYPES = new Set([
   'message_created',
   'conversation_status_changed',
   'ai_trigger',
-  'attachment_transfer'
+  'attachment_transfer',
+  'upload_task',
+  'maintenance_tick'
 ]);
 
 type DlqStatus = 'OPEN' | 'RESOLVED';
 export type DlqEventSource = 'chatwoot' | 'crisp' | 'telegram' | 'internal';
-export type DlqEventType = 'message_created' | 'conversation_status_changed' | 'ai_trigger' | 'attachment_transfer';
+export type DlqEventType = 'message_created' | 'conversation_status_changed' | 'ai_trigger' | 'attachment_transfer' | 'upload_task' | 'maintenance_tick';
 
 export interface DlqQueueMessage {
   readonly id: string;
@@ -48,7 +50,9 @@ type DlqLookup =
   | { kind: 'crisp'; websiteRef: string; sessionRef: string }
   | { kind: 'telegram'; threadRef: string }
   | { kind: 'ai'; conversationId: string }
-  | { kind: 'attachment'; attachmentId: string };
+  | { kind: 'attachment'; attachmentId: string }
+  | { kind: 'upload';sessionId:string }
+  | { kind: 'maintenance' };
 
 interface SanitizedEnvelope {
   source: DlqEventSource;
@@ -119,6 +123,14 @@ function parseEnvelope(body: unknown): SanitizedEnvelope | null {
     const attachmentId = boundedIdentity(payload.attachmentId);
     if (!attachmentId) return null;
     return { source, type, eventId, lookup: { kind: 'attachment', attachmentId } };
+  } else if(type==='upload_task') {
+    const sessionId=boundedIdentity(payload.sessionId);
+    if(!sessionId)return null;
+    return {source,type,eventId,lookup:{kind:'upload',sessionId}};
+  } else if(type==='maintenance_tick') {
+    if(!Number.isSafeInteger(payload.scheduledHour)||Number(payload.scheduledHour)<0||
+      !['ATTACHMENTS','UPLOADS','LEARNING'].includes(String(payload.kind)))return null;
+    return {source,type,eventId,lookup:{kind:'maintenance'}};
   } else {
     return null;
   }
@@ -164,6 +176,7 @@ export async function sanitizeDlqMessage(
 }
 
 async function resolveConversationId(env: Pick<Env, 'DB'>, lookup: DlqLookup): Promise<string | null> {
+  if(lookup.kind==='maintenance')return null;
   if (lookup.kind === 'chatwoot') {
     const row = await env.DB.prepare(
       `SELECT id FROM conversations
@@ -188,6 +201,11 @@ async function resolveConversationId(env: Pick<Env, 'DB'>, lookup: DlqLookup): P
     const row = await env.DB.prepare('SELECT id FROM conversations WHERE id = ?')
       .bind(lookup.conversationId).first<{ id: string }>();
     return boundedIdentity(row?.id);
+  }
+  if(lookup.kind==='upload') {
+    const row=await env.DB.prepare(`SELECT a.conversation_id FROM attachment_upload_sessions s JOIN attachments a ON a.id=s.attachment_id WHERE s.id=?`)
+      .bind(lookup.sessionId).first<{conversation_id:string}>();
+    return boundedIdentity(row?.conversation_id);
   }
   const row = await env.DB.prepare('SELECT conversation_id FROM attachments WHERE id = ?')
     .bind(lookup.attachmentId).first<{ conversation_id: string }>();

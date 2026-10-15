@@ -101,7 +101,7 @@ function parseMetadata(object: R2Object, expectedQueueName: string): DlqQuaranti
   if (meta.queueName !== expectedQueueName) return null;
   if (meta.reason !== QUARANTINE_REASON || meta.state !== QUARANTINE_STATE) return null;
   const sources = new Set(['chatwoot', 'crisp', 'telegram', 'internal']);
-  const types = new Set(['message_created', 'conversation_status_changed', 'ai_trigger', 'attachment_transfer']);
+  const types = new Set(['message_created', 'conversation_status_changed', 'ai_trigger', 'attachment_transfer', 'upload_task', 'maintenance_tick']);
   const eventSource = parseOptionalEnum<DlqEventSource>(meta.eventSource, sources);
   const eventType = parseOptionalEnum<DlqEventType>(meta.eventType, types);
   const queueAttempts = parseOptionalInteger(meta.queueAttempts);

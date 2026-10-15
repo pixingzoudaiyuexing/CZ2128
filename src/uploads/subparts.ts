@@ -1,6 +1,8 @@
 import { Env } from '../config/env';
 import { verifiedPartStream } from '../attachments/content';
 import type { UploadSession } from './sessions';
+import { queueUploadTask } from './async-work';
+import { fetchCrispConversationState } from '../adapters/crisp/api';
 
 export const UPLOAD_NETWORK_CHUNK_BYTES = 8 * 1024 * 1024;
 const MAX_R2_PART_BYTES = 5 * 1024 * 1024 * 1024;
@@ -89,14 +91,18 @@ async function putChunk(request: Request, env: Env, session: UploadSession, numb
       .bind(lease, now() + LEASE_SECONDS, now(), session.id, number, index, now(), session.id, now(), env.BOT_GROUP_ID).run();
     if (claimed.meta.changes !== 1) return failure('UPLOAD_CHUNK_BUSY', 429);
   }
-  const stream = verifiedPartStream(request.body, expected, hash);
+  const stream = session.async_mode?null:verifiedPartStream(request.body, expected, hash);
   let object: R2Object | null;
   try {
-    [object] = await Promise.all([env.ATTACHMENTS_BUCKET.put(key, stream.readable,
-      { httpMetadata: { contentType: 'application/octet-stream' }, customMetadata: { sessionId: session.id } }), stream.done]);
+    if(session.async_mode) {
+      // R2 validates the declared SHA-256 natively; HTTP performs no JS hashing loop.
+      object=await env.ATTACHMENTS_BUCKET.put(key,request.body,{sha256:hash,
+        httpMetadata:{contentType:'application/octet-stream'},customMetadata:{sessionId:session.id}});
+    } else [object] = await Promise.all([env.ATTACHMENTS_BUCKET.put(key, stream!.readable,
+      { httpMetadata: { contentType: 'application/octet-stream' }, customMetadata: { sessionId: session.id } }), stream!.done]);
     if (!object || object.size !== expected) throw new Error('UPLOAD_CHUNK_STORE_INVALID');
   } catch (error) {
-    await stream.abort(error);
+    await stream?.abort(error);
     await env.DB.prepare(`UPDATE attachment_upload_subparts SET lease_until=0,updated_at=?
       WHERE session_id=? AND part_number=? AND chunk_number=? AND lease_token=? AND state='WRITING'`)
       .bind(now(), session.id, number, index, lease).run();
@@ -105,7 +111,22 @@ async function putChunk(request: Request, env: Env, session: UploadSession, numb
   const saved = await env.DB.prepare(`UPDATE attachment_upload_subparts SET state='STORED',etag=?,lease_until=0,updated_at=?
     WHERE session_id=? AND part_number=? AND chunk_number=? AND state='WRITING' AND lease_token=? AND sha256=? AND ${WRITABLE}`)
     .bind(object.etag, now(), session.id, number, index, lease, hash, session.id, now(), env.BOT_GROUP_ID).run();
-  if (saved.meta.changes !== 1) return failure('UPLOAD_AUTHORIZATION_CHANGED', 410);
+  if (saved.meta.changes !== 1) {
+    // An expired writer can finish after cancellation/cleanup. Reopen managed
+    // cleanup evidence before retiring anything; never delete a newer live owner.
+    if(!await writableSession(env,session.id)) {
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE attachment_upload_subparts SET state='WRITING',lease_until=0,cleanup_next_retry_at=0,updated_at=?
+          WHERE session_id=? AND part_number=? AND chunk_number=? AND state!='STORED'`)
+          .bind(now(),session.id,number,index),
+        env.DB.prepare(`UPDATE attachment_upload_sessions SET status='ABORTING',lease_until=0,updated_at=? WHERE id=?
+          AND status NOT IN ('STORED','QUEUED','DELIVERED','AMBIGUOUS')`)
+          .bind(now(),session.id)
+      ]);
+      if(session.async_mode)try{await queueUploadTask(env,session.id,'ABORT');}catch{/* Durable ABORTING metadata is retried by maintenance. */}
+    }
+    return failure('UPLOAD_AUTHORIZATION_CHANGED', 410);
+  }
   return json({ ok: true, number, index, sizeBytes: expected, sha256: hash });
 }
 
@@ -154,7 +175,7 @@ function concatenateChunks(bucket: R2Bucket, chunks: Subpart[]): ReadableStream<
   });
 }
 
-async function assemble(request: Request, env: Env, session: UploadSession, number: number): Promise<Response> {
+async function assemble(request: Request, env: Env, session: UploadSession, number: number, queued=false): Promise<Response> {
   const metadata = await boundedMetadata(request); if (!metadata) return failure('UPLOAD_ASSEMBLY_METADATA_INVALID', 400);
   const length = partLength(session, number); if (length === null) return failure('UPLOAD_PART_INVALID', 400);
   const current = await writableSession(env, session.id);
@@ -169,6 +190,15 @@ async function assemble(request: Request, env: Env, session: UploadSession, numb
   if (chunks.length !== count || chunks.some((row, index) => row.chunk_number !== index + 1 || row.state !== 'STORED' ||
       row.size_bytes !== Math.min(UPLOAD_NETWORK_CHUNK_BYTES, length - index * UPLOAD_NETWORK_CHUNK_BYTES)) ||
       chunks.reduce((total, row) => total + row.size_bytes, 0) !== length) return failure('UPLOAD_CHUNKS_INCOMPLETE');
+  if(session.async_mode&&!queued) {
+    await env.DB.prepare(`INSERT INTO attachment_upload_parts(session_id,part_number,size_bytes,sha256,status,lease_token,lease_until,updated_at)
+      SELECT ?,?,?,?,'WRITING','PENDING',0,? WHERE ${WRITABLE} ON CONFLICT(session_id,part_number) DO NOTHING`)
+      .bind(session.id,number,length,metadata.sha256,now(),session.id,now(),env.BOT_GROUP_ID).run();
+    const pending=await part(env,session.id,number);
+    if(!pending||pending.sha256!==metadata.sha256||pending.size_bytes!==length)return failure('UPLOAD_PART_CONFLICT');
+    await queueUploadTask(env,session.id,'ASSEMBLE',{partNumber:number});
+    return json({ok:true,state:'ASSEMBLING',number,sizeBytes:length,sha256:metadata.sha256},202);
+  }
   const lease = crypto.randomUUID();
   await env.DB.prepare(`INSERT INTO attachment_upload_parts(session_id,part_number,size_bytes,sha256,status,lease_token,lease_until,updated_at)
     SELECT ?,?,?,?,'WRITING',?,?,? WHERE ${WRITABLE} ON CONFLICT(session_id,part_number) DO NOTHING`)
@@ -204,6 +234,15 @@ async function assemble(request: Request, env: Env, session: UploadSession, numb
   return json({ ok: true, number, sha256: metadata.sha256 });
 }
 
+export async function assembleQueuedUploadPart(env:Env,session:UploadSession,number:number):Promise<Response> {
+  const bound=await env.DB.prepare(`SELECT i.crisp_website_ref,i.crisp_session_ref FROM upload_invites i WHERE i.id=?`).bind(session.invite_id)
+    .first<{crisp_website_ref:string;crisp_session_ref:string}>();
+  if(!bound||await fetchCrispConversationState(env,bound.crisp_website_ref,bound.crisp_session_ref)==='resolved')return failure('UPLOAD_AUTHORIZATION_CHANGED',410);
+  const manifest=await part(env,session.id,number);
+  if(!manifest)return failure('UPLOAD_PART_INVALID',400);
+  return assemble(new Request('https://upload-work.internal/assemble',{method:'POST',body:JSON.stringify({sha256:manifest.sha256})}),env,session,number,true);
+}
+
 /** Called only after the existing session capability/binding authorization. */
 export async function handleUploadSubpart(request: Request, env: Env, session: UploadSession, action: string): Promise<Response> {
   const chunk = /^parts\/(\d{1,5})\/chunks\/(\d{1,3})$/.exec(action);
@@ -227,7 +266,8 @@ export async function cleanupUploadSubparts(env: Env, sessionId: string): Promis
     if (row.temp_key !== expectedKey || !/^[A-Za-z0-9_-]{1,80}$/.test(row.session_id)) continue;
     const lease = crypto.randomUUID();
     const claimed = await env.DB.prepare(`UPDATE attachment_upload_subparts SET state='DELETING',lease_token=?,lease_until=?,updated_at=?
-      WHERE session_id=? AND part_number=? AND chunk_number=? AND state!='DELETED' AND (state!='DELETING' OR lease_until<=?)
+      WHERE session_id=? AND part_number=? AND chunk_number=? AND state!='DELETED'
+      AND (state NOT IN ('DELETING','WRITING') OR lease_until<=?)
       AND (${eligible})`).bind(lease, now() + LEASE_SECONDS, now(), row.session_id, row.part_number, row.chunk_number, now()).run();
     if (claimed.meta.changes !== 1) continue;
     try {

@@ -35,7 +35,7 @@ See [Reliability Operations Runbook](RELIABILITY-RUNBOOK.md) for state handling 
 
 ## 2. Schema History
 
-The historical Phase 4B recovery baseline was `0001` through `0005`. The current candidate forward migration inventory is `0001` through `0012`; use the actual reviewed Git inventory for any new rollout. Migrations `0006`–`0010` add Crisp attachment/upload/UX and knowledge/learning state. `0011_crisp_human_quiet.sql` adds only a nullable conversation notification clock and immutable human-message-time receipts. It does not backfill or modify existing conversations, Topic mappings, messages, attachments, runtime config or AI state. Apply 0011 before running the new Worker.
+The historical Phase 4B recovery baseline was `0001` through `0005`. The current candidate forward migration inventory is `0001` through `0013`; use the actual reviewed Git inventory for any new rollout. Migrations `0006`–`0010` add Crisp attachment/upload/UX and knowledge/learning state. `0011_crisp_human_quiet.sql` adds only a nullable conversation notification clock and immutable human-message-time receipts. It does not backfill or modify existing conversations, Topic mappings, messages, attachments, runtime config or AI state. Apply 0011 before running the new Worker.
 
 For the quiet-window Staging rollout, capture the existing Worker version, bindings, secret-name set, queues/cron, complete migration list and immediate pre-migration D1 Time Travel bookmark. Time Travel is the full-database recovery point, including FTS state; D1 portable export currently cannot export a database containing virtual tables. Do not drop FTS to manufacture an export. Any optional table-scoped export must be encrypted and its limited coverage stated. For the earlier 0011-only change, Worker-only rollback could ignore its extra clock/receipt fields and must leave the database/receipts intact; this narrow claim does not cover attachment v2. That earlier rollback restores the older notification behavior. Database restore is a separate destructive recovery action, not part of automatic code rollback.
 
@@ -48,6 +48,12 @@ For the quiet-window Staging rollout, capture the existing Worker version, bindi
 | `0005_reliability.sql` | Attempt evidence, reconciliation, parent-child retries, expanded AI states, audit and DLQ receipts | Rebuilds `ai_runs`; rolling compatibility retains legacy `FAILED`, but arbitrary code rollback is not proven safe |
 
 Migration `0005` is covered by real local SQLite migration tests for row/identity preservation, legacy `FAILED`, new status compatibility, integrity and foreign keys. This is not production migration or restore evidence.
+
+## 2B. Workers Free asynchronous upload migration 0013
+
+`0013_upload_async_work.sql` adds `async_mode` (default 0 for existing sessions) and `work_enqueue_after` to `attachment_upload_sessions`. It does not rebuild tables, rewrite existing manifests or change retained-file clocks. New clients negotiate async mode; existing synchronous sessions preserve their protocol and may still exceed Workers Free CPU limits. No silent conversion or backfill is performed. After applying 0013, verify both columns, existing session counts/identities, all prior migrations, foreign-key integrity and exact resource bindings. Capture a fresh whole-D1 Time Travel bookmark immediately beforehand.
+
+The new executable introduces `upload_task` and `maintenance_tick` Queue event types. An older Worker does not understand them; additivity of the schema does not make executable rollback safe. Prefer a reviewed forward fix. Freeze new ingress and account for durable phases/backlog before any separately authorized downgrade; never purge Queue or restore D1 automatically.
 
 ## 2A. Attachment transfer v2 migration 0012
 
@@ -78,7 +84,7 @@ Collect and protect the following before proposing a migration, code rollback or
 
 - Environment/account name and exact resource identifiers.
 - Current deployed Worker version/SHA and intended target SHA.
-- Repository migration file hashes and the exact candidate/applied inventory; `0001`–`0012` is the current candidate set, while older phase sections retain their original `0001`–`0005` scope.
+- Repository migration file hashes and the exact candidate/applied inventory; `0001`–`0013` is the current candidate set, while older phase sections retain their original `0001`–`0005` scope.
 - D1 information, migration status and Time Travel information/bookmark where available.
 - Queue names, consumer configuration, backlog/retry state and incident window.
 - R2 bucket identities and attachment lifecycle configuration.

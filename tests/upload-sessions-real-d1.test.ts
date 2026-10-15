@@ -213,4 +213,50 @@ describe('multipart HTTP transport with real Wrangler local D1, R2 and FixedLeng
     await json('/upload-sessions/' + 'z'.repeat(43), undefined, 404);
     expect((await json('/snapshot/' + old.sessionId)).stored_parts).toBe(0);
   });
+
+  it('uses actual R2 native chunk SHA-256 and durable Queue assembly for a 32 MiB async upload',async()=>{
+    const bytes=Uint8Array.from({length:32*1024*1024},(_,i)=>i%239);const invite=await seed();
+    const session=await json('/uploads/'+invite.token+'/sessions',{id:randomUUID(),filename:'async-32.bin',sizeBytes:bytes.length,async:true},202);
+    expect(session).toMatchObject({async:true,state:'INITIALIZING',networkChunkSize:8*1024*1024});
+    await json('/queue/drain',{limit:1});
+    expect((await json('/upload-sessions/'+session.token)).state).toBe('UPLOADING');
+    for(let number=1;number<=4;number++) {
+      const block=bytes.subarray((number-1)*session.partSize,number*session.partSize);
+      if(number===1) {
+        const corrupt=await fetch(baseUrl+`/upload-sessions/${session.token}/parts/1/chunks/1`,{method:'PUT',
+          headers:{'Content-Length':String(block.length),'X-Part-SHA256':sha256(block)},body:new Uint8Array(block.length).fill(77)});
+        expect(corrupt.status,await corrupt.text()).toBe(422);
+      }
+      const uploaded=await fetch(baseUrl+`/upload-sessions/${session.token}/parts/${number}/chunks/1`,{method:'PUT',
+        headers:{'Content-Length':String(block.length),'X-Part-SHA256':sha256(block)},body:block});
+      expect(uploaded.status,await uploaded.text()).toBe(200);
+      expect((await json(`/upload-sessions/${session.token}/parts/${number}/assemble`,{sha256:sha256(block)},202)).state).toBe('ASSEMBLING');
+      await json('/queue/drain',{limit:1});
+    }
+    expect((await json('/upload-sessions/'+session.token+'/complete',{sha256:sha256(bytes)},202)).state).toBe('VERIFYING');
+    expect((await json('/snapshot/'+session.sessionId)).stored_at).toBeNull();
+    await json('/queue/drain',{limit:1});
+    expect((await json('/upload-sessions/'+session.token)).verification.verifiedBytes).toBe(16*1024*1024);
+    await stopWorker();await startWorker();await json('/queue/drain',{limit:1});
+    const result=await json('/upload-sessions/'+session.token);expect(result.state).toBe('QUEUED');expect(result.attachment.sha256).toBe(sha256(bytes));
+    const downloaded=await fetch(baseUrl+new URL(result.attachment.url).pathname);expect(sha256(new Uint8Array(await downloaded.arrayBuffer()))).toBe(sha256(bytes));
+  },60000);
+
+  it('verifies 80 MiB asynchronously across five Queue checkpoints after a real workerd restart',async()=>{
+    const bytes=new Uint8Array(80*1024*1024).fill(41),invite=await seed();
+    const session=await json('/uploads/'+invite.token+'/sessions',{id:randomUUID(),filename:'async-80.bin',sizeBytes:bytes.length,async:true},202);
+    await json('/queue/drain',{limit:1});
+    for(let number=1;number<=10;number++) {
+      const block=bytes.subarray((number-1)*session.partSize,number*session.partSize);
+      const uploaded=await fetch(baseUrl+`/upload-sessions/${session.token}/parts/${number}/chunks/1`,{method:'PUT',
+        headers:{'Content-Length':String(block.length),'X-Part-SHA256':sha256(block)},body:block});expect(uploaded.status,await uploaded.text()).toBe(200);
+      await json(`/upload-sessions/${session.token}/parts/${number}/assemble`,{sha256:sha256(block)},202);await json('/queue/drain',{limit:1});
+    }
+    await json('/upload-sessions/'+session.token+'/complete',{sha256:sha256(bytes)},202);await json('/queue/drain',{limit:2});
+    expect((await json('/upload-sessions/'+session.token)).verification.verifiedBytes).toBe(32*1024*1024);
+    await stopWorker();await startWorker();await json('/queue/drain',{limit:3});
+    const result=await json('/upload-sessions/'+session.token);expect(result.state).toBe('QUEUED');expect(result.attachment.sha256).toBe(sha256(bytes));
+    const downloaded=await fetch(baseUrl+new URL(result.attachment.url).pathname,{headers:{Range:'bytes=80000000-80001023'}});
+    expect(downloaded.status).toBe(206);expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes.slice(80000000,80001024));
+  },60000);
 });

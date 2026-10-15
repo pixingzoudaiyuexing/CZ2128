@@ -5,6 +5,7 @@ import { listRuntimeConfig } from './repository';
 import {
   RUNTIME_CONFIG_KEYS,
   RuntimeConfigKey,
+  RuntimeConfigRow,
   RuntimeConfigSnapshot,
   RuntimeValueSource
 } from './types';
@@ -43,6 +44,24 @@ const ENV_KEY_MAP: Partial<Record<RuntimeConfigKey, keyof Env>> = {
   ATTACHMENT_DESTINATION_TIMEOUT_MS: 'ATTACHMENT_DESTINATION_TIMEOUT_MS'
 };
 
+// Upload HTTP requests never call AI or the historical Chatwoot provider. Keep
+// their snapshot coherent without reading/decrypting unrelated provider secrets.
+// The Support profile still requires authenticated decryption and validation:
+// its D1 version is part of the upload invitation's authorization boundary.
+const UPLOAD_RUNTIME_KEYS: readonly RuntimeConfigKey[] = [
+  'TELEGRAM_SUPPORT_PROFILE',
+  'BOT_GROUP_ID',
+  'CRISP_OPERATOR_NICKNAME',
+  'CRISP_OPERATOR_AVATAR_URL',
+  'TELEGRAM_CRISP_HUMAN_QUIET_MINUTES',
+  'TELEGRAM_NOTIFY_TELEGRAM_OPERATOR',
+  'TELEGRAM_NOTIFY_MANUAL_OFF',
+  'ATTACHMENT_FILE_TTL_SECONDS',
+  'ATTACHMENT_IMAGE_TTL_SECONDS',
+  'ATTACHMENT_SOURCE_TIMEOUT_MS',
+  'ATTACHMENT_DESTINATION_TIMEOUT_MS'
+];
+
 function envFallback(env: Env, key: RuntimeConfigKey): string | undefined {
   if (key === 'TELEGRAM_SUPPORT_PROFILE') {
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_SECRET_PATH) return undefined;
@@ -57,10 +76,10 @@ function envFallback(env: Env, key: RuntimeConfigKey): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function fallbackSnapshot(env: Env, error?: SafeErrorCode): RuntimeConfigSnapshot {
+function fallbackSnapshot(env: Env, keys: readonly RuntimeConfigKey[]): RuntimeConfigSnapshot {
   const values: Partial<Record<RuntimeConfigKey, string>> = {};
-  const sources = {} as Record<RuntimeConfigKey, RuntimeValueSource>;
-  for (const key of RUNTIME_CONFIG_KEYS) {
+  const sources: Partial<Record<RuntimeConfigKey, RuntimeValueSource>> = {};
+  for (const key of keys) {
     sources[key] = 'ENV';
     const value = envFallback(env, key);
     if (value !== undefined) values[key] = value;
@@ -69,15 +88,15 @@ function fallbackSnapshot(env: Env, error?: SafeErrorCode): RuntimeConfigSnapsho
     values,
     sources,
     versions: {},
-    errors: error ? { RUNTIME_CONFIG: error } : {},
+    errors: {},
     overrideCount: 0,
-    health: error ? 'ERROR' : 'AVAILABLE'
+    health: 'AVAILABLE'
   };
 }
 
-function failedSnapshot(error: SafeErrorCode): RuntimeConfigSnapshot {
-  const sources = {} as Record<RuntimeConfigKey, RuntimeValueSource>;
-  for (const key of RUNTIME_CONFIG_KEYS) sources[key] = 'D1';
+function failedSnapshot(error: SafeErrorCode, keys: readonly RuntimeConfigKey[]): RuntimeConfigSnapshot {
+  const sources: Partial<Record<RuntimeConfigKey, RuntimeValueSource>> = {};
+  for (const key of keys) sources[key] = 'D1';
   return {
     values: {},
     sources,
@@ -88,18 +107,25 @@ function failedSnapshot(error: SafeErrorCode): RuntimeConfigSnapshot {
   };
 }
 
-export async function loadRuntimeConfigSnapshot(env: Env): Promise<RuntimeConfigSnapshot> {
-  const snapshot = fallbackSnapshot(env);
+export async function loadRuntimeConfigSnapshot(
+  env: Env,
+  selectedKeys?: readonly RuntimeConfigKey[]
+): Promise<RuntimeConfigSnapshot> {
+  const keys = selectedKeys ?? RUNTIME_CONFIG_KEYS;
+  const snapshot = fallbackSnapshot(env, keys);
   let rows;
   try {
-    rows = await listRuntimeConfig(env);
+    rows = selectedKeys
+      ? (await env.DB.prepare(`SELECT * FROM runtime_config WHERE key IN (${keys.map(() => '?').join(',')}) ORDER BY key`)
+        .bind(...keys).all<RuntimeConfigRow>()).results
+      : await listRuntimeConfig(env);
   } catch {
-    return failedSnapshot('RUNTIME_CONFIG_READ_FAILED');
+    return failedSnapshot('RUNTIME_CONFIG_READ_FAILED', keys);
   }
 
   snapshot.overrideCount = rows.length;
   for (const row of rows) {
-    if (!RUNTIME_CONFIG_KEYS.includes(row.key)) continue;
+    if (!keys.includes(row.key)) continue;
     snapshot.sources[row.key] = 'D1';
     snapshot.versions[row.key] = Number(row.version);
     try {
@@ -148,6 +174,10 @@ export function applyRuntimeConfigSnapshot(env: Env, snapshot: RuntimeConfigSnap
 
 export async function resolveEffectiveEnv(env: Env): Promise<Env> {
   return applyRuntimeConfigSnapshot(env, await loadRuntimeConfigSnapshot(env));
+}
+
+export async function resolveUploadEnv(env: Env): Promise<Env> {
+  return applyRuntimeConfigSnapshot(env, await loadRuntimeConfigSnapshot(env, UPLOAD_RUNTIME_KEYS));
 }
 
 export function runtimeSource(snapshot: RuntimeConfigSnapshot | undefined, key: RuntimeConfigKey): RuntimeValueSource {

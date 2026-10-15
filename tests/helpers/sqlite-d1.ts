@@ -23,11 +23,16 @@ class SqliteD1Statement {
     };
   }
 
-  async run(): Promise<{ success: true; meta: { changes: number } }> {
+  async run(): Promise<{ success: true; results?: unknown[]; meta: { changes: number } }> {
     return this.runSync();
   }
 
-  runSync(): { success: true; meta: { changes: number } } {
+  runSync(): { success: true; results?: unknown[]; meta: { changes: number } } {
+    if (/\bRETURNING\b/i.test(this.query)) {
+      const results = this.owner.database.prepare(this.query).all(...this.params);
+      const direct = this.owner.database.prepare('SELECT changes() AS changes').get() as { changes: number };
+      return { success: true, results, meta: { changes: Number(direct.changes) } };
+    }
     const result = this.owner.database.prepare(this.query).run(...this.params);
     return { success: true, meta: { changes: Number(result.changes) } };
   }
@@ -72,7 +77,8 @@ export class SqliteD1 {
       '0008_crisp_legacy_ux.sql',
       // Notification state is independent of the optional knowledge/learning fixtures.
       '0011_crisp_human_quiet.sql',
-      '0012_attachment_transfer_v2.sql'
+      '0012_attachment_transfer_v2.sql',
+      '0013_upload_async_work.sql'
     ]) {
       this.exec(readFileSync(`migrations/${migration}`, 'utf8'));
     }

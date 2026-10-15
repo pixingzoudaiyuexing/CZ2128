@@ -2,6 +2,8 @@
 
 Status: **IN PROGRESS — NOT FULLY ACCEPTED**. Updated 2026-10-15 (Asia/Shanghai).
 
+Owner requires Workers Free. D-044 / migration 0013 introduce native-checksum HTTP blocks and existing-Queue processing for new asynchronous uploads; these changes are undergoing their own tests/review/CI and are not yet cloud accepted. The actual 78052a7 UI follow-up passed 108 files / 1522 tests, Formal incremental review and candidate/main CI #323/#324, and was deployed as version 871bf681-4ef7-4bc0-ae62-3c86378f0e10. Actual Telegram image/TXT replies reached the Crisp visitor, and a real knowledge question received an AI answer with the synthetic fact. Remaining large-file runtime failures require the new Free-budget path; do not count these observations as full acceptance.
+
 Owner clarified during browser acceptance that the existing free Crisp plan cannot send operator images or attachments. Native Crisp operator file sending is therefore **NOT APPLICABLE — upstream plan restriction**; the required operator route is Telegram image/file reply to the actual Crisp visitor, with the authenticated custom-domain portal when Telegram's native download API cannot carry the source file. Genuine Crisp operator text handoff remains in scope.
 
 The first deployed repair (`8018335`, Worker version `a427ddc7-6e35-4fa7-95eb-8440f32d0c8a`, 100%) passed candidate/main CI and Formal A/B review. Actual browser uploads delivered 12,288-byte FILE, 1,772,797-byte IMAGE and 3,145,728-byte FILE samples. A subsequent hard-interruption test exposed a UI recovery gap: a retained 120-second part lease was mislabeled as rate limiting and the old three-attempt retry stopped too early. The follow-up preserves server leases, distinguishes BUSY from rate limiting, waits with a bounded pause/cancel-aware retry, and checks the server manifest before resending confirmed bytes. This follow-up requires its own final SHA, review, CI and deployed browser evidence; earlier gates do not pass it automatically.
@@ -166,7 +168,7 @@ Pagination without enough records is **NOT APPLICABLE** for that real dataset or
 
 | ID | Required case | Minimum evidence boundary | Current result |
 | --- | --- | --- | --- |
-| R01 | Clean and legacy migrations | Exact 0001–0012 inventory, row/constraint/FK preservation and current runtime compatibility | NOT TESTED at final head |
+| R01 | Clean and legacy migrations | Exact 0001–0013 inventory, row/constraint/FK preservation and current runtime compatibility | NOT TESTED at final head |
 | R02 | Queue/DLQ growth | Before/after/converged REST backlog metrics for both exact Staging Queues; D1 OPEN counts separately compared | NOT TESTED after this Work Unit's deployment |
 | R03 | Duplicate / attempts / exhaustion | Stable source/event/outbound identity; bounded retry; no blind resend | NOT TESTED at final head |
 | R04 | AMBIGUOUS reconcile/manual retry | Frozen positive evidence and explicit risk workflow, child uniqueness; incompatible native→link retry blocked | NOT TESTED at final head |

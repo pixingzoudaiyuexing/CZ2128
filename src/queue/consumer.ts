@@ -9,11 +9,16 @@ import { processCrispEvent } from './crisp-handler';
 import { processTelegramEvent } from './telegram-handler';
 import { getAttachmentConfig } from '../config/attachments';
 import { processAttachmentTransfer } from '../attachments/handler';
+import { processUploadTask } from '../uploads/async-work';
+import { cleanupExpiredAttachments } from '../attachments/cleanup';
+import { cleanupUploadSessions } from '../uploads/sessions';
+import { runLearningMaintenance } from '../learning/maintenance';
 
 const NORMAL_EVENT_LEASE_SECONDS = 30;
 const AI_EVENT_SAFETY_MARGIN_SECONDS = 15;
 
 export function eventLeaseSeconds(event: SupportEvent, env: Env): number {
+  if(event.type==='upload_task'||event.type==='maintenance_tick')return 360;
   if (event.type === 'attachment_transfer') {
     return getAttachmentConfig(env).eventLeaseSeconds;
   }
@@ -54,6 +59,17 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
   if (env.runtimeConfigSnapshot?.errors.RUNTIME_CONFIG) {
     throw new RetryableProcessingError('RUNTIME_CONFIG_READ_FAILED', 5);
   }
+  if(event.type==='upload_task') {
+    // Prequeued duplicates must not reopen an exhausted upload phase budget.
+    // Keep FAILED evidence for the original delivery's normal DLQ capture.
+    const exhausted=await env.DB.prepare(`SELECT status,lease_until FROM event_receipts WHERE source='internal'
+      AND source_event_ref=? AND attempt_count>=4 AND (status='FAILED' OR (status='PROCESSING' AND lease_until<=?))`)
+      .bind(event.eventId,Math.floor(Date.now()/1000)).first();
+    if(exhausted) {
+      await env.DB.prepare("UPDATE attachment_upload_sessions SET last_error='UPLOAD_ASYNC_RETRY_EXHAUSTED' WHERE id=?")
+        .bind(event.payload.sessionId).run();return;
+    }
+  }
   if (event.source === 'telegram') {
     const eventProfileVersion = event.payload.supportProfileVersion ?? 0;
     if (!Number.isSafeInteger(eventProfileVersion) || eventProfileVersion < 0) {
@@ -93,17 +109,23 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
       `UPDATE event_receipts
        SET status = 'PROCESSING', attempt_count = attempt_count + 1, lease_until = ?, claim_token = ?
        WHERE source = ? AND source_event_ref = ?
-       AND (status = 'FAILED' OR (status = 'PROCESSING' AND lease_until <= ?))`
+       AND (status = 'FAILED' OR (status = 'PROCESSING' AND lease_until <= ?))`+
+       (event.type==='upload_task'?' AND attempt_count<4':'')
     ).bind(leaseUntil, claimToken, event.source, event.eventId, now).run();
 
     if (claimResult.meta.changes === 0) {
       const receipt = await env.DB.prepare(
-        'SELECT status, lease_until FROM event_receipts WHERE source = ? AND source_event_ref = ?'
-      ).bind(event.source, event.eventId).first<{ status: string; lease_until: number | null }>();
+        'SELECT status, lease_until, attempt_count FROM event_receipts WHERE source = ? AND source_event_ref = ?'
+      ).bind(event.source, event.eventId).first<{ status: string; lease_until: number | null; attempt_count?:number }>();
 
       if (receipt?.status === 'PROCESSED') {
         logger.info('Duplicate queue event, already processed', { source: event.source, source_event_ref: event.eventId });
         return;
+      }
+      if(event.type==='upload_task'&&(receipt?.attempt_count||0)>=4&&
+        (receipt?.status==='FAILED'||receipt?.status==='PROCESSING'&&(receipt.lease_until||0)<=now)) {
+        await env.DB.prepare("UPDATE attachment_upload_sessions SET last_error='UPLOAD_ASYNC_RETRY_EXHAUSTED' WHERE id=?")
+          .bind(event.payload.sessionId).run();return;
       }
 
       const retryAfter = receipt?.lease_until && receipt.lease_until > now
@@ -124,6 +146,15 @@ export async function handleQueueEvent(event: SupportEvent, env: Env): Promise<v
       await processTelegramEvent(event, env);
     } else if (event.type === 'ai_trigger') {
       await processAiTrigger(event, env);
+    } else if(event.type==='upload_task') {
+      await processUploadTask(event,env);
+    } else if(event.type==='maintenance_tick') {
+      const {scheduledHour,kind}=event.payload;
+      if(!Number.isSafeInteger(scheduledHour)||scheduledHour<0||!['ATTACHMENTS','UPLOADS','LEARNING'].includes(kind)||
+        event.eventId!==`maintenance:${scheduledHour}:${kind.toLowerCase()}`)throw new SafeError('INGRESS_PAYLOAD_INVALID');
+      if(kind==='ATTACHMENTS')await cleanupExpiredAttachments(env);
+      else if(kind==='UPLOADS')await cleanupUploadSessions(env);
+      else await runLearningMaintenance(env);
     } else {
       await processAttachmentTransfer(event, env);
     }

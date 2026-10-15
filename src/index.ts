@@ -20,17 +20,15 @@ import {
   discoverTelegramAttachments
 } from './attachments/discovery';
 import { handleAttachmentProxy } from './attachments/proxy';
-import { cleanupExpiredAttachments } from './attachments/cleanup';
 import { AttachmentDescriptor } from './core/attachments';
 import { handleAdminTelegramUpdate, handleAdminTelegramWebhook } from './admin/handler';
-import { resolveEffectiveEnv } from './runtime-config/resolver';
+import { resolveEffectiveEnv, resolveUploadEnv } from './runtime-config/resolver';
 import { boundedQueueRetryDelay } from './core/retry';
 import { captureDlqMessage } from './queue/dlq-consumer';
 import { persistDlqQuarantine } from './queue/dlq-quarantine';
 import { resolveQueueIdentities } from './config/queue-identities';
 import { handleUploadCapabilityRequest } from './uploads/handler';
-import { cleanupUploadSessions, handleUploadSession } from './uploads/sessions';
-import { runLearningMaintenance } from './learning/maintenance';
+import { handleUploadSession } from './uploads/sessions';
 import { kickCrispRtm } from './rtm/crisp-rtm';
 
 export type { Env } from './config/env';
@@ -204,17 +202,24 @@ export function normalizeCrispEvent(
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (env.CRISP_RTM) {
+    const url = new URL(request.url);
+    const attachmentHttp = url.pathname.startsWith('/upload-sessions/') ||
+      url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/attachments/');
+    if (env.CRISP_RTM && !attachmentHttp) {
       ctx.waitUntil(kickCrispRtm(env).catch(() => {
         logger.warn('Crisp RTM wake failed', { source: 'crisp', stage: 'RTM' });
       }));
     }
-    const url = new URL(request.url);
-
     if (url.pathname.startsWith('/upload-sessions/')) {
       const match = /^\/upload-sessions\/([A-Za-z0-9_-]{43})(?:\/(.*))?$/.exec(url.pathname);
       if (!match) return new Response('Not Found', { status: 404 });
-      return handleUploadSession(request, await resolveEffectiveEnv(env), match[1], match[2] || '');
+      const effectiveEnv = await resolveUploadEnv(env);
+      if (effectiveEnv.runtimeConfigSnapshot?.health === 'ERROR') {
+        return new Response('Upload configuration unavailable', {
+          status: 503, headers: { 'Cache-Control': 'private, no-store' }
+        });
+      }
+      return handleUploadSession(request, effectiveEnv, match[1], match[2] || '');
     }
     if (url.pathname.startsWith('/uploads/')) {
       const token = url.pathname.slice('/uploads/'.length).split('/')[0];
@@ -224,7 +229,12 @@ export default {
       if (request.method !== 'GET' && request.method !== 'POST') {
         return new Response('Method Not Allowed', { status: 405, headers: { 'Cache-Control': 'private, no-store' } });
       }
-      const effectiveEnv = await resolveEffectiveEnv(env);
+      const effectiveEnv = await resolveUploadEnv(env);
+      if (effectiveEnv.runtimeConfigSnapshot?.health === 'ERROR') {
+        return new Response('Upload configuration unavailable', {
+          status: 503, headers: { 'Cache-Control': 'private, no-store' }
+        });
+      }
       return handleUploadCapabilityRequest(request, effectiveEnv, token);
     }
 
@@ -517,15 +527,15 @@ export default {
     const isHourlyMaintenance = Number.isFinite(scheduledTime) &&
       new Date(scheduledTime).getUTCMinutes() === 0;
     if (!isHourlyMaintenance) return;
-    ctx.waitUntil(cleanupExpiredAttachments(env));
-    ctx.waitUntil(cleanupUploadSessions(env));
-    ctx.waitUntil((async () => {
-      try {
-        const effectiveEnv = await resolveEffectiveEnv(env);
-        await runLearningMaintenance(effectiveEnv);
-      } catch {
-        logger.warn('Learning scheduled maintenance failed', { result: 'FAILED' });
+    const scheduledHour = Math.floor(scheduledTime / 3600000);
+    // Cron has the same 10 ms Free CPU budget as HTTP. Durable references move
+    // each bounded maintenance job into the existing Queue consumer budget.
+    await env.QUEUE.sendBatch((['ATTACHMENTS', 'UPLOADS', 'LEARNING'] as const).map(kind => ({
+      body: {
+        version: 1, source: 'internal', type: 'maintenance_tick',
+        eventId: `maintenance:${scheduledHour}:${kind.toLowerCase()}`,
+        payload: { scheduledHour, kind }
       }
-    })());
+    })));
   }
 };

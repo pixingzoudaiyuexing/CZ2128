@@ -751,3 +751,10 @@ The v2 protocol separates network chunks from R2 multipart parts: requests carry
 ### Acceptance boundary
 
 The local Wrangler harness uses real local D1, R2 and FixedLengthStream for 32 MiB multipart, full SHA-256, Range/HEAD, restart/resume and authorization failures. Crisp authoritative-state reads and Queue dispatch are replaced by isolated test adapters; no real Crisp/Telegram send occurs. Exact final-head CI, Formal Independent Review, migration/deployment and all real acceptance remain separately gated in [FULL-STAGING-ACCEPTANCE.md](FULL-STAGING-ACCEPTANCE.md).
+
+
+### Workers Free upload execution boundary (D-044 / migration 0013)
+
+New upload clients negotiate `async: true`. Each HTTP body is an at-most-8 MiB private R2 temporary object with native R2 SHA-256 verification; logical R2 parts remain independent of network blocks. The existing Queue performs MPU initialization, streaming part assembly, whole-file SHA/content inspection, final admission and abort cleanup. D1 persists phase identity, leases, expected hashes, parser/hash checkpoints and a bounded enqueue timestamp. Status requests may recover a missing Queue send without resetting the retry budget; they return only the selected logical-part manifest for asynchronous sessions. HTTP does not report stored until Queue admission has succeeded, and provider delivery remains a separate outbound-ledger state. No whole-file buffer, new storage provider or new deployment environment is introduced.
+
+Upload HTTP uses a coherent subset of the existing runtime snapshot (eleven relevant keys), including actual validated Bot profile and its D1 version. Unrelated AI/Chatwoot secrets are not decrypted on the data path. A failed snapshot or invalid selected override closes upload access. Attachment data requests do not wake Crisp RTM; ordinary ingress, existing scheduled wake and DO alarms retain their roles. Existing synchronous v2 sessions are compatible but still require their original CPU budget; use the new negotiated protocol on Workers Free. The Queue's 30-second default CPU budget covers the full batch, so checkpoints are bounded and real cloud evidence is required.

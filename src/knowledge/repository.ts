@@ -185,17 +185,30 @@ async function updateWithHistory(
     env.DB.prepare(
       `UPDATE knowledge_entries
           SET title = ?, body = ?, search_terms = ?, enabled = ?, version = ?, updated_by = ?, updated_at = ?
-        WHERE id = ? AND version = ?`
+        WHERE id = ? AND version = ?
+        RETURNING id, version`
     ).bind(title, body, searchTerms, enabled, nextVersion, actorUserId, now, id, expectedVersion),
     env.DB.prepare(
       `INSERT INTO knowledge_entry_history
        (entry_id, version, action, title, body, enabled, actor_user_id, source_update_id, created_at)
        SELECT id, version, ?, title, body, enabled, ?, ?, ?
          FROM knowledge_entries
-        WHERE id = ? AND version = ?`
+        WHERE id = ? AND version = ? AND changes() = 1
+        RETURNING entry_id, version, action, source_update_id`
     ).bind(action, actorUserId, sourceUpdateId, now, id, nextVersion)
   ]);
-  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
+  // D1 meta.changes includes deferred FTS writes, even on the next statement.
+  // RETURNING proves the exact direct-row mutation independently of triggers.
+  // changes() excludes trigger writes and fences history to this batch's CAS.
+  const head = results[0]?.results as Array<{ id: string; version: number }> | undefined;
+  const history = results[1]?.results as Array<{
+    entry_id: string; version: number; action: string; source_update_id: string
+  }> | undefined;
+  if (head?.length !== 1 || head[0].id !== id || head[0].version !== nextVersion ||
+      history?.length !== 1 || history[0].entry_id !== id || history[0].version !== nextVersion ||
+      history[0].action !== action || history[0].source_update_id !== sourceUpdateId) {
+    throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
+  }
   const row = await getKnowledgeEntry(env, id);
   if (!row) throw new SafeError('KNOWLEDGE_PERSIST_FAILED');
   return row;
@@ -262,9 +275,18 @@ export async function deleteKnowledgeEntry(
        (entry_id, version, action, title, body, enabled, actor_user_id, source_update_id, created_at)
        SELECT id, version + 1, 'DELETE', title, body, enabled, ?, ?, ?
          FROM knowledge_entries
-        WHERE id = ? AND version = ?`
+        WHERE id = ? AND version = ?
+        RETURNING entry_id, version, action, source_update_id`
     ).bind(actorUserId, sourceUpdateId, now, id, expectedVersion),
-    env.DB.prepare('DELETE FROM knowledge_entries WHERE id = ? AND version = ?').bind(id, expectedVersion)
+    env.DB.prepare('DELETE FROM knowledge_entries WHERE id = ? AND version = ? RETURNING id, version').bind(id, expectedVersion)
   ]);
-  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
+  const history = results[0]?.results as Array<{
+    entry_id: string; version: number; action: string; source_update_id: string
+  }> | undefined;
+  const deleted = results[1]?.results as Array<{ id: string; version: number }> | undefined;
+  if (history?.length !== 1 || history[0].entry_id !== id || history[0].version !== expectedVersion + 1 ||
+      history[0].action !== 'DELETE' || history[0].source_update_id !== sourceUpdateId ||
+      deleted?.length !== 1 || deleted[0].id !== id || deleted[0].version !== expectedVersion) {
+    throw new SafeError('KNOWLEDGE_VERSION_CONFLICT');
+  }
 }

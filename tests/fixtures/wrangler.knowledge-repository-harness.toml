@@ -1,0 +1,8 @@
+name = "cz2128-knowledge-repository-harness"
+main = "knowledge-repository-harness-worker.ts"
+compatibility_date = "2024-03-20"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cz2128-knowledge-local-only"
+database_id = "knowledge-local-only"

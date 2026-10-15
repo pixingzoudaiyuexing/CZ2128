@@ -136,6 +136,99 @@ describe('bounded incremental browser SHA-256', () => {
 });
 
 describe('customer multipart upload page', () => {
+  it('negotiates asynchronous storage, waits for initialization and assembly, and polls verification without claiming delivery', async () => {
+    let initializing = true, assembled = false, verifying = false, verified = false;
+    let reads = 0, completionPosts = 0;
+    const messages: string[] = [];
+    const h = harness({ immediateTimers: true, onTimer: (_ms, client) => {
+      messages.push(client.jobs[0].status.textContent);
+    }, handler: (url, method, body) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) {
+        expect(body.async).toBe(true);
+        return Response.json({ token: TOKEN, partSize: 4, partCount: 1, state: 'INITIALIZING', async: true, networkChunkSize: 8388608 }, { status: 202 });
+      }
+      if (url.endsWith('/assemble')) {
+        assembled = true;
+        return Response.json({ state: 'ASSEMBLING', number: 1 }, { status: 202 });
+      }
+      if (url.endsWith('/complete')) {
+        completionPosts++; verifying = true;
+        return Response.json({ state: 'VERIFYING', verification: { verifiedBytes: 0, totalBytes: 4 } }, { status: 202 });
+      }
+      reads++;
+      const base = { partSize: 4, partCount: 1, sizeBytes: 4, async: true, networkChunkSize: 8388608, parts: [] as any[] };
+      if (initializing) { initializing = false; return Response.json({ ...base, state: 'INITIALIZING' }); }
+      if (verifying) {
+        if (!verified) { verified = true; return Response.json({ ...base, state: 'VERIFYING', verification: { verifiedBytes: 2, totalBytes: 4 } }); }
+        return Response.json({ ...base, state: 'QUEUED', attachment: { state: 'QUEUED', sha256: digest('abcd') } });
+      }
+      return Response.json({ ...base, state: 'UPLOADING', parts: assembled ? [{ number: 1, sizeBytes: 4, sha256: digest('abcd') }] : [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'async.txt')]);
+    await h.client.begin();
+    expect(h.puts.map(p => p.url)).toEqual(['/upload-sessions/' + TOKEN + '/parts/1/chunks/1']);
+    expect(h.calls.filter(c => c.url.endsWith('/assemble'))).toHaveLength(1);
+    expect(completionPosts).toBe(1);
+    expect(reads).toBeGreaterThan(3);
+    expect(messages.some(m => m.includes('准备'))).toBe(true);
+    expect(messages.some(m => m.includes('完整性'))).toBe(true);
+    expect(messages.every(m => !m.includes('已送达'))).toBe(true);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it('pauses asynchronous initialization without sending bytes or finalizing, and resumes the same durable session', async () => {
+    let ready = false, paused = false;
+    const h = harness({ immediateTimers: true, onTimer: (_ms, client) => {
+      if (!paused) { paused = true; client.jobs[0].pause.click(); }
+    }, handler: (url, _method, body) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1, state: 'INITIALIZING', async: true, networkChunkSize: 8388608 });
+      if (url.endsWith('/assemble')) return Response.json({ ok: true });
+      if (url.endsWith('/complete')) return Response.json({ state: 'QUEUED', sha256: body.sha256 });
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, async: true, networkChunkSize: 8388608, state: ready ? 'UPLOADING' : 'INITIALIZING', parts: [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'async-pause.txt')]);
+    await h.client.begin();
+    expect(h.puts).toHaveLength(0);
+    expect(h.calls.some(c => c.url.endsWith('/complete'))).toBe(false);
+    expect(h.client.jobs[0].status.textContent).toContain('已暂停');
+    ready = true;
+    await h.client.jobs[0].resume.click();
+    expect(h.calls.filter(c => c.url.endsWith('/sessions'))).toHaveLength(1);
+    expect(h.puts).toHaveLength(1);
+    expect(h.client.jobs[0].status.textContent).toBe('已排队，等待送达');
+  });
+
+  it('reports exhausted asynchronous storage without claiming stored or offering an unverified download', async () => {
+    const h = harness({ immediateTimers: true, handler: (url) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1, state: 'INITIALIZING', async: true, networkChunkSize: 8388608 });
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: 'INITIALIZING', async: true, networkChunkSize: 8388608, error: 'UPLOAD_ASYNC_RETRY_EXHAUSTED' });
+    } });
+    h.client.addFiles([new File(['abcd'], 'async-failed.txt')]);
+    await h.client.begin();
+    expect(h.client.jobs[0].status.textContent).toContain('尚未确认文件已存储');
+    expect(h.client.jobs[0].details.children.some((node: Element) => Boolean(node.href))).toBe(false);
+    expect(h.puts).toHaveLength(0);
+    expect(h.calls.some(c => c.url.endsWith('/complete'))).toBe(false);
+  });
+
+  it('rejects a corrupt asynchronously assembled manifest before requesting whole-file admission', async () => {
+    let assembled = false;
+    const h = harness({ immediateTimers: true, handler: (url) => {
+      if (url.endsWith('/files')) return Response.json({ files: [] });
+      if (url.endsWith('/sessions')) return Response.json({ token: TOKEN, partSize: 4, partCount: 1, state: 'UPLOADING', async: true, networkChunkSize: 8388608 });
+      if (url.endsWith('/assemble')) { assembled = true; return Response.json({ state: 'ASSEMBLING' }, { status: 202 }); }
+      return Response.json({ partSize: 4, partCount: 1, sizeBytes: 4, state: 'UPLOADING', async: true, networkChunkSize: 8388608,
+        parts: assembled ? [{ number: 1, sizeBytes: 4, sha256: digest('wrong') }] : [] });
+    } });
+    h.client.addFiles([new File(['abcd'], 'async-conflict.txt')]);
+    await h.client.begin();
+    expect(h.client.jobs[0].status.textContent).toContain('完整性校验未通过');
+    expect(h.calls.some(c => c.url.endsWith('/complete'))).toBe(false);
+  });
+
   it('serves a private accessible page with per-response script/style nonce and no third-party connection', async () => {
     const response = uploadPage();
     const html = await response.text();

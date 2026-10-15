@@ -3,6 +3,8 @@ import { handleUploadCapabilityRequest } from '../../src/uploads/handler';
 import { handleUploadSession } from '../../src/uploads/sessions';
 import { handleAttachmentProxy } from '../../src/attachments/proxy';
 import { deriveUploadInviteToken, hashUploadCapability } from '../../src/uploads/capability';
+import { handleQueueEvent } from '../../src/queue/consumer';
+import type { SupportEvent } from '../../src/core/events';
 
 // Only the upstream state adapter is replaced. D1, R2 and FixedLengthStream are real workerd bindings.
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -19,6 +21,10 @@ function json(data: unknown, status = 200) { return Response.json(data, { status
 export default {
   async fetch(request: Request, bindings: Env): Promise<Response> {
     const env = { ...bindings, QUEUE: { send: async (event: any) => {
+      if(event.type==='upload_task') {
+        await bindings.DB.prepare('INSERT INTO harness_upload_tasks(event_id,body) VALUES(?,?) ON CONFLICT(event_id) DO NOTHING')
+          .bind(event.eventId,JSON.stringify(event)).run();return;
+      }
       await bindings.DB.prepare('INSERT INTO harness_dispatches(event_id,attachment_id) VALUES(?,?)')
         .bind(event.eventId, event.payload.attachmentId).run();
     } } as unknown as Env['QUEUE'] };
@@ -26,6 +32,7 @@ export default {
     if (path === '/health') return json({ ok: true, runtime: 'real-local-D1-R2-FixedLengthStream' });
     if (path === '/seed' && request.method === 'POST') {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS harness_dispatches(id INTEGER PRIMARY KEY,event_id TEXT,attachment_id TEXT)').run();
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS harness_upload_tasks(event_id TEXT PRIMARY KEY,body TEXT)').run();
       const id = crypto.randomUUID();
       const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM conversations').first<{ count: number }>();
       const threadRef = String(1000 + (count?.count || 0));
@@ -41,6 +48,16 @@ export default {
         VALUES(?,?,?,'harness-site',?,'-100123',?,0,'local-admin',?,'ACTIVE',?,3,1024,?,?,2)`)
         .bind(id, await hashUploadCapability(token), id, 'harness-' + id, threadRef, threadRef, now + 900, now, now).run();
       return json({ inviteId: id, token });
+    }
+    if(path==='/queue/drain'&&request.method==='POST') {
+      const input=await request.json<{limit?:number}>();const limit=Math.min(20,Math.max(1,input.limit||1));let processed=0;
+      for(let i=0;i<limit;i++) {
+        const next=await env.DB.prepare('SELECT event_id,body FROM harness_upload_tasks ORDER BY rowid LIMIT 1').first<{event_id:string;body:string}>();
+        if(!next)break;
+        await handleQueueEvent(JSON.parse(next.body) as SupportEvent,env);
+        await env.DB.prepare('DELETE FROM harness_upload_tasks WHERE event_id=?').bind(next.event_id).run();processed++;
+      }
+      return json({processed,pending:(await env.DB.prepare('SELECT COUNT(*) AS count FROM harness_upload_tasks').first<{count:number}>())?.count});
     }
     if (path === '/control' && request.method === 'POST') {
       const input = await request.json<{ inviteId: string; sessionId?: string; action: string; partSize?:number }>();
@@ -60,7 +77,7 @@ export default {
     if (path.startsWith('/snapshot/') && request.method === 'GET') {
       const sessionId = path.slice('/snapshot/'.length);
       const row = await env.DB.prepare(`SELECT a.status,a.transfer_version,a.size_bytes,a.stored_size_bytes,a.stored_at,
-        a.retention_class,a.retention_expires_at,a.sha256,s.status AS session_status,
+        a.retention_class,a.retention_expires_at,a.sha256,s.status AS session_status,s.verification_json,
         (SELECT COUNT(*) FROM attachment_upload_parts WHERE session_id=s.id AND status='STORED') AS stored_parts,
         (SELECT COUNT(*) FROM harness_dispatches WHERE attachment_id=a.id) AS dispatch_count
         FROM attachment_upload_sessions s JOIN attachments a ON a.id=s.attachment_id WHERE s.id=?`)

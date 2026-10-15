@@ -2,6 +2,9 @@
 
 ## Current Work Unit: attachment v2 and full Staging acceptance
 
+Current continuation: Owner requires Workers Free (10 ms HTTP). D-044 / additive 0013 supersede the synchronous v2 upload execution path for new negotiated clients: native-checksum HTTP network blocks, existing Queue initialization/assembly/verification/abort. Check actual pending migrations 0012/0013 rather than old phase inventories. The previous repair and UI follow-up were deployed and tested separately; neither their CI nor the historical preflight proves the new asynchronous executable passed. Keep the exact recovery bookmark, lifecycle policy and all existing binding/secret-name checks. Native Crisp operator files are unavailable on the existing free Crisp account; verify Telegram operator delivery to the actual visitor instead.
+
+
 Status: **IMPLEMENTATION / CI / FORMAL REVIEW IN PROGRESS; THIS WORK UNIT NOT YET DEPLOYED OR ACCEPTED**. Owner authorizes routine deployment to this existing Staging after the exact candidate/main gates pass; no extra approval is required for that authorized step. This does not authorize another environment, Production, Docker, tag/Release/GHCR publication or an unplanned destructive restore.
 
 Targets are only Worker `cz2128-4c-staging`, custom domain `https://cz2128.482658.xyz`, D1 `cz2128-4c-staging-db` / `6482f216-5357-4e93-9796-89eaf0c1299c`, main Queue `cz2128-4c-staging-queue`, its existing DLQ, the two existing Staging R2 buckets and the existing `CrispRtmBridge` namespace. `cc-solution-stg.482658.xyz` belongs to another Worker; its embedded Crisp customer Widget may be used only after the public Website ID is matched to this Staging.

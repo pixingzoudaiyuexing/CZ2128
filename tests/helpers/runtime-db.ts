@@ -69,6 +69,11 @@ export class RuntimeDb {
       this.runtimeListReads += 1;
       return { results: structuredClone(this.runtime.slice().sort((a, b) => a.key.localeCompare(b.key))) };
     }
+    if (query.includes('FROM runtime_config WHERE key IN (')) {
+      this.runtimeListReads += 1;
+      return { results: structuredClone(this.runtime.filter(row => params.includes(row.key))
+        .sort((a, b) => a.key.localeCompare(b.key))) };
+    }
     return { results: [] };
   }
 

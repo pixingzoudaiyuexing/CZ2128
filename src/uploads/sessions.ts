@@ -14,6 +14,7 @@ import { ensureAttachmentGrant } from '../attachments/grants';
 import { uploadPage } from './page';
 import { crispIdentityRequestOptions, crispOperatorIdentity } from '../config/crisp-identities';
 import { cleanupUploadSubparts, handleUploadSubpart, listUploadSubparts } from './subparts';
+import { queueUploadTask, redriveUploadWork } from './async-work';
 
 const SESSION_SECONDS = 24 * 3600;
 const MIN_PART = 8 * 1024 * 1024;
@@ -28,6 +29,7 @@ export interface UploadSession {
   part_size: number; part_count: number; r2_upload_id: string | null; status: SessionState;
   expected_sha256: string | null; expires_at: number; lease_token: string | null; lease_until: number | null;
   verification_json: string | null;
+  async_mode: number;
   last_error: string | null; created_at: number; updated_at: number;
 }
 interface Part { part_number: number; size_bytes: number; sha256: string; etag: string | null; status: string; lease_token: string; lease_until: number }
@@ -48,7 +50,10 @@ async function metadata(request: Request): Promise<any | null> {
 }
 async function sessionById(env: Env, id: string) { return env.DB.prepare('SELECT * FROM attachment_upload_sessions WHERE id=?').bind(id).first<UploadSession>(); }
 async function attachment(env: Env, id: string) { return env.DB.prepare('SELECT * FROM attachments WHERE id=?').bind(id).first<AttachmentRow>(); }
-async function parts(env: Env, id: string) { return (await env.DB.prepare('SELECT * FROM attachment_upload_parts WHERE session_id=? ORDER BY part_number').bind(id).all<Part>()).results; }
+async function parts(env: Env, id: string, number?:number) {
+  const query=env.DB.prepare('SELECT * FROM attachment_upload_parts WHERE session_id=?'+(number?' AND part_number=?':'')+' ORDER BY part_number');
+  return (await (number?query.bind(id,number):query.bind(id)).all<Part>()).results;
+}
 
 export async function uploadBoundConversation(env: Env, invite: UploadInviteRow): Promise<Conversation | null> {
   const row = await env.DB.prepare('SELECT * FROM conversations WHERE id=?').bind(invite.conversation_id).first<Conversation>();
@@ -88,8 +93,9 @@ export async function initializeUploadSession(request: Request, env: Env, invite
     if (existing.invite_id !== invite.id || existing.size_bytes !== input.sizeBytes) return error('UPLOAD_ID_CONFLICT');
     const row = await attachment(env, existing.attachment_id);
     if (row?.original_filename !== input.filename) return error('UPLOAD_ID_CONFLICT');
-    if (row) await startMultipart(env,existing,row);
-    return uploadJson(await sessionResponse(env, (await sessionById(env,existing.id))!));
+    if (existing.async_mode) await redriveUploadWork(env,existing);
+    else if (row) await startMultipart(env,existing,row);
+    return uploadJson(await sessionResponse(env, (await sessionById(env,existing.id))!),existing.async_mode?202:200);
   }
   // R2 accepts at most 10,000 parts. Adapt transport size without a product file quota.
   const partSize = Math.max(MIN_PART, Math.ceil(input.sizeBytes / 10000 / (1024 * 1024)) * 1024 * 1024);
@@ -108,17 +114,18 @@ export async function initializeUploadSession(request: Request, env: Env, invite
   if(discovered.row.original_filename!==input.filename || discovered.row.declared_size_bytes!==input.sizeBytes) return error('UPLOAD_ID_CONFLICT');
   const token = await deriveUploadSessionToken(env.UPLOAD_CAPABILITY_SECRET || '', input.id);
   await env.DB.prepare(`INSERT INTO attachment_upload_sessions
-    (id,invite_id,attachment_id,token_hash,size_bytes,part_size,part_count,status,expires_at,created_at,updated_at)
-    SELECT ?,?,?,?,?,?,?,'INITIALIZING',?,?,? WHERE
+    (id,invite_id,attachment_id,token_hash,size_bytes,part_size,part_count,status,expires_at,created_at,updated_at,async_mode)
+    SELECT ?,?,?,?,?,?,?,'INITIALIZING',?,?,?,? WHERE
       (SELECT COUNT(*) FROM attachment_upload_sessions WHERE invite_id=? AND status IN ('INITIALIZING','UPLOADING','COMPLETING','VERIFYING') AND expires_at>?)<3
     ON CONFLICT(id) DO NOTHING`)
     .bind(input.id, invite.id, discovered.row.id, await hashUploadCapability(token), input.sizeBytes,
-      partSize, Math.ceil(input.sizeBytes / partSize), now() + SESSION_SECONDS, now(), now(),invite.id,now()).run();
+      partSize, Math.ceil(input.sizeBytes / partSize), now() + SESSION_SECONDS, now(), now(),input.async===true?1:0,invite.id,now()).run();
   const session = await sessionById(env, input.id);
   if(!session)return error('UPLOAD_CONCURRENT_SESSIONS_BUSY',429);
   if (session.invite_id !== invite.id || session.size_bytes!==input.sizeBytes || session.attachment_id!==discovered.row.id) return error('UPLOAD_ID_CONFLICT');
-  await startMultipart(env, session, discovered.row);
-  return uploadJson(await sessionResponse(env, (await sessionById(env, input.id))!));
+  if(session.async_mode)await redriveUploadWork(env,session);
+  else await startMultipart(env, session, discovered.row);
+  return uploadJson(await sessionResponse(env, (await sessionById(env, input.id))!),session.async_mode?202:200);
 }
 
 async function startMultipart(env: Env, session: UploadSession, row: AttachmentRow): Promise<void> {
@@ -132,18 +139,25 @@ async function startMultipart(env: Env, session: UploadSession, row: AttachmentR
     upload = await env.ATTACHMENTS_BUCKET.createMultipartUpload(row.storage_key,
       { httpMetadata: { contentType: 'application/octet-stream' }, customMetadata: { attachmentId: row.id } });
     const saved = await env.DB.prepare(`UPDATE attachment_upload_sessions SET r2_upload_id=?,status='UPLOADING',lease_token=NULL,lease_until=NULL,updated_at=?
-      WHERE id=? AND status='INITIALIZING' AND lease_token=?`).bind(upload.uploadId, now(), session.id, lease).run();
+      WHERE id=? AND status='INITIALIZING' AND lease_token=? AND expires_at>? AND EXISTS(
+        SELECT 1 FROM upload_invites i JOIN conversations c ON c.id=i.conversation_id WHERE i.id=invite_id AND i.status!='REVOKED'
+        AND c.helpdesk_provider='crisp' AND c.helpdesk_account_ref=i.crisp_website_ref AND c.helpdesk_conversation_ref=i.crisp_session_ref
+        AND c.operator_thread_status='OPEN' AND c.operator_thread_ref=i.telegram_thread_ref
+        AND i.telegram_group_ref=? AND i.support_profile_version=COALESCE((SELECT version FROM runtime_config WHERE key='TELEGRAM_SUPPORT_PROFILE'),0))`)
+      .bind(upload.uploadId, now(), session.id, lease,now(),env.BOT_GROUP_ID).run();
     if (saved.meta.changes !== 1) await upload.abort();
   } catch (e) {
     if (upload) { try { await upload.abort(); } catch { /* Bucket abort lifecycle is the orphan fallback. */ } }
+    await env.DB.prepare(`UPDATE attachment_upload_sessions SET lease_until=0 WHERE id=? AND status='INITIALIZING' AND lease_token=?`)
+      .bind(session.id,lease).run();
     throw e;
   }
 }
 
 async function sessionResponse(env: Env, session: UploadSession, partNumber=1): Promise<Record<string, unknown>> {
   const row = await attachment(env, session.attachment_id);
-  const list = await parts(env, session.id);
-  let state: string = session.status;
+  const list = await parts(env, session.id,session.async_mode?partNumber:undefined);
+  let state: string = session.async_mode&&session.status==='COMPLETING'?'VERIFYING':session.status;
   const operation = await env.DB.prepare('SELECT status FROM outbound_operations WHERE id=?')
     .bind(`attachment_${row?.destination_provider}:${session.attachment_id}`).first<{ status: string }>();
   if (row?.status === 'DELIVERED') state = 'DELIVERED';
@@ -155,8 +169,11 @@ async function sessionResponse(env: Env, session: UploadSession, partNumber=1): 
   return { sessionId: session.id, token: await deriveUploadSessionToken(env.UPLOAD_CAPABILITY_SECRET || '', session.id),
     filename: row?.original_filename, state, sizeBytes: session.size_bytes, partSize: session.part_size, partCount: session.part_count,
     parts: list.filter(p=>p.status==='STORED').map(p=>({number:p.part_number,sizeBytes:p.size_bytes,sha256:p.sha256})),
+    ...(session.async_mode?{async:true,networkChunkSize:8*1024*1024,
+      pendingParts:list.filter(p=>p.status==='WRITING').map(p=>({number:p.part_number,sizeBytes:p.size_bytes,sha256:p.sha256,state:'ASSEMBLING'}))}:{}),
     chunks: await listUploadSubparts(env,session.id,partNumber),
-    ...(session.verification_json ? {verification:{verifiedBytes:JSON.parse(session.verification_json).offset,totalBytes:session.size_bytes}} : {}),
+    ...(session.verification_json || session.async_mode&&['VERIFYING','COMPLETING'].includes(session.status)
+      ? {verification:{verifiedBytes:session.verification_json?JSON.parse(session.verification_json).offset:0,totalBytes:session.size_bytes}} : {}),
     ...(stored ? { attachment: { state, sha256: row!.sha256, expiresAt: row!.retention_expires_at, url: grant?.url } } : {}),
     ...(session.last_error || row?.last_error ? { error: session.last_error || row?.last_error } : {}) };
 }
@@ -221,13 +238,25 @@ export async function dispatchStoredUpload(env: Env, session: UploadSession): Pr
   await env.DB.prepare("UPDATE attachment_upload_sessions SET status='QUEUED',updated_at=? WHERE id=? AND status IN ('STORED','QUEUED')").bind(now(),session.id).run();
 }
 
-async function complete(request: Request, env: Env, session: UploadSession): Promise<Response> {
+async function complete(request: Request, env: Env, session: UploadSession, queued=false): Promise<Response> {
   if(['STORED','QUEUED','DELIVERED','AMBIGUOUS'].includes(session.status)) {
     await dispatchStoredUpload(env,session); return uploadJson(await sessionResponse(env,(await sessionById(env,session.id))!));
   }
   const input=await metadata(request);
   if(!input || !SHA.test(input.sha256 || '')) return error('UPLOAD_CHECKSUM_INVALID',400);
   if(session.expected_sha256 && session.expected_sha256!==input.sha256) return error('UPLOAD_CHECKSUM_CONFLICT');
+  if(session.async_mode&&!queued) {
+    const manifest=await env.DB.prepare(`SELECT COUNT(*) AS count,COALESCE(SUM(size_bytes),0) AS bytes,
+      COALESCE(SUM(CASE WHEN status='STORED' AND etag IS NOT NULL THEN 0 ELSE 1 END),0) AS pending
+      FROM attachment_upload_parts WHERE session_id=?`).bind(session.id).first<{count:number;bytes:number;pending:number}>();
+    if(!manifest||manifest.count!==session.part_count||manifest.bytes!==session.size_bytes||manifest.pending)return error('UPLOAD_PARTS_INCOMPLETE');
+    const saved=await env.DB.prepare(`UPDATE attachment_upload_sessions SET status=CASE WHEN status='UPLOADING' THEN 'VERIFYING' ELSE status END,
+      expected_sha256=?,updated_at=? WHERE id=? AND status IN ('UPLOADING','VERIFYING','COMPLETING')
+      AND (expected_sha256 IS NULL OR expected_sha256=?)`).bind(input.sha256,now(),session.id,input.sha256).run();
+    if(saved.meta.changes!==1)return error('UPLOAD_COMPLETION_BUSY',429);
+    const current=(await sessionById(env,session.id))!;await redriveUploadWork(env,current);
+    return uploadJson(await sessionResponse(env,current),202);
+  }
   const list=await parts(env,session.id);
   if(list.length!==session.part_count || list.some((p,i)=>p.part_number!==i+1 || p.status!=='STORED' || !p.etag) ||
     list.reduce((n,p)=>n+p.size_bytes,0)!==session.size_bytes) return error('UPLOAD_PARTS_INCOMPLETE');
@@ -236,6 +265,7 @@ async function complete(request: Request, env: Env, session: UploadSession): Pro
     WHERE id=? AND (status='UPLOADING' OR (status IN ('COMPLETING','VERIFYING') AND COALESCE(lease_until,0)<=?))
       AND (expected_sha256 IS NULL OR expected_sha256=?)`).bind(input.sha256,lease,now()+300,now(),session.id,now(),input.sha256).run();
   if(claim.meta.changes!==1) return error('UPLOAD_COMPLETION_BUSY',429);
+  try {
   const row=(await attachment(env,session.attachment_id))!;
   const existing=await env.ATTACHMENTS_BUCKET.head(row.storage_key);
   if(!existing) {
@@ -243,7 +273,7 @@ async function complete(request: Request, env: Env, session: UploadSession): Pro
     await env.ATTACHMENTS_BUCKET.resumeMultipartUpload(row.storage_key,session.r2_upload_id).complete(list.map(p=>({partNumber:p.part_number,etag:p.etag!})));
   }
   let inspected:StoredAttachmentInspection;
-  if(session.size_bytes<=64*1024*1024)inspected=await inspectStoredAttachment(env.ATTACHMENTS_BUCKET,row.storage_key);
+  if(!session.async_mode&&session.size_bytes<=64*1024*1024)inspected=await inspectStoredAttachment(env.ATTACHMENTS_BUCKET,row.storage_key);
   else {
     const progress=session.verification_json?JSON.parse(session.verification_json) as {offset:number;hash:Sha256Checkpoint;content:AttachmentContentCheckpoint}:null;
     const hash=new CheckpointSha256(progress?.hash);
@@ -252,12 +282,12 @@ async function complete(request: Request, env: Env, session: UploadSession): Pro
     if(offset!==hash.snapshot().bytesTotal || offset!==parser.snapshot().sizeBytes || offset<0 || offset>=session.size_bytes) return error('UPLOAD_VERIFICATION_STATE_INVALID');
     const length=Math.min(VERIFY_RANGE_BYTES,session.size_bytes-offset);
     const object=await env.ATTACHMENTS_BUCKET.get(row.storage_key,{range:{offset,length}});
-    if(!object?.body)return error('UPLOAD_VERIFICATION_RETRY',503);
+    if(!object?.body)throw new Error('UPLOAD_VERIFICATION_RETRY');
     const reader=object.body.getReader();let consumed=0;
     try{while(true){const chunk=await reader.read();if(chunk.done)break;consumed+=chunk.value.length;
       if(consumed>length)throw new Error('UPLOAD_VERIFICATION_LENGTH_MISMATCH');hash.update(chunk.value);parser.update(chunk.value);}}
     finally{reader.releaseLock();}
-    if(consumed!==length)return error('UPLOAD_VERIFICATION_RETRY',503);
+    if(consumed!==length)throw new Error('UPLOAD_VERIFICATION_RETRY');
     const next=offset+length;
     if(next<session.size_bytes){
       const saved=await env.DB.prepare(`UPDATE attachment_upload_sessions SET status='VERIFYING',verification_json=?,lease_token=NULL,lease_until=NULL,updated_at=?
@@ -269,7 +299,7 @@ async function complete(request: Request, env: Env, session: UploadSession): Pro
     inspected={sizeBytes:next,sha256:hash.digest(),...parser.finish(next)};
   }
   if(inspected.sizeBytes!==session.size_bytes || inspected.sha256!==input.sha256) {
-    await env.DB.prepare("UPDATE attachment_upload_sessions SET status='ABORTING',last_error='UPLOAD_CHECKSUM_MISMATCH',updated_at=? WHERE id=? AND lease_token=?")
+    await env.DB.prepare("UPDATE attachment_upload_sessions SET status='ABORTING',lease_until=0,lease_token=NULL,last_error='UPLOAD_CHECKSUM_MISMATCH',updated_at=? WHERE id=? AND lease_token=?")
       .bind(now(),session.id,lease).run();
     return error('UPLOAD_CHECKSUM_MISMATCH',422);
   }
@@ -301,6 +331,25 @@ async function complete(request: Request, env: Env, session: UploadSession): Pro
   if(results[1]?.meta.changes!==1) return error('UPLOAD_AUTHORIZATION_CHANGED',410);
   await dispatchStoredUpload(env,(await sessionById(env,session.id))!);
   return uploadJson(await sessionResponse(env,(await sessionById(env,session.id))!),202);
+  } catch(failure) {
+    await env.DB.prepare(`UPDATE attachment_upload_sessions SET lease_until=0,last_error='UPLOAD_STORAGE_RETRY'
+      WHERE id=? AND status='COMPLETING' AND lease_token=?`).bind(session.id,lease).run();
+    throw failure;
+  }
+}
+
+export async function initializeQueuedUpload(env:Env,session:UploadSession):Promise<void> {
+  const invite=await getUploadInviteById(env,session.invite_id);
+  const conv=invite?await uploadBoundConversation(env,invite):null;
+  if(!conv||!await authoritativeOpen(env,conv)) {
+    await env.DB.prepare("UPDATE attachment_upload_sessions SET status='ABORTING',lease_until=0 WHERE id=? AND status='INITIALIZING'").bind(session.id).run();
+    await queueUploadTask(env,session.id,'ABORT');return;
+  }
+  const row=await attachment(env,session.attachment_id);if(!row)throw new Error('UPLOAD_ATTACHMENT_MISSING');
+  await startMultipart(env,session,row);
+}
+export async function verifyQueuedUpload(env:Env,session:UploadSession):Promise<Response> {
+  return complete(new Request('https://upload-work.internal/verify',{method:'POST',body:JSON.stringify({sha256:session.expected_sha256})}),env,session,true);
 }
 
 export async function handleUploadSession(request: Request, env: Env, token: string, action: string): Promise<Response> {
@@ -313,7 +362,8 @@ export async function handleUploadSession(request: Request, env: Env, token: str
   if(session.expires_at<=now() || !stored && invite.status==='REVOKED') return error('UPLOAD_SESSION_EXPIRED_OR_REVOKED',410);
   if(request.method==='GET' && action==='page') return uploadPage();
   if(request.method==='GET' && action==='') {
-    if(session.status==='INITIALIZING') {
+    if(session.async_mode)await redriveUploadWork(env,session);
+    else if(session.status==='INITIALIZING') {
       const row=await attachment(env,session.attachment_id);if(row)await startMultipart(env,session,row);
     }
     const part=Number(new URL(request.url).searchParams.get('part') || '1');
@@ -323,7 +373,8 @@ export async function handleUploadSession(request: Request, env: Env, token: str
   if(!await throttle(env,invite)) return error('UPLOAD_RATE_LIMITED',429);
   if(request.method==='DELETE' && !stored) {
     await env.DB.prepare("UPDATE attachment_upload_sessions SET status='ABORTING',updated_at=? WHERE id=? AND status NOT IN ('STORED','QUEUED','DELIVERED','AMBIGUOUS')").bind(now(),session.id).run();
-    await cleanupUploadSessions(env,session.id);
+    if(session.async_mode)await queueUploadTask(env,session.id,'ABORT');
+    else await cleanupUploadSessions(env,session.id);
     return uploadJson({state:(await sessionById(env,session.id))?.status || 'ABORTING'});
   }
   if(request.method==='POST' && action==='complete') {
@@ -335,7 +386,7 @@ export async function handleUploadSession(request: Request, env: Env, token: str
   if(request.method==='POST' && action==='dispatch' && stored) {await dispatchStoredUpload(env,session);return uploadJson(await sessionResponse(env,session));}
   const match=/^parts\/(\d{1,5})$/.exec(action);
   if(/^parts\/\d{1,5}\/(?:chunks\/\d{1,3}|assemble)$/.test(action))return handleUploadSubpart(request,env,session,action);
-  if(request.method==='PUT' && match) return putPart(request,env,session,Number(match[1]));
+  if(request.method==='PUT' && match) return session.async_mode?error('USE_SUBPART_UPLOAD',422):putPart(request,env,session,Number(match[1]));
   return error('UPLOAD_ACTION_INVALID',405);
 }
 
@@ -374,6 +425,14 @@ export async function cleanupUploadSessions(env: Env, onlyId?: string): Promise<
       await env.DB.prepare("UPDATE attachment_upload_sessions SET status='ABORTED',lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='ABORTING' AND lease_token=?").bind(now(),session.id,lease).run();
     } catch { await env.DB.prepare("UPDATE attachment_upload_sessions SET last_error='R2_ABORT_RETRY',lease_until=?,updated_at=? WHERE id=? AND status='ABORTING' AND lease_token=?").bind(now()+60,now(),session.id,lease).run(); }
   }
+  if(onlyId)return;
+  const pendingWork=await env.DB.prepare(`SELECT s.* FROM attachment_upload_sessions s JOIN upload_invites i ON i.id=s.invite_id
+    WHERE s.async_mode=1 AND s.expires_at>? AND i.status!='REVOKED' AND COALESCE(s.lease_until,0)<=?
+      AND COALESCE(s.last_error,'')!='UPLOAD_ASYNC_RETRY_EXHAUSTED'
+      AND (s.status IN ('INITIALIZING','VERIFYING','COMPLETING','STORED') OR (s.status='UPLOADING' AND EXISTS(
+        SELECT 1 FROM attachment_upload_parts p WHERE p.session_id=s.id AND p.status='WRITING' AND p.lease_until<=?)))
+    ORDER BY s.updated_at LIMIT 20`).bind(now(),now(),now()).all<UploadSession>();
+  for(const session of pendingWork.results)try{await redriveUploadWork(env,session);}catch{/* Durable intent remains for the next bounded maintenance pass. */}
   await env.DB.prepare(`UPDATE attachment_upload_sessions SET status='DELIVERED',updated_at=? WHERE status IN ('STORED','QUEUED')
     AND EXISTS(SELECT 1 FROM attachments a WHERE a.id=attachment_id AND a.status='DELIVERED')`).bind(now()).run();
   const recover=await env.DB.prepare(`SELECT s.* FROM attachment_upload_sessions s JOIN attachments a ON a.id=s.attachment_id

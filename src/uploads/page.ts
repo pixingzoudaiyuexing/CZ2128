@@ -111,6 +111,7 @@ function createUploadClient(doc) {
     if(error.status===413) return '当前传输请求超出服务平台限制。请保留原文件并联系人工客服选择其他交付方式。';
     if(error.status===409) return '文件状态发生变化或分片不一致。请刷新状态后使用原文件重试。';
     if(error.status===415) return '服务器无法安全接收这种文件内容。请联系人工客服。';
+    if(error.code==='UPLOAD_ASYNC_RETRY_EXHAUSTED')return '后台存储处理重试未成功，尚未确认文件已存储。请联系人工客服处理，已上传记录会保留。';
     if(isBusy(error)) return '服务器仍在处理此前的上传请求。请稍后使用原文件继续，已确认的分片会保留。';
     if(error.status===429) return '上传请求过于频繁，请稍后重试。';
     if(error.status>=500) return '上传服务暂时不可用，已上传分片可在恢复后继续。';
@@ -177,8 +178,19 @@ function createUploadClient(doc) {
     job.record.state='VERIFYING';job.record.verifiedBytes=progress.verifiedBytes;save(job);
     update(job,'文件已上传，正在校验完整性：'+bytes(progress.verifiedBytes)+' / '+bytes(total),progress.verifiedBytes);
   }
+  async function waitForStorage(job,wait,text) {
+    if(Math.max(wait.waited,Date.now()-wait.started)+2000>900000) {
+      throw httpError(429,{code:'UPLOAD_COMPLETION_BUSY'});
+    }
+    if(text)update(job,text);
+    for(let n=0;n<8;n++) {
+      check(job);await new Promise(resolve=>setTimeout(resolve,250));check(job);
+    }
+    wait.waited+=2000;
+  }
   async function completeFile(job) {
     const retries={waited:0,started:Date.now(),transient:0};let refresh=false;
+    const storageWait={waited:0,started:Date.now()};let pending=false;
     while(true) {
       check(job);
       let completed;
@@ -190,11 +202,13 @@ function createUploadClient(doc) {
           if(remote.state==='VERIFYING')displayVerification(job,remote);
           refresh=false;
         }
-        completed=await api(sessionPath(job)+'/complete','POST',{sha256:job.record.sha256});
+        completed=pending?await api(sessionPath(job)):await api(sessionPath(job)+'/complete','POST',{sha256:job.record.sha256});
+        if(pending)validateSession(completed,job);
       } catch(error) {await waitForRetry(job,error,retries);refresh=true;continue;}
       if(completed.state==='VERIFYING'&&!completed.attachment) {
         displayVerification(job,completed);
-        await new Promise(resolve=>setTimeout(resolve,50));
+        if(job.record.async) {pending=true;await waitForStorage(job,storageWait);}
+        else await new Promise(resolve=>setTimeout(resolve,50));
         continue;
       }
       displayStored(job,completed.attachment||completed);schedulePoll(job,0);await refreshFiles();return;
@@ -209,11 +223,16 @@ function createUploadClient(doc) {
     check(job); return hash.digest();
   }
   function validateSession(data,job) {
+    if(data&&data.error==='UPLOAD_ASYNC_RETRY_EXHAUSTED')throw httpError(422,{code:data.error});
     if(!data||!Number.isSafeInteger(data.partSize)||data.partSize<1||data.partSize>5*1024*1024*1024||
       !Number.isSafeInteger(data.partCount)||data.partCount<0||data.partCount>10000||
       data.partCount!==Math.ceil(job.record.sizeBytes/data.partSize)||
       data.sizeBytes!==undefined&&data.sizeBytes!==job.record.sizeBytes) throw new Error('SESSION_INVALID');
     job.record.partSize=data.partSize; job.record.partCount=data.partCount;
+    if(data.async!==undefined) {
+      if(typeof data.async!=='boolean'||data.async&&data.networkChunkSize!==NETWORK_CHUNK)throw new Error('SESSION_INVALID');
+      job.record.async=data.async;
+    }
     if(data.sessionId) job.record.sessionId=data.sessionId;
   }
   function putPart(job,number,blob,sha256,confirmed,chunkIndex) {
@@ -257,7 +276,7 @@ function createUploadClient(doc) {
     retries.waited+=delay;
   }
   async function confirmedPart(job,number,blob,sha256,chunkIndex) {
-    const remote=await api(sessionPath(job)+(chunkIndex?'?part='+number:''));check(job);validateSession(remote,job);
+    const remote=await api(sessionPath(job)+(chunkIndex||job.record.async?'?part='+number:''));check(job);validateSession(remote,job);
     const entries=chunkIndex?remote.chunks||[]:remote.parts||[];
     const matches=entries.filter(part=>chunkIndex?part.number===number&&part.index===chunkIndex:part.number===number);
     if(!matches.length)return false;
@@ -281,11 +300,18 @@ function createUploadClient(doc) {
   }
   async function assembleWithRetry(job,number,blob,sha256,confirmed) {
     const retries={waited:0,started:Date.now(),transient:0};let refresh=false;
+    const storageWait={waited:0,started:Date.now()};let pending=false;
     while(true) {
       check(job);
       try {
-        if(refresh&&await confirmedPart(job,number,blob,sha256))return;
-        refresh=false;await api(sessionPath(job)+'/parts/'+number+'/assemble','POST',{sha256});return;
+        if((refresh||pending)&&await confirmedPart(job,number,blob,sha256))return;
+        refresh=false;
+        if(!pending) {
+          const result=await api(sessionPath(job)+'/parts/'+number+'/assemble','POST',{sha256});
+          if(result.state!=='ASSEMBLING')return;
+          pending=true;
+        }
+        await waitForStorage(job,storageWait,'分片已接收，正在后台合并并校验；尚未确认文件存储。');
       } catch(error) {await waitForRetry(job,error,retries,confirmed);refresh=true;}
     }
   }
@@ -304,14 +330,19 @@ function createUploadClient(doc) {
         job.initializing=true;
         let created;
         try {created=await api(invite+'/sessions','POST',{id:job.record.id,filename:job.record.filename,
-          sizeBytes:job.record.sizeBytes,mimeType:job.record.mimeType});}
+          sizeBytes:job.record.sizeBytes,mimeType:job.record.mimeType,async:true});}
         finally {job.initializing=false;}
         if(typeof created.token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(created.token)) throw new Error('SESSION_INVALID');
         job.record.token=created.token; validateSession(created,job); save(job);
         if(job.cancelled) {const result=await api(sessionPath(job),'DELETE');displayStopped(job,result.state);schedulePoll(job,0);check(job);}
       }
       check(job);
-      const remote=await api(sessionPath(job)); check(job); validateSession(remote,job);
+      let remote=await api(sessionPath(job)); check(job); validateSession(remote,job);
+      const storageWait={waited:0,started:Date.now()};
+      while(remote.state==='INITIALIZING') {
+        await waitForStorage(job,storageWait,'正在准备安全存储，尚未上传文件内容。');
+        remote=await api(sessionPath(job));check(job);validateSession(remote,job);
+      }
       if(remote.attachment) { displayStored(job,remote.attachment); return; }
       if(Object.prototype.hasOwnProperty.call(stateLabels,remote.state)) { displayStored(job,remote); return; }
       if(Object.prototype.hasOwnProperty.call(stoppedLabels,remote.state)) {displayStopped(job,remote.state);schedulePoll(job,0);return;}
@@ -327,10 +358,17 @@ function createUploadClient(doc) {
         check(job);
         const offset=(number-1)*job.record.partSize, blob=job.file.slice(offset,Math.min(job.file.size,offset+job.record.partSize));
         update(job,'正在校验第 '+number+' / '+job.record.partCount+' 个分片',confirmed);
-        const digest=await hashBlob(blob,job), old=present.get(number);
+        const digest=await hashBlob(blob,job);
+        let old=present.get(number);
+        if(job.record.async) {
+          const current=await api(sessionPath(job)+'?part='+number);check(job);validateSession(current,job);
+          const matches=(current.parts||[]).filter(p=>p.number===number);
+          if(matches.length>1)throw new Error('PART_INVALID');
+          old=matches[0];
+        }
         if(old) {
           if(old.sha256!==digest||old.sizeBytes!==blob.size) {const error=new Error('INTEGRITY');error.integrity=true;throw error;}
-        } else if(job.record.partSize>64*1024*1024) {
+        } else if(job.record.async||job.record.partSize>64*1024*1024) {
           const manifest=await api(sessionPath(job)+'?part='+number);check(job);
           const chunks=new Map();
           for(const chunk of manifest.chunks||[]) {

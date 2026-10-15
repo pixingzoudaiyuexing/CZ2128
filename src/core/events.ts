@@ -115,7 +115,25 @@ export interface AttachmentTransferEvent extends QueueEventBase {
   };
 }
 
+/** References immutable durable upload intent; never file bodies or capabilities. */
+export interface UploadTaskEvent extends QueueEventBase {
+  source: 'internal';
+  type: 'upload_task';
+  payload: {
+    sessionId: string;
+    phase: 'INIT' | 'ASSEMBLE' | 'VERIFY' | 'ABORT' | 'DISPATCH';
+    partNumber?: number;
+    offset?: number;
+  };
+}
+
+export interface MaintenanceTickEvent extends QueueEventBase {
+  source: 'internal';
+  type: 'maintenance_tick';
+  payload: {scheduledHour:number;kind:'ATTACHMENTS'|'UPLOADS'|'LEARNING'};
+}
+
 export type ChatwootEvent = ChatwootMessageEvent | ChatwootLifecycleEvent;
 export type CrispEvent = CrispMessageEvent | CrispLifecycleEvent;
 export type TelegramEvent = TelegramMessageEvent | TelegramControlEvent;
-export type SupportEvent = ChatwootEvent | CrispEvent | TelegramEvent | AiTriggerEvent | AttachmentTransferEvent;
+export type SupportEvent = ChatwootEvent | CrispEvent | TelegramEvent | AiTriggerEvent | AttachmentTransferEvent | UploadTaskEvent | MaintenanceTickEvent;
