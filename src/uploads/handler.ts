@@ -245,7 +245,7 @@ export async function handleUploadCapabilityRequest(
 
   if (invite.transfer_version === 2) {
     const path = new URL(request.url).pathname;
-    const suffix = path.slice(('/uploads/' + token).length);
+    const suffix = path.slice(('/uploads/' + token).length).replace(/\/$/,'');
     if (request.method === 'GET' && suffix === '') return resumableUploadPage();
     if (request.method === 'GET' && suffix === '/files') return listInviteFiles(env, invite);
     if (request.method === 'POST' && suffix === '/sessions') return initializeUploadSession(request, env, invite);

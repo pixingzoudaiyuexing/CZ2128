@@ -72,6 +72,12 @@ describe('authenticated resumable multipart upload entry and durable storage',()
     expect(range.status).toBe(206);expect(new Uint8Array(await range.arrayBuffer())).toEqual(bytes.slice(1024,2048));
   });
 
+  it('opens the same capability page with a trailing slash and exposes no routing identity',async()=>{
+    const page=await handleUploadCapabilityRequest(new Request(`https://example/uploads/${token}/`),env,token);
+    expect(page.status).toBe(200);expect(page.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(await page.text()).toContain('分片');
+  });
+
   it('rejects wrong checksums, persists immutable part identity, and resumes the same session',async()=>{
     const bytes=new TextEncoder().encode('ordinary reliable upload');const session=await init(bytes);
     expect((await put(session,bytes,1,'0'.repeat(64))).status).toBe(422);

@@ -218,7 +218,7 @@ export default {
     }
     if (url.pathname.startsWith('/uploads/')) {
       const token = url.pathname.slice('/uploads/'.length).split('/')[0];
-      if (!token || token.includes('/')) {
+      if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
         return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
       }
       if (request.method !== 'GET' && request.method !== 'POST') {
